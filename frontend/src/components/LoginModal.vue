@@ -82,6 +82,7 @@ function stopWebPolling() {
 function switchTab(tab: 'qr' | 'web' | 'cookie') {
   activeTab.value = tab
   if (tab === 'web') {
+    iframeKey.value++
     startWebPolling()
   } else {
     stopWebPolling()
@@ -373,8 +374,8 @@ async function handleLogout() {
           </div>
         </div>
 
-        <!-- Tab 2: Built-in Browser Login View (Spacious & Clean) -->
-        <div v-show="activeTab === 'web'" class="tab-pane web-pane">
+        <!-- Tab 2: Built-in Browser Login View (Loading https://www.bilibili.com) -->
+        <div v-if="activeTab === 'web'" class="tab-pane web-pane">
           <div class="browser-window-frame">
             <div class="browser-toolbar">
               <div class="window-dots">
@@ -384,7 +385,7 @@ async function handleLogout() {
               </div>
               <div class="browser-address">
                 <ShieldCheck :size="13" class="secure-icon" />
-                <span class="url-text">https://passport.bilibili.com/login</span>
+                <span class="url-text">https://www.bilibili.com</span>
               </div>
               <button class="btn-icon refresh-btn" @click="refreshIframe" title="刷新页面">
                 <RotateCw :size="12" />
@@ -394,7 +395,7 @@ async function handleLogout() {
             <div class="iframe-container">
               <iframe
                 :key="iframeKey"
-                src="https://passport.bilibili.com/login"
+                src="https://www.bilibili.com"
                 class="web-login-iframe"
                 allow="camera; microphone; geolocation; encrypted-media; clipboard-read; clipboard-write;"
               ></iframe>
