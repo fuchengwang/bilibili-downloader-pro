@@ -451,12 +451,14 @@ async function handleLogout() {
 <style scoped>
 .login-modal {
   width: 440px;
-  max-width: 95vw;
+  max-width: 96vw;
+  max-height: 94vh;
+  overflow-y: auto;
   transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .modal-wide {
-  width: 780px;
+  width: 920px;
 }
 
 .modal-header {
@@ -857,7 +859,7 @@ async function handleLogout() {
 
 .iframe-container {
   width: 100%;
-  height: 520px;
+  height: 580px;
   background: #ffffff;
 }
 
