@@ -451,14 +451,14 @@ async function handleLogout() {
 <style scoped>
 .login-modal {
   width: 440px;
-  max-width: 96vw;
-  max-height: 94vh;
+  max-width: 95vw;
+  max-height: 92vh;
   overflow-y: auto;
   transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .modal-wide {
-  width: 920px;
+  width: 860px;
 }
 
 .modal-header {
@@ -666,7 +666,7 @@ async function handleLogout() {
 
 /* Login Tabs */
 .login-body {
-  padding: 20px;
+  padding: 16px 20px;
 }
 
 .login-tabs {
@@ -675,7 +675,7 @@ async function handleLogout() {
   background: var(--bg-tertiary);
   padding: 4px;
   border-radius: var(--radius-sm);
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .tab-btn {
@@ -859,7 +859,7 @@ async function handleLogout() {
 
 .iframe-container {
   width: 100%;
-  height: 580px;
+  height: 410px;
   background: #ffffff;
 }
 
@@ -873,7 +873,7 @@ async function handleLogout() {
 .web-footer {
   display: flex;
   justify-content: center;
-  margin-top: 14px;
+  margin-top: 12px;
 }
 
 .web-sync-btn {
