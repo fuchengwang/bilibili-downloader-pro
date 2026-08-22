@@ -1,0 +1,59 @@
+:root {
+  /* 品牌与主色调 */
+  --bili-pink: #fb7299;
+  --bili-pink-hover: #ff85ad;
+  --bili-pink-glow: rgba(251, 114, 153, 0.35);
+  
+  --bili-blue: #00aeec;
+  --bili-blue-hover: #23c9ff;
+  --bili-blue-glow: rgba(0, 174, 236, 0.35);
+
+  --vip-gold: #f59e0b;
+  --vip-gold-glow: rgba(245, 158, 11, 0.35);
+
+  --success: #10b981;
+  --success-glow: rgba(16, 185, 129, 0.35);
+  
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --danger-glow: rgba(239, 68, 68, 0.35);
+
+  /* 背景体系 (极具质感的深色玻璃拟态) */
+  --bg-app: #0c0e14;
+  --bg-sidebar: rgba(15, 18, 26, 0.85);
+  --bg-card: rgba(24, 29, 43, 0.65);
+  --bg-card-hover: rgba(33, 40, 58, 0.8);
+  --bg-input: rgba(18, 22, 33, 0.7);
+  --bg-modal: rgba(18, 22, 33, 0.95);
+  --bg-badge: rgba(255, 255, 255, 0.08);
+
+  /* 边框体系 */
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(251, 114, 153, 0.4);
+  --border-focus: #fb7299;
+
+  /* 文字颜色 */
+  --text-primary: #ffffff;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --text-link: #38bdf8;
+
+  /* 圆角 */
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-full: 9999px;
+
+  /* 阴影 */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 8px 24px -4px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 16px 40px -8px rgba(0, 0, 0, 0.6);
+  --shadow-pink: 0 4px 20px rgba(251, 114, 153, 0.3);
+  --shadow-blue: 0 4px 20px rgba(0, 174, 236, 0.3);
+
+  /* 动效过渡 */
+  --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-smooth: 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
