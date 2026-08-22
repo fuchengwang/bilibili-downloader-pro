@@ -324,6 +324,22 @@ async function onOpenFile(path: string) {
     showToast('打开文件失败: ' + e.message, 'error')
   }
 }
+
+function handleLoginSuccess(u: bilibili.UserInfo) {
+  userInfo.value = u
+  showToast(`登录成功: ${u.uname || 'B站用户'}`, 'success')
+  if (quickParseRef.value?.refreshQualities) {
+    quickParseRef.value.refreshQualities()
+  }
+}
+
+function handleLogoutSuccess() {
+  userInfo.value = null
+  showToast('已退出登录', 'info')
+  if (quickParseRef.value?.refreshQualities) {
+    quickParseRef.value.refreshQualities()
+  }
+}
 </script>
 
 <template>
@@ -353,6 +369,7 @@ async function onOpenFile(path: string) {
             ref="quickParseRef"
             :default-quality="settings.defaultQuality"
             :default-codec="settings.defaultCodec"
+            :user-info="userInfo"
             @open-episodes="handleOpenEpisodes"
             @quick-download-single="handleQuickDownloadSingle"
             @show-toast="showToast"
@@ -411,8 +428,8 @@ async function onOpenFile(path: string) {
       v-if="showLoginModal"
       :user-info="userInfo"
       @close="showLoginModal = false"
-      @login-success="(u) => userInfo = u"
-      @logout-success="userInfo = null"
+      @login-success="handleLoginSuccess"
+      @logout-success="handleLogoutSuccess"
       @show-toast="showToast"
     />
 

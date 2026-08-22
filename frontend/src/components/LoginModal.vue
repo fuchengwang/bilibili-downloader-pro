@@ -14,7 +14,8 @@ import {
   ExternalLink,
   Smartphone,
   Sparkles,
-  HelpCircle
+  HelpCircle,
+  CheckCircle2
 } from 'lucide-vue-next'
 import { bilibili } from '../../wailsjs/go/models'
 import {

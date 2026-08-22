@@ -20,6 +20,7 @@ import { ParseURL, GetAvailableQualities, ReadClipboard } from '../../wailsjs/go
 const props = defineProps<{
   defaultQuality: string
   defaultCodec: string
+  userInfo?: bilibili.UserInfo | null
 }>()
 
 const emit = defineEmits<{
@@ -38,6 +39,13 @@ const isFetchingQualities = ref(false)
 // 监听偏好设置变更
 watch(() => props.defaultQuality, (val) => {
   if (val) selectedQuality.value = val
+})
+
+// 监听登录状态变更，自动刷新当前已解析视频的清晰度权限
+watch(() => props.userInfo, () => {
+  if (parsedDetail.value && parsedDetail.value.episodes && parsedDetail.value.episodes.length > 0) {
+    fetchQualities(parsedDetail.value, parsedDetail.value.episodes[0])
+  }
 })
 
 function normalizeImg(url?: string) {
@@ -148,11 +156,18 @@ function formatPubDate(ts: number): string {
   return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`
 }
 
+function refreshQualities() {
+  if (parsedDetail.value && parsedDetail.value.episodes && parsedDetail.value.episodes.length > 0) {
+    fetchQualities(parsedDetail.value, parsedDetail.value.episodes[0])
+  }
+}
+
 defineExpose({
   setAndParse: (url: string) => {
     inputUrl.value = url
     handleParse()
-  }
+  },
+  refreshQualities
 })
 </script>
 
