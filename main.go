@@ -41,6 +41,9 @@ func main() {
 				Title:   "哔哩哔哩下载器专业版",
 				Message: "高品质、极速、现代的 Bilibili 桌面下载工具",
 			},
+			Preferences: &mac.Preferences{
+				ApplicationNameForUserAgent: "Version/18.0 Safari/605.1.15 Chrome/133.0.0.0",
+			},
 		},
 		Windows: &windows.Options{
 			WebviewIsTransparent: false,
