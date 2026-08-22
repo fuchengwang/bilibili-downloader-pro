@@ -266,6 +266,9 @@ func (c *Client) fetchBangumiDetail(ctx context.Context, target *ParsedTarget) (
 		apiURL = "https://api.bilibili.com/pgc/view/web/season?ep_id=" + url.QueryEscape(target.EPID)
 	} else if target.SSID != "" {
 		apiURL = "https://api.bilibili.com/pgc/view/web/season?season_id=" + url.QueryEscape(target.SSID)
+	} else if target.BVID != "" || target.AID != "" {
+		// 若只传入了 BVID/AID，降级至 normal 查询，其会自动解析 redirect_url 进而获取番剧真实 EPID
+		return c.fetchNormalDetail(ctx, target)
 	} else {
 		return nil, fmt.Errorf("缺少番剧 EPID 或 SSID")
 	}

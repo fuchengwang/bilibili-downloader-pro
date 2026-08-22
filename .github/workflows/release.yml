@@ -52,10 +52,9 @@ jobs:
         run: wails build -platform windows/amd64
 
       - name: Package Windows App into Zip
-        shell: bash
+        shell: pwsh
         run: |
-          cd build/bin
-          zip -r -q "Bilibili-Downloader-Windows-amd64.zip" *.exe
+          Compress-Archive -Path build/bin/*.exe -DestinationPath build/bin/Bilibili-Downloader-Windows-amd64.zip -Force
 
       - name: Upload Windows Artifact to Release
         uses: softprops/action-gh-release@v2

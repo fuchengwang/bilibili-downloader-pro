@@ -124,15 +124,46 @@ func (r *playurlAPIResp) getAcceptQualities() ([]int, []string) {
 	return nil, nil
 }
 
+func getDefaultQualityOptions(isBangumi bool) []QualityOption {
+	standards := []struct {
+		id    int
+		label string
+		isVip bool
+	}{
+		{120, "4K 超清", true},
+		{116, "1080P 60帧", true},
+		{80, "1080P 高清", isBangumi},
+		{64, "720P 高清", isBangumi},
+		{32, "480P 清晰", isBangumi},
+		{16, "360P 流畅", isBangumi},
+	}
+
+	var res []QualityOption
+	for _, s := range standards {
+		res = append(res, QualityOption{
+			ID:              s.id,
+			Label:           s.label,
+			IsVipRequired:   s.isVip,
+			IsLoginRequired: true,
+			IsAvailable:     false,
+		})
+	}
+	return res
+}
+
 // GetAvailableQualities 获取当前分P在当前登录状态下所有可选的清晰度列表
 func (c *Client) GetAvailableQualities(ctx context.Context, bvid string, aid, cid, epid int64, isBangumi bool) ([]QualityOption, error) {
 	resp, err := c.requestPlayURL(ctx, bvid, aid, cid, epid, isBangumi)
-	if err != nil {
-		return nil, err
+	if err != nil || resp == nil {
+		return getDefaultQualityOptions(isBangumi), nil
 	}
 
 	qids, qnames := resp.getAcceptQualities()
 	dash := resp.getDash()
+
+	if len(qids) == 0 && dash == nil {
+		return getDefaultQualityOptions(isBangumi), nil
+	}
 
 	// 收集 DASH 实际已返回的画质 ID
 	dashQids := make(map[int]bool)
@@ -157,7 +188,10 @@ func (c *Client) GetAvailableQualities(ctx context.Context, bvid string, aid, ci
 		}
 
 		isVip := qn >= 112 || qn == 74 || qn == 126 || qn == 125 // 8K, 4K, 1080P60, 1080P+, 720P60, 杜比, HDR 需要大会员
-		isLogin := qn >= 64                                      // 1080P, 720P 均需要登录
+		if isBangumi && qn >= 80 {
+			isVip = true
+		}
+		isLogin := qn >= 64 // 1080P, 720P 均需要登录
 
 		options = append(options, QualityOption{
 			ID:              qn,
@@ -166,6 +200,10 @@ func (c *Client) GetAvailableQualities(ctx context.Context, bvid string, aid, ci
 			IsLoginRequired: isLogin,
 			IsAvailable:     dashQids[qn],
 		})
+	}
+
+	if len(options) == 0 {
+		return getDefaultQualityOptions(isBangumi), nil
 	}
 
 	return options, nil
@@ -180,13 +218,19 @@ func (c *Client) FetchStreamSelection(ctx context.Context, bvid string, aid, cid
 
 	dash := resp.getDash()
 	if dash == nil || len(dash.Video) == 0 {
-		return nil, fmt.Errorf("B站未返回 DASH 媒体流（请确认是否需登录或账号权限）")
+		if isBangumi || epid > 0 {
+			return nil, fmt.Errorf("该视频为哔哩哔哩大会员专享内容，当前账号没有大会员权限，无法下载。请登录大会员账号后再试。")
+		}
+		return nil, fmt.Errorf("B站未返回 DASH 媒体流（请确认是否需登录或大会员权限）")
 	}
 
 	video := pickVideoStream(dash.Video, targetQuality, targetCodec)
 	audio := pickAudioStream(dash)
 
 	if video == nil {
+		if isBangumi || epid > 0 {
+			return nil, fmt.Errorf("未找到可用的视频轨（该视频为大会员专享内容，当前账号无下载权限）")
+		}
 		return nil, fmt.Errorf("未找到满足条件的可用视频轨")
 	}
 
@@ -226,13 +270,16 @@ func (c *Client) FetchStreamSelection(ctx context.Context, bvid string, aid, cid
 // requestPlayURL 具备多层降级策略的媒体流请求函数
 func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid int64, isBangumi bool) (*playurlAPIResp, error) {
 	// 1. 番剧使用 pgc/player API
-	if isBangumi {
+	if isBangumi || epid > 0 {
 		ts := strconv.FormatInt(time.Now().Unix(), 10)
 		params := url.Values{}
 		params.Set("support_multi_audio", "true")
 		params.Set("from_client", "BROWSER")
 		if aid > 0 {
 			params.Set("avid", strconv.FormatInt(aid, 10))
+		}
+		if bvid != "" {
+			params.Set("bvid", bvid)
 		}
 		params.Set("cid", strconv.FormatInt(cid, 10))
 		if epid > 0 {
@@ -249,9 +296,15 @@ func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid
 		}
 		reqURL := "https://api.bilibili.com/pgc/player/web/v2/playurl?" + params.Encode()
 		var resp playurlAPIResp
-		if err := c.GetJSON(ctx, reqURL, &resp); err == nil && resp.Code == 0 && resp.getDash() != nil {
-			return &resp, nil
+		if err := c.GetJSON(ctx, reqURL, &resp); err == nil {
+			if resp.Code == 0 && resp.getDash() != nil {
+				return &resp, nil
+			}
+			if resp.Result != nil && (resp.Result.Dash != nil || len(resp.Result.AcceptQuality) > 0) {
+				return &resp, nil
+			}
 		}
+		return nil, fmt.Errorf("该视频为哔哩哔哩大会员专享内容，当前账号未开通大会员或未登录，无法下载。请登录大会员账号后再试。")
 	}
 
 	// 2. 普通视频：优先尝试标准 playurl 官方 API (轻量极速，免风控阻断)
