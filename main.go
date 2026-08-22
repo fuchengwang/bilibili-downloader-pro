@@ -22,19 +22,21 @@ func main() {
 		Height:            760,
 		MinWidth:          980,
 		MinHeight:         640,
-		BackgroundColour:  &options.RGBA{R: 15, G: 17, B: 23, A: 255},
+		StartHidden:       true,
+		BackgroundColour:  &options.RGBA{R: 12, G: 14, B: 20, A: 255}, // 严格匹配深色背景 #0c0e14
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		OnStartup: app.startup,
+		OnStartup:  app.startup,
+		OnDomReady: app.domReady, // 前端 DOM 彻底就绪后再展示窗口，彻底消灭白屏/灰屏闪烁
 		Bind: []interface{}{
 			app,
 		},
 		Mac: &mac.Options{
 			TitleBar:             mac.TitleBarHiddenInset(),
 			Appearance:           mac.NSAppearanceNameDarkAqua,
-			WebviewIsTransparent: true,
-			WindowIsTranslucent:  true,
+			WebviewIsTransparent: false,
+			WindowIsTranslucent:  false,
 			About: &mac.AboutInfo{
 				Title:   "哔哩哔哩下载器专业版",
 				Message: "高品质、极速、现代的 Bilibili 桌面下载工具",

@@ -41,6 +41,11 @@ func (a *App) startup(ctx context.Context) {
 	})
 }
 
+// domReady is called after front-end resources are completely loaded
+func (a *App) domReady(ctx context.Context) {
+	wailsRuntime.WindowShow(ctx)
+}
+
 // ParseURL 解析用户输入的链接或 ID，返回视频及全部分P详情
 func (a *App) ParseURL(input string) (*bilibili.VideoDetail, error) {
 	target, err := a.biliClient.ParseInput(a.ctx, input)
