@@ -362,7 +362,7 @@ async function handleLogout() {
           <div class="browser-actions">
             <button class="btn-primary browser-open-btn" @click="handleOpenBrowser">
               <ExternalLink :size="15" />
-              <span>1. 打开默认浏览器登录</span>
+              <span>1. 打开浏览器登录 (优先 Chrome/Edge)</span>
             </button>
 
             <button
@@ -378,7 +378,7 @@ async function handleLogout() {
 
           <div class="mac-hint-box">
             <HelpCircle :size="13" class="hint-icon" />
-            <span>提示: 若浏览器受系统沙盒保护无法提取，推荐切换至「扫码登录」快速完成</span>
+            <span>说明: macOS 对 Safari 实施了系统沙盒隔离(TCC)。Chrome / Edge / Firefox 可一键自动提取；若使用 Safari，推荐使用左侧「扫码登录」1 秒搞定！</span>
           </div>
         </div>
 
