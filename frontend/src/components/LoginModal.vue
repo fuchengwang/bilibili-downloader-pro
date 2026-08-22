@@ -22,7 +22,8 @@ import {
   PollQRCode,
   GetUserInfo,
   Logout,
-  SaveRawCookie
+  SaveRawCookie,
+  OpenNativeBrowserLogin
 } from '../../wailsjs/go/main/App'
 
 const props = defineProps<{
@@ -214,6 +215,26 @@ async function handleCheckWebLogin() {
   }
 }
 
+// 唤起原生安全浏览器登录
+async function handleNativeLogin() {
+  isCheckingWebLogin.value = true
+  try {
+    await OpenNativeBrowserLogin()
+    const user = await GetUserInfo()
+    if (user && user.isLogin) {
+      emit('show-toast', `登录成功，欢迎回来 ${user.uname}！`, 'success')
+      emit('login-success', user)
+      emit('close')
+    } else {
+      emit('show-toast', '未获取到登录信息', 'error')
+    }
+  } catch (err: any) {
+    emit('show-toast', err.message || '原生浏览器登录失败', 'error')
+  } finally {
+    isCheckingWebLogin.value = false
+  }
+}
+
 // 手动保存 Cookie
 async function handleSaveCookie() {
   const c = manualCookie.value.trim()
@@ -255,7 +276,7 @@ async function handleLogout() {
 
 <template>
   <div class="modal-overlay" @click.self="emit('close')">
-    <div class="modal-content login-modal" :class="{ 'modal-wide': activeTab === 'web' }">
+    <div class="modal-content login-modal">
       <!-- Modal Header -->
       <div class="modal-header">
         <div class="header-title-box">
@@ -334,7 +355,7 @@ async function handleLogout() {
             @click="switchTab('web')"
           >
             <Globe :size="15" />
-            <span>内置浏览器登录</span>
+            <span>浏览器登录</span>
           </button>
 
           <button
@@ -374,44 +395,24 @@ async function handleLogout() {
           </div>
         </div>
 
-        <!-- Tab 2: Built-in Browser Login View (Loading https://www.bilibili.com) -->
+        <!-- Tab 2: Browser Login View -->
         <div v-if="activeTab === 'web'" class="tab-pane web-pane">
-          <div class="browser-window-frame">
-            <div class="browser-toolbar">
-              <div class="window-dots">
-                <span class="dot dot-red"></span>
-                <span class="dot dot-yellow"></span>
-                <span class="dot dot-green"></span>
-              </div>
-              <div class="browser-address">
-                <ShieldCheck :size="13" class="secure-icon" />
-                <span class="url-text">https://www.bilibili.com</span>
-              </div>
-              <button class="btn-icon refresh-btn" @click="refreshIframe" title="刷新页面">
-                <RotateCw :size="12" />
-              </button>
+          <div class="native-login-box">
+            <div class="browser-icon-wrap">
+              <Globe :size="40" class="browser-icon" />
             </div>
-
-            <div class="iframe-container">
-              <iframe
-                :key="iframeKey"
-                src="https://www.bilibili.com"
-                class="web-login-iframe"
-                allow="camera; microphone; geolocation; encrypted-media; clipboard-read; clipboard-write;"
-              ></iframe>
-            </div>
-          </div>
-
-          <div class="web-footer">
+            <h3 class="native-title">浏览器验证登录</h3>
+            <p class="native-desc">点击下方按钮打开浏览器，登录成功后将自动同步状态。</p>
             <button
-              class="btn-primary web-sync-btn"
+              class="btn-primary native-start-btn"
               :disabled="isCheckingWebLogin"
-              @click="handleCheckWebLogin"
+              @click="handleNativeLogin"
             >
-              <RotateCw v-if="isCheckingWebLogin" :size="14" class="spin-icon" />
-              <CheckCircle2 v-else :size="14" />
-              <span>{{ isCheckingWebLogin ? '正在检测登录态...' : '我已在上方完成登录，立即同步' }}</span>
+              <RotateCw v-if="isCheckingWebLogin" :size="16" class="spin-icon" />
+              <Globe v-else :size="16" />
+              <span>{{ isCheckingWebLogin ? '正在登录中，请在浏览器中操作...' : '打开浏览器' }}</span>
             </button>
+            <p class="native-hint">登录完成后窗口将自动关闭并同步</p>
           </div>
         </div>
 
@@ -458,8 +459,75 @@ async function handleLogout() {
   transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.modal-wide {
-  width: 860px;
+.native-login-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 24px 16px 16px;
+  text-align: center;
+}
+
+.browser-icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  color: var(--primary);
+  margin-bottom: 16px;
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+.browser-icon {
+  color: var(--primary);
+}
+
+.native-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+}
+
+.native-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-bottom: 24px;
+  max-width: 320px;
+}
+
+.native-start-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 32px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 21px;
+  margin-bottom: 14px;
+  transition: all var(--transition-fast);
+}
+
+.native-start-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(251, 114, 153, 0.3);
+}
+
+.native-start-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.native-hint {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .modal-header {
@@ -795,95 +863,9 @@ async function handleLogout() {
   margin-top: 4px;
 }
 
-/* Tab 2: Built-in Browser Window Frame */
+/* Tab 2: Browser Login Pane */
 .web-pane {
   width: 100%;
-}
-
-.browser-window-frame {
-  width: 100%;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  overflow: hidden;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
-  background: #ffffff;
-}
-
-.browser-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: #1e293b;
-  padding: 8px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.window-dots {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-
-.dot-red { background: #ef4444; }
-.dot-yellow { background: #f59e0b; }
-.dot-green { background: #10b981; }
-
-.browser-address {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: #94a3b8;
-  background: rgba(0, 0, 0, 0.3);
-  padding: 3px 12px;
-  border-radius: 12px;
-}
-
-.secure-icon {
-  color: #10b981;
-}
-
-.refresh-btn {
-  color: #94a3b8;
-  padding: 3px;
-}
-
-.refresh-btn:hover {
-  color: #ffffff;
-}
-
-.iframe-container {
-  width: 100%;
-  height: 410px;
-  background: #ffffff;
-}
-
-.web-login-iframe {
-  width: 100%;
-  height: 100%;
-  border: none;
-  display: block;
-}
-
-.web-footer {
-  display: flex;
-  justify-content: center;
-  margin-top: 12px;
-}
-
-.web-sync-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 9px 24px;
-  font-size: 13px;
-  font-weight: 600;
 }
 
 /* Tab 3: Cookie Pane */

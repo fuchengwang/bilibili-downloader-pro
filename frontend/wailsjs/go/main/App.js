@@ -54,6 +54,10 @@ export function OpenFile(arg1) {
   return window['go']['main']['App']['OpenFile'](arg1);
 }
 
+export function OpenNativeBrowserLogin() {
+  return window['go']['main']['App']['OpenNativeBrowserLogin']();
+}
+
 export function ParseURL(arg1) {
   return window['go']['main']['App']['ParseURL'](arg1);
 }

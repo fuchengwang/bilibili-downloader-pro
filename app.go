@@ -184,6 +184,11 @@ func (a *App) OpenFile(path string) error {
 	return utils.OpenFile(path)
 }
 
+// OpenNativeBrowserLogin 调起底层系统原生独立浏览器窗口进行登录（避开 iframe 隔离）
+func (a *App) OpenNativeBrowserLogin() error {
+	return a.biliClient.OpenNativeBrowserLogin(a.ctx)
+}
+
 // GenerateQRCode 获取二维码登录信息
 func (a *App) GenerateQRCode() (*bilibili.QRCodeInfo, error) {
 	return a.biliClient.GenerateQRCode(a.ctx)

@@ -30,6 +30,8 @@ export function OpenDirectory(arg1:string):Promise<void>;
 
 export function OpenFile(arg1:string):Promise<void>;
 
+export function OpenNativeBrowserLogin():Promise<void>;
+
 export function ParseURL(arg1:string):Promise<bilibili.VideoDetail>;
 
 export function PauseAllTasks():Promise<void>;
