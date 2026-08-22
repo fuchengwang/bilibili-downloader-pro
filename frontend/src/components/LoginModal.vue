@@ -396,7 +396,7 @@ async function handleLogout() {
                 :key="iframeKey"
                 src="https://passport.bilibili.com/login"
                 class="web-login-iframe"
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+                allow="camera; microphone; geolocation; encrypted-media; clipboard-read; clipboard-write;"
               ></iframe>
             </div>
           </div>

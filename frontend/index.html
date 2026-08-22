@@ -24,6 +24,26 @@
             background-color: #0c0e14;
         }
     </style>
+    <script>
+        // 深度模拟最新版 Google Chrome 133 运行环境与特征
+        (function() {
+            const chromeUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+            try {
+                Object.defineProperty(navigator, 'userAgent', { get: () => chromeUA });
+                Object.defineProperty(navigator, 'appVersion', { get: () => "5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36" });
+                Object.defineProperty(navigator, 'platform', { get: () => "MacIntel" });
+                Object.defineProperty(navigator, 'vendor', { get: () => "Google Inc." });
+                if (!window.chrome) {
+                    window.chrome = {
+                        runtime: {},
+                        loadTimes: function() {},
+                        csi: function() {},
+                        app: {}
+                    };
+                }
+            } catch (e) {}
+        })();
+    </script>
 </head>
 <body>
 <div id="app"></div>
