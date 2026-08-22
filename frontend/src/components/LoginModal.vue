@@ -4,6 +4,7 @@ import QRCode from 'qrcode'
 import {
   X,
   QrCode,
+  Globe,
   KeyRound,
   LogOut,
   RotateCw,
@@ -12,7 +13,9 @@ import {
   ShieldCheck,
   Smartphone,
   Sparkles,
-  HelpCircle
+  HelpCircle,
+  ExternalLink,
+  CheckCircle2
 } from 'lucide-vue-next'
 import { bilibili } from '../../wailsjs/go/models'
 import {
@@ -34,13 +37,15 @@ const emit = defineEmits<{
   (e: 'show-toast', msg: string, type: 'success' | 'error' | 'info'): void
 }>()
 
-const activeTab = ref<'qr' | 'cookie'>('qr')
+const activeTab = ref<'qr' | 'web' | 'cookie'>('qr')
 const qrCodeDataUrl = ref('')
 const qrStatusText = ref('正在生成二维码...')
 const isQrExpired = ref(false)
 const isQrLoading = ref(false)
 const manualCookie = ref('')
 const isSavingCookie = ref(false)
+const iframeKey = ref(0)
+const isCheckingWebLogin = ref(false)
 
 let pollTimer: any = null
 let currentQrKey = ''
@@ -49,16 +54,36 @@ onMounted(() => {
   if (!props.userInfo?.isLogin) {
     initQrLogin()
   }
+
+  // 监听 iframe 跨域登录成功广播
+  window.addEventListener('message', handlePostMessage)
 })
 
 onUnmounted(() => {
   stopPolling()
+  window.removeEventListener('message', handlePostMessage)
 })
 
 function stopPolling() {
   if (pollTimer) {
     clearInterval(pollTimer)
     pollTimer = null
+  }
+}
+
+// 刷新内置浏览器窗口
+function refreshIframe() {
+  iframeKey.value++
+}
+
+// 监听跨域登录完成消息
+async function handlePostMessage(event: MessageEvent) {
+  try {
+    if (event.data && (event.data.type === 'bili_login_success' || event.data.code === 0)) {
+      await handleCheckWebLogin()
+    }
+  } catch (e) {
+    // ignore
   }
 }
 
@@ -135,6 +160,25 @@ async function pollQrStatus() {
   }
 }
 
+// 校验内置网页登录状态
+async function handleCheckWebLogin() {
+  isCheckingWebLogin.value = true
+  try {
+    const user = await GetUserInfo()
+    if (user && user.isLogin) {
+      emit('show-toast', `登录成功，欢迎回来 ${user.uname}！`, 'success')
+      emit('login-success', user)
+      emit('close')
+    } else {
+      emit('show-toast', '未检测到登录状态，请在内置窗口中完成登录后再试', 'info')
+    }
+  } catch (err: any) {
+    emit('show-toast', '验证登录状态失败: ' + err.message, 'error')
+  } finally {
+    isCheckingWebLogin.value = false
+  }
+}
+
 // 手动保存 Cookie
 async function handleSaveCookie() {
   const c = manualCookie.value.trim()
@@ -176,7 +220,7 @@ async function handleLogout() {
 
 <template>
   <div class="modal-overlay" @click.self="emit('close')">
-    <div class="modal-content login-modal">
+    <div class="modal-content login-modal" :class="{ 'modal-wide': activeTab === 'web' }">
       <!-- Modal Header -->
       <div class="modal-header">
         <div class="header-title-box">
@@ -251,6 +295,15 @@ async function handleLogout() {
 
           <button
             class="tab-btn"
+            :class="{ active: activeTab === 'web' }"
+            @click="activeTab = 'web'"
+          >
+            <Globe :size="15" />
+            <span>内置网页登录</span>
+          </button>
+
+          <button
+            class="tab-btn"
             :class="{ active: activeTab === 'cookie' }"
             @click="activeTab = 'cookie'"
           >
@@ -286,7 +339,41 @@ async function handleLogout() {
           </div>
         </div>
 
-        <!-- Tab 2: Manual Cookie Paste -->
+        <!-- Tab 2: Built-in Browser Login Window -->
+        <div v-show="activeTab === 'web'" class="tab-pane web-pane">
+          <div class="browser-bar">
+            <div class="browser-address">
+              <ShieldCheck :size="13" class="secure-icon" />
+              <span class="url-text">https://passport.bilibili.com (B站官方安全通道)</span>
+            </div>
+            <button class="btn-icon refresh-btn" @click="refreshIframe" title="刷新登录窗口">
+              <RotateCw :size="13" />
+            </button>
+          </div>
+
+          <div class="iframe-container">
+            <iframe
+              :key="iframeKey"
+              src="https://show.bilibili.com/login.html"
+              class="web-login-iframe"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            ></iframe>
+          </div>
+
+          <div class="web-footer">
+            <button
+              class="btn-primary web-sync-btn"
+              :disabled="isCheckingWebLogin"
+              @click="handleCheckWebLogin"
+            >
+              <RotateCw v-if="isCheckingWebLogin" :size="14" class="spin-icon" />
+              <CheckCircle2 v-else :size="14" />
+              <span>{{ isCheckingWebLogin ? '正在验证...' : '我已在上方完成登录' }}</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Tab 3: Manual Cookie Paste -->
         <div v-show="activeTab === 'cookie'" class="tab-pane cookie-pane">
           <div class="form-item">
             <label class="item-label">
@@ -324,6 +411,11 @@ async function handleLogout() {
 .login-modal {
   width: 440px;
   max-width: 90vw;
+  transition: width var(--transition-normal);
+}
+
+.modal-wide {
+  width: 500px;
 }
 
 .modal-header {
@@ -659,7 +751,75 @@ async function handleLogout() {
   margin-top: 4px;
 }
 
-/* Tab 2: Cookie Pane */
+/* Tab 2: Built-in Web Browser Pane */
+.web-pane {
+  align-items: stretch;
+  width: 100%;
+}
+
+.browser-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-tertiary);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border: 1px solid var(--border-subtle);
+  border-bottom: none;
+}
+
+.browser-address {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.secure-icon {
+  color: #10b981;
+}
+
+.refresh-btn {
+  color: var(--text-muted);
+  padding: 3px;
+}
+
+.refresh-btn:hover {
+  color: var(--text-primary);
+}
+
+.iframe-container {
+  width: 100%;
+  height: 380px;
+  border: 1px solid var(--border-subtle);
+  background: #fff;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  overflow: hidden;
+}
+
+.web-login-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.web-footer {
+  display: flex;
+  justify-content: center;
+  margin-top: 14px;
+}
+
+.web-sync-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 24px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Tab 3: Cookie Pane */
 .cookie-pane {
   align-items: stretch;
 }
