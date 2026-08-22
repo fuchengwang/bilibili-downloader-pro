@@ -428,15 +428,53 @@ func pickAudioStream(dash *DashData) *DashStream {
 	return best
 }
 
+// ReplaceCDNServer 将 URL 中的 CDN 服务器替换为指定的骨干节点
+func ReplaceCDNServer(rawURL string, newHost string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	u.Host = newHost
+	return u.String()
+}
+
+// 常见顶级稳定高速骨干 CDN 列表
+var BackboneCDNs = []string{
+	"upos-sz-mirrorcos.bilivideo.com", // 腾讯云骨干 CDN
+	"upos-sz-mirrorali.bilivideo.com", // 阿里云骨干 CDN
+	"upos-sz-mirrorbos.bilivideo.com", // 百度云骨干 CDN
+	"upos-sz-upcdnbwc.bilivideo.com",  // 网宿骨干 CDN
+}
+
 var reExplicitPort = regexp.MustCompile(`https?://[^/]+:\d+`)
 
-// chooseBestCDN 挑选不带特定端口号的 CDN 节点 (优先规避 PCDN 与限速节点)
+// chooseBestCDN 挑选最优质稳定的官方骨干 CDN 节点 (彻底规避 PCDN 与限速边缘节点)
 func chooseBestCDN(baseURL string, backupURLs []string) string {
 	candidates := append([]string{baseURL}, backupURLs...)
 	for _, u := range candidates {
-		if u != "" && !reExplicitPort.MatchString(u) {
+		if u == "" {
+			continue
+		}
+		// 排除带端口或明显 PCDN 节点
+		if strings.Contains(u, "mcdn.bilivideo") || strings.Contains(u, "upos-tf-all") || reExplicitPort.MatchString(u) {
+			continue
+		}
+		// 优先选用顶级骨干网
+		if strings.Contains(u, "upos-sz-mirrorcos") || strings.Contains(u, "upos-sz-mirrorali") || strings.Contains(u, "upos-sz-mirrorbos") {
 			return u
 		}
 	}
+
+	for _, u := range candidates {
+		if u != "" && !reExplicitPort.MatchString(u) && !strings.Contains(u, "mcdn.bilivideo") {
+			return u
+		}
+	}
+
+	// 如果全部候选都是 PCDN 节点，直接将第一个候选强制替换为腾讯云骨干 CDN，瞬间拉满速度
+	if len(candidates) > 0 && candidates[0] != "" {
+		return ReplaceCDNServer(candidates[0], "upos-sz-mirrorcos.bilivideo.com")
+	}
+
 	return baseURL
 }

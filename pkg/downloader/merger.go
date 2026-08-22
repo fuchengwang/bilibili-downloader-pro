@@ -32,18 +32,24 @@ func EnsureFFmpeg(ctx context.Context, onStatus func(msg string)) (string, error
 	if runtime.GOOS == "windows" {
 		binaryName = "ffmpeg.exe"
 		downloadURLs = []string{
+			"https://ghproxy.net/https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-win32-x64",
+			"https://mirror.ghproxy.com/https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-win32-x64",
 			"https://ghfast.top/https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-win32-x64",
 			"https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-win32-x64",
 		}
 	} else if runtime.GOOS == "darwin" {
 		binaryName = "ffmpeg"
 		downloadURLs = []string{
+			"https://ghproxy.net/https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-darwin-arm64",
+			"https://mirror.ghproxy.com/https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-darwin-arm64",
 			"https://ghfast.top/https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-darwin-arm64",
 			"https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-darwin-arm64",
 		}
 	} else {
 		binaryName = "ffmpeg"
 		downloadURLs = []string{
+			"https://ghproxy.net/https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-linux-x64",
+			"https://mirror.ghproxy.com/https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-linux-x64",
 			"https://ghfast.top/https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-linux-x64",
 			"https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-linux-x64",
 		}
