@@ -44,23 +44,26 @@ const isQrExpired = ref(false)
 const isQrLoading = ref(false)
 const manualCookie = ref('')
 const isSavingCookie = ref(false)
-const iframeKey = ref(0)
+const isWindowOpen = ref(false)
 const isCheckingWebLogin = ref(false)
 
 let pollTimer: any = null
 let currentQrKey = ''
+let loginPopupWindow: Window | null = null
+let windowPollTimer: any = null
 
 onMounted(() => {
   if (!props.userInfo?.isLogin) {
     initQrLogin()
   }
 
-  // 监听 iframe 跨域登录成功广播
+  // 监听跨域登录广播
   window.addEventListener('message', handlePostMessage)
 })
 
 onUnmounted(() => {
   stopPolling()
+  stopWindowPolling()
   window.removeEventListener('message', handlePostMessage)
 })
 
@@ -71,9 +74,74 @@ function stopPolling() {
   }
 }
 
-// 刷新内置浏览器窗口
-function refreshIframe() {
-  iframeKey.value++
+function stopWindowPolling() {
+  if (windowPollTimer) {
+    clearInterval(windowPollTimer)
+    windowPollTimer = null
+  }
+}
+
+// 打开独立宽屏浏览器登录窗口
+function openLoginWindow() {
+  const width = 860
+  const height = 640
+  const left = (window.screen.width - width) / 2
+  const top = (window.screen.height - height) / 2
+  const loginURL = 'https://passport.bilibili.com/'
+
+  loginPopupWindow = window.open(
+    loginURL,
+    'BilibiliLoginWindow',
+    `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`
+  )
+
+  isWindowOpen.value = true
+  emit('show-toast', '已打开登录窗口，请在弹出的窗口中登录 B 站账号', 'info')
+
+  // 开始后台自动轮询检查登录态
+  stopWindowPolling()
+  windowPollTimer = setInterval(checkWindowLoginStatus, 2000)
+}
+
+async function checkWindowLoginStatus() {
+  try {
+    const user = await GetUserInfo()
+    if (user && user.isLogin) {
+      stopWindowPolling()
+      if (loginPopupWindow && !loginPopupWindow.closed) {
+        loginPopupWindow.close()
+      }
+      isWindowOpen.value = false
+      emit('show-toast', `登录成功，欢迎回来 ${user.uname}！`, 'success')
+      emit('login-success', user)
+      emit('close')
+    }
+  } catch (err) {
+    // ignore
+  }
+}
+
+// 手动点击校验登录状态
+async function handleCheckWebLogin() {
+  isCheckingWebLogin.value = true
+  try {
+    const user = await GetUserInfo()
+    if (user && user.isLogin) {
+      stopWindowPolling()
+      if (loginPopupWindow && !loginPopupWindow.closed) {
+        loginPopupWindow.close()
+      }
+      emit('show-toast', `登录成功，欢迎回来 ${user.uname}！`, 'success')
+      emit('login-success', user)
+      emit('close')
+    } else {
+      emit('show-toast', '未检测到登录状态，请在弹出的窗口中完成登录后再试', 'info')
+    }
+  } catch (err: any) {
+    emit('show-toast', '验证登录状态失败: ' + err.message, 'error')
+  } finally {
+    isCheckingWebLogin.value = false
+  }
 }
 
 // 监听跨域登录完成消息
@@ -160,25 +228,6 @@ async function pollQrStatus() {
   }
 }
 
-// 校验内置网页登录状态
-async function handleCheckWebLogin() {
-  isCheckingWebLogin.value = true
-  try {
-    const user = await GetUserInfo()
-    if (user && user.isLogin) {
-      emit('show-toast', `登录成功，欢迎回来 ${user.uname}！`, 'success')
-      emit('login-success', user)
-      emit('close')
-    } else {
-      emit('show-toast', '未检测到登录状态，请在内置窗口中完成登录后再试', 'info')
-    }
-  } catch (err: any) {
-    emit('show-toast', '验证登录状态失败: ' + err.message, 'error')
-  } finally {
-    isCheckingWebLogin.value = false
-  }
-}
-
 // 手动保存 Cookie
 async function handleSaveCookie() {
   const c = manualCookie.value.trim()
@@ -220,7 +269,7 @@ async function handleLogout() {
 
 <template>
   <div class="modal-overlay" @click.self="emit('close')">
-    <div class="modal-content login-modal" :class="{ 'modal-wide': activeTab === 'web' }">
+    <div class="modal-content login-modal">
       <!-- Modal Header -->
       <div class="modal-header">
         <div class="header-title-box">
@@ -299,7 +348,7 @@ async function handleLogout() {
             @click="activeTab = 'web'"
           >
             <Globe :size="15" />
-            <span>内置网页登录</span>
+            <span>网页窗口登录</span>
           </button>
 
           <button
@@ -312,7 +361,7 @@ async function handleLogout() {
           </button>
         </div>
 
-        <!-- Tab 1: QR Code Scan Login (Official, Safe, 100% Reliable across Win & Mac) -->
+        <!-- Tab 1: QR Code Scan Login (Official, Safe, 100% Reliable) -->
         <div v-show="activeTab === 'qr'" class="tab-pane qr-pane">
           <div class="qr-box" @click="isQrExpired ? initQrLogin() : null">
             <img v-if="qrCodeDataUrl && !isQrLoading" :src="qrCodeDataUrl" class="qr-image" alt="QR Code" />
@@ -339,37 +388,45 @@ async function handleLogout() {
           </div>
         </div>
 
-        <!-- Tab 2: Built-in Browser Login Window -->
+        <!-- Tab 2: Dedicated In-App Web Browser Login Window -->
         <div v-show="activeTab === 'web'" class="tab-pane web-pane">
-          <div class="browser-bar">
-            <div class="browser-address">
-              <ShieldCheck :size="13" class="secure-icon" />
-              <span class="url-text">https://passport.bilibili.com (B站官方安全通道)</span>
+          <div class="web-window-card">
+            <div class="window-icon-box">
+              <Globe :size="36" class="globe-icon" />
             </div>
-            <button class="btn-icon refresh-btn" @click="refreshIframe" title="刷新登录窗口">
-              <RotateCw :size="13" />
-            </button>
-          </div>
 
-          <div class="iframe-container">
-            <iframe
-              :key="iframeKey"
-              src="https://show.bilibili.com/login.html"
-              class="web-login-iframe"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-            ></iframe>
-          </div>
+            <h3 class="window-title">打开独立网页登录窗口</h3>
+            <p class="window-desc">
+              点击下方按钮将打开一个宽屏登录窗口。支持使用<b>账号密码、短信验证码或微信/QQ</b>完成登录。
+            </p>
 
-          <div class="web-footer">
-            <button
-              class="btn-primary web-sync-btn"
-              :disabled="isCheckingWebLogin"
-              @click="handleCheckWebLogin"
-            >
-              <RotateCw v-if="isCheckingWebLogin" :size="14" class="spin-icon" />
-              <CheckCircle2 v-else :size="14" />
-              <span>{{ isCheckingWebLogin ? '正在验证...' : '我已在上方完成登录' }}</span>
-            </button>
+            <div class="window-actions">
+              <button class="btn-primary open-window-btn" @click="openLoginWindow">
+                <ExternalLink :size="15" />
+                <span>{{ isWindowOpen ? '再次打开登录窗口' : '打开独立登录窗口' }}</span>
+              </button>
+
+              <button
+                v-if="isWindowOpen"
+                class="btn-secondary sync-manual-btn"
+                :disabled="isCheckingWebLogin"
+                @click="handleCheckWebLogin"
+              >
+                <RotateCw v-if="isCheckingWebLogin" :size="14" class="spin-icon" />
+                <CheckCircle2 v-else :size="14" />
+                <span>我已完成登录，立即同步</span>
+              </button>
+            </div>
+
+            <div v-if="isWindowOpen" class="window-status-box">
+              <RotateCw :size="13" class="spin-icon" />
+              <span>正在等待登录完成... 登录成功后将自动同步并关闭</span>
+            </div>
+
+            <div class="window-tip">
+              <ShieldCheck :size="13" class="tip-icon" />
+              <span>官方通道安全认证，应用仅在本地保存登录 Cookie，绝不上报隐私</span>
+            </div>
           </div>
         </div>
 
@@ -411,11 +468,6 @@ async function handleLogout() {
 .login-modal {
   width: 440px;
   max-width: 90vw;
-  transition: width var(--transition-normal);
-}
-
-.modal-wide {
-  width: 500px;
 }
 
 .modal-header {
@@ -751,72 +803,100 @@ async function handleLogout() {
   margin-top: 4px;
 }
 
-/* Tab 2: Built-in Web Browser Pane */
+/* Tab 2: Dedicated Web Window Pane */
 .web-pane {
-  align-items: stretch;
   width: 100%;
 }
 
-.browser-bar {
+.web-window-card {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  background: var(--bg-tertiary);
-  padding: 6px 12px;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-  border: 1px solid var(--border-subtle);
-  border-bottom: none;
+  text-align: center;
+  padding: 10px 10px 4px 10px;
 }
 
-.browser-address {
+.window-icon-box {
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: rgba(251, 114, 153, 0.1);
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+
+.window-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 8px 0;
+}
+
+.window-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  max-width: 340px;
+  margin: 0 0 20px 0;
+}
+
+.window-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 280px;
+}
+
+.open-window-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  width: 100%;
+}
+
+.sync-manual-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 16px;
+  font-size: 13px;
+  width: 100%;
+}
+
+.window-status-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 6px 12px;
+  background: rgba(251, 114, 153, 0.08);
+  border: 1px solid rgba(251, 114, 153, 0.2);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--primary);
+}
+
+.window-tip {
   display: flex;
   align-items: center;
   gap: 6px;
+  margin-top: 18px;
   font-size: 11px;
   color: var(--text-muted);
 }
 
-.secure-icon {
+.tip-icon {
   color: #10b981;
-}
-
-.refresh-btn {
-  color: var(--text-muted);
-  padding: 3px;
-}
-
-.refresh-btn:hover {
-  color: var(--text-primary);
-}
-
-.iframe-container {
-  width: 100%;
-  height: 380px;
-  border: 1px solid var(--border-subtle);
-  background: #fff;
-  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
-  overflow: hidden;
-}
-
-.web-login-iframe {
-  width: 100%;
-  height: 100%;
-  border: none;
-}
-
-.web-footer {
-  display: flex;
-  justify-content: center;
-  margin-top: 14px;
-}
-
-.web-sync-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 9px 24px;
-  font-size: 13px;
-  font-weight: 600;
+  flex-shrink: 0;
 }
 
 /* Tab 3: Cookie Pane */
