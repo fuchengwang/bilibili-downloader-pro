@@ -6,8 +6,7 @@ import {
   CheckSquare,
   Square,
   Clock,
-  Download,
-  Plus
+  Download
 } from 'lucide-vue-next'
 import { bilibili } from '../../wailsjs/go/models'
 import { GetAvailableQualities } from '../../wailsjs/go/main/App'
@@ -20,7 +19,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'submit', cids: number[], quality: string, codec: string, startNow: boolean): void
+  (e: 'submit', cids: number[], quality: string, codec: string): void
 }>()
 
 const targetQuality = ref(props.initialQuality || 'highest')
@@ -122,10 +121,10 @@ function applyRangeSelection() {
   rangeInput.value = ''
 }
 
-function handleSubmit(startNow: boolean) {
+function handleSubmit() {
   const cids = selectedList.value.map(ep => ep.cid)
   if (cids.length === 0) return
-  emit('submit', cids, targetQuality.value, targetCodec.value, startNow)
+  emit('submit', cids, targetQuality.value, targetCodec.value)
 }
 </script>
 
@@ -181,11 +180,21 @@ function handleSubmit(startNow: boolean) {
               <option
                 v-for="q in availableQualities"
                 :key="q.id"
-                :value="q.id.toString()"
+                :value="String(q.id)"
                 :disabled="!q.isAvailable"
               >
-                {{ q.label }} {{ !q.isAvailable ? (q.isVipRequired ? '[需大会员]' : (q.isLoginRequired ? '[需登录]' : '[不可用]')) : '' }}
+                {{ q.label }} {{ q.isVipRequired ? '(大会员)' : (q.isLoginRequired ? '(需登录)' : '') }}
               </option>
+            </select>
+          </div>
+
+          <div class="opt-item">
+            <span class="opt-label">编码:</span>
+            <select v-model="targetCodec" class="opt-select">
+              <option value="auto">智能优选 (自动推荐)</option>
+              <option value="AVC">AVC / H.264 (兼容性最好)</option>
+              <option value="HEVC">HEVC / H.265 (高压缩比)</option>
+              <option value="AV1">AV1 (极速高画质)</option>
             </select>
           </div>
         </div>
@@ -228,20 +237,12 @@ function handleSubmit(startNow: boolean) {
         <div class="footer-actions">
           <button class="btn-secondary cancel-btn" @click="emit('close')">取消</button>
           <button
-            class="btn-secondary add-queue-btn"
-            :disabled="selectedList.length === 0"
-            @click="handleSubmit(false)"
-          >
-            <Plus :size="15" />
-            <span>加入队列</span>
-          </button>
-          <button
             class="btn-primary start-btn"
             :disabled="selectedList.length === 0"
-            @click="handleSubmit(true)"
+            @click="handleSubmit"
           >
             <Download :size="15" />
-            <span>立即开始下载 ({{ selectedList.length }})</span>
+            <span>开始下载 (已选 {{ selectedList.length }} 集)</span>
           </button>
         </div>
       </div>

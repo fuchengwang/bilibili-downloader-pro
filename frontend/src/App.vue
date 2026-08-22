@@ -245,8 +245,7 @@ async function handleQuickDownloadSingle(
 async function handleEpisodeBatchSubmit(
   cids: number[],
   quality: string,
-  codec: string,
-  startNow: boolean
+  codec: string
 ) {
   if (!activeEpisodeDetail.value) return
   showEpisodeModal.value = false
@@ -267,9 +266,7 @@ async function handleEpisodeBatchSubmit(
     const added = await AddDownloadTasks(req)
     if (added && added.length > 0) {
       showToast(`已成功添加 ${added.length} 集任务至下载队列！`, 'success')
-      if (startNow) {
-        activeTab.value = 'queue'
-      }
+      activeTab.value = 'queue'
     }
   } catch (err: any) {
     showToast('批量添加失败: ' + err.message, 'error')
