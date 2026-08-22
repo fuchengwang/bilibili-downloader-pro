@@ -564,21 +564,6 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask) {
 	task.Progress = 100
 	m.notifyChange(task)
 
-	ffmpegPath := cfg.FFmpegPath
-	if ffmpegPath == "" || !fileExists(ffmpegPath) {
-		ffmpegPath = config.DetectFFmpeg()
-	}
-	if ffmpegPath == "" && task.AudioTmpPath != "" && fileExists(task.AudioTmpPath) {
-		task.SpeedStr = "部署合成引擎中..."
-		m.notifyChange(task)
-		if fp, err := EnsureFFmpeg(ctx, func(msg string) {
-			task.SpeedStr = msg
-			m.notifyChange(task)
-		}); err == nil && fp != "" {
-			ffmpegPath = fp
-		}
-	}
-
 	// 为最终输出文件名附加 [清晰度] 标识（如 [1080P]、[4K]）
 	qTag := getQualityTag(task.QualityID, task.QualityLabel)
 	if qTag != "" {
@@ -589,7 +574,8 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask) {
 		}
 	}
 
-	err = MergeAudioVideo(ffmpegPath, task.VideoTmpPath, task.AudioTmpPath, task.OutputPath, cfg.DeleteTempFiles)
+	// 6. 原生纯 Go 极速无损音视频复用合成 (0 依赖，毫秒级完成)
+	err = MergeAudioVideo(task.VideoTmpPath, task.AudioTmpPath, task.OutputPath, cfg.DeleteTempFiles)
 	if err != nil {
 		task.Status = StatusError
 		task.ErrorMsg = fmt.Sprintf("音视频合成失败: %v", err)

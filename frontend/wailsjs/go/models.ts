@@ -197,7 +197,6 @@ export namespace config {
 	    threadsPerTask: number;
 	    autoMerge: boolean;
 	    deleteTempFiles: boolean;
-	    ffmpegPath: string;
 	    autoClipboard: boolean;
 	    fileNameTemplate: string;
 	    theme: string;
@@ -215,7 +214,6 @@ export namespace config {
 	        this.threadsPerTask = source["threadsPerTask"];
 	        this.autoMerge = source["autoMerge"];
 	        this.deleteTempFiles = source["deleteTempFiles"];
-	        this.ffmpegPath = source["ffmpegPath"];
 	        this.autoClipboard = source["autoClipboard"];
 	        this.fileNameTemplate = source["fileNameTemplate"];
 	        this.theme = source["theme"];

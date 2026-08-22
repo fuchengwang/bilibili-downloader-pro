@@ -48,12 +48,6 @@ jobs:
         working-directory: ./frontend
         run: pnpm install --frozen-lockfile
 
-      - name: Download Standalone Static FFmpeg for Windows
-        shell: bash
-        run: |
-          mkdir -p build/bin
-          curl -L -o build/bin/ffmpeg.exe https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-win32-x64
-
       - name: Build Windows Application (Installer & Binaries)
         run: wails build -platform windows/amd64 -nsis
 
@@ -104,25 +98,16 @@ jobs:
         working-directory: ./frontend
         run: pnpm install --frozen-lockfile
 
-      - name: Download Standalone Static FFmpeg for macOS
-        run: |
-          mkdir -p build/bin
-          curl -L -o build/bin/ffmpeg https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-darwin-arm64
-          chmod +x build/bin/ffmpeg
-
       - name: Build macOS Application
         run: wails build -platform darwin/arm64
 
-      - name: Embed FFmpeg and Package macOS App
+      - name: Package macOS App into Zip
         run: |
           cd build/bin
           APP_NAME=$(ls -d *.app | head -n 1)
           if [ -n "$APP_NAME" ]; then
-            mkdir -p "$APP_NAME/Contents/MacOS"
-            cp -f ffmpeg "$APP_NAME/Contents/MacOS/ffmpeg"
-            chmod +x "$APP_NAME/Contents/MacOS/ffmpeg"
             zip -r -y -q "Bilibili-Downloader-macOS-arm64.zip" "$APP_NAME"
-            echo "Successfully packaged $APP_NAME with embedded FFmpeg into Bilibili-Downloader-macOS-arm64.zip"
+            echo "Successfully packaged $APP_NAME into Bilibili-Downloader-macOS-arm64.zip"
           fi
 
       - name: Upload macOS Artifact to Release

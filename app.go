@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
 	"bilibili_downloader/pkg/bilibili"
 	"bilibili_downloader/pkg/config"
@@ -220,28 +219,14 @@ func (a *App) SaveRawCookie(cookieStr string) error {
 	return a.biliClient.ParseAndSaveRawCookie(cookieStr)
 }
 
-// CheckFFmpeg 检查 FFmpeg 就绪状态与版本
+// CheckFFmpeg 检查内置合成引擎状态 (纯 Go 原生极速合成，100% 始终就绪)
 func (a *App) CheckFFmpeg() (map[string]any, error) {
-	cfg := a.cfgMgr.Get()
-	p := cfg.FFmpegPath
-	if p == "" {
-		p = config.DetectFFmpeg()
-		if p != "" {
-			cfg.FFmpegPath = p
-			_ = a.cfgMgr.Save(cfg)
-		}
-	}
-	ok, info, err := utils.FFmpegVersionInfo(p)
-	errMsg := ""
-	if err != nil {
-		errMsg = err.Error()
-	}
 	return map[string]any{
-		"ready":   ok,
-		"path":    p,
-		"info":    info,
-		"error":   errMsg,
-		"autoDir": filepath.Dir(p),
+		"ready":   true,
+		"path":    "内置 Go 原生合成引擎",
+		"info":    "Pure Go Built-in Muxer (Zero Dependency, Native Fast Muxing)",
+		"error":   "",
+		"autoDir": "",
 	}, nil
 }
 

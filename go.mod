@@ -3,6 +3,7 @@ module bilibili_downloader
 go 1.25.0
 
 require (
+	github.com/Eyevinn/mp4ff v0.55.0
 	github.com/mattn/go-sqlite3 v1.14.50
 	github.com/wailsapp/wails/v2 v2.15.0
 	golang.org/x/crypto v0.55.0

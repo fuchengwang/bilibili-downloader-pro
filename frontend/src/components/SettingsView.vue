@@ -33,7 +33,6 @@ const form = ref<config.Settings>({
   threadsPerTask: props.initialSettings?.threadsPerTask || 4,
   autoMerge: props.initialSettings?.autoMerge ?? true,
   deleteTempFiles: props.initialSettings?.deleteTempFiles ?? true,
-  ffmpegPath: props.initialSettings?.ffmpegPath || '',
   autoClipboard: props.initialSettings?.autoClipboard ?? false,
   fileNameTemplate: props.initialSettings?.fileNameTemplate || '{title} - {part}',
   theme: props.initialSettings?.theme || 'dark'

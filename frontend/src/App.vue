@@ -42,7 +42,6 @@ const settings = ref<config.Settings>({
   threadsPerTask: 4,
   autoMerge: true,
   deleteTempFiles: true,
-  ffmpegPath: '',
   autoClipboard: false,
   fileNameTemplate: '{title} - {part}',
   theme: 'dark'
