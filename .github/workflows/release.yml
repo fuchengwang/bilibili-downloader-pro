@@ -52,6 +52,7 @@ jobs:
         run: wails build -platform windows/amd64
 
       - name: Package Windows App into Zip
+        shell: bash
         run: |
           cd build/bin
           zip -r -q "Bilibili-Downloader-Windows-amd64.zip" *.exe
