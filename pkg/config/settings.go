@@ -61,34 +61,70 @@ func DefaultDownloadDir() string {
 	return "./downloads"
 }
 
-// DetectFFmpeg 自动在常用路径和系统 PATH 中探测可用 ffmpeg
+// DetectFFmpeg 自动在执行程序同级目录、内置目录、常用路径和系统 PATH 中探测可用 ffmpeg
 func DetectFFmpeg() string {
-	// 1. 尝试常见的标准路径 (针对 macOS Homebrew / MacPorts / Windows)
-	candidates := []string{
-		"/opt/homebrew/bin/ffmpeg",
-		"/usr/local/bin/ffmpeg",
-		"/usr/bin/ffmpeg",
-		"C:\\ffmpeg\\bin\\ffmpeg.exe",
-		"C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
+	var candidates []string
+
+	// 0. 优先检测当前运行程序同级目录及 bin 子目录
+	if execPath, err := os.Executable(); err == nil {
+		execDir := filepath.Dir(execPath)
+		candidates = append(candidates,
+			filepath.Join(execDir, "ffmpeg.exe"),
+			filepath.Join(execDir, "ffmpeg"),
+			filepath.Join(execDir, "bin", "ffmpeg.exe"),
+			filepath.Join(execDir, "bin", "ffmpeg"),
+			filepath.Join(execDir, "..", "Resources", "ffmpeg"),
+			filepath.Join(execDir, "..", "Resources", "bin", "ffmpeg"),
+		)
 	}
+
+	// 1. 检测应用配置存储目录的 bin 子目录
+	appBinDir := filepath.Join(GetConfigDir(), "bin")
+	candidates = append(candidates,
+		filepath.Join(appBinDir, "ffmpeg.exe"),
+		filepath.Join(appBinDir, "ffmpeg"),
+	)
+
+	// 2. 操作系统常见路径
+	if runtime.GOOS == "windows" {
+		localApp := os.Getenv("LOCALAPPDATA")
+		appData := os.Getenv("APPDATA")
+		candidates = append(candidates,
+			`C:\ffmpeg\bin\ffmpeg.exe`,
+			`C:\Program Files\ffmpeg\bin\ffmpeg.exe`,
+			`C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe`,
+			filepath.Join(localApp, `Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-7.0.2-full_build\bin\ffmpeg.exe`),
+			filepath.Join(localApp, `Programs\bilibili下载器专业版\ffmpeg.exe`),
+			filepath.Join(appData, `bilibili-downloader-pro\bin\ffmpeg.exe`),
+		)
+	} else {
+		candidates = append(candidates,
+			"/opt/homebrew/bin/ffmpeg",
+			"/usr/local/bin/ffmpeg",
+			"/usr/bin/ffmpeg",
+			"/opt/local/bin/ffmpeg",
+		)
+	}
+
 	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			// 简单验证是否可执行
+		if p == "" {
+			continue
+		}
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
 			if out, err := exec.Command(p, "-version").Output(); err == nil && len(out) > 0 {
 				return p
 			}
 		}
 	}
 
-	// 2. 检查系统 PATH
-	if p, err := exec.LookPath("ffmpeg"); err == nil {
+	// 3. 检查系统 PATH
+	if p, err := exec.LookPath("ffmpeg.exe"); err == nil {
 		if out, err := exec.Command(p, "-version").Output(); err == nil && len(out) > 0 {
 			return p
 		}
 	}
-
-	if runtime.GOOS == "windows" {
-		if p, err := exec.LookPath("ffmpeg.exe"); err == nil {
+	if p, err := exec.LookPath("ffmpeg"); err == nil {
+		if out, err := exec.Command(p, "-version").Output(); err == nil && len(out) > 0 {
 			return p
 		}
 	}
@@ -132,70 +168,50 @@ func (m *ConfigManager) load() error {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
-
-	// 补充默认值
-	if s.DownloadDir == "" {
-		s.DownloadDir = DefaultDownloadDir()
-	}
-	if s.DefaultQuality == "" {
-		s.DefaultQuality = "highest"
-	}
-	if s.DefaultCodec == "" {
-		s.DefaultCodec = "auto"
-	}
-	if s.MaxConcurrent <= 0 {
-		s.MaxConcurrent = 3
-	}
-	if s.ThreadsPerTask <= 0 {
-		s.ThreadsPerTask = 8
-	}
-	if s.FFmpegPath == "" {
-		s.FFmpegPath = DetectFFmpeg()
-	}
-	if s.FileNameTemplate == "" {
-		s.FileNameTemplate = "{title} - {part}"
-	}
-	if s.Theme == "" {
-		s.Theme = "dark"
-	}
-
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.settings = s
+
+	// 如果设置中未指定或旧路径不存在，自动更新检测最新路径
+	if m.settings.FFmpegPath == "" {
+		m.settings.FFmpegPath = DetectFFmpeg()
+	} else if _, err := os.Stat(m.settings.FFmpegPath); err != nil {
+		m.settings.FFmpegPath = DetectFFmpeg()
+	}
+
 	return nil
 }
 
-// Get 获取当前设置的拷贝
+func (m *ConfigManager) Save(s Settings) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.settings = s
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	filePath := filepath.Join(m.dir, "settings.json")
+	return os.WriteFile(filePath, data, 0644)
+}
+
 func (m *ConfigManager) Get() Settings {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.settings
 }
 
-// Save 保存设置
-func (m *ConfigManager) Save(s Settings) error {
+func (m *ConfigManager) UpdateFFmpegPath(path string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// 确保目录存在
-	if s.DownloadDir != "" {
-		_ = os.MkdirAll(s.DownloadDir, 0755)
-	}
-
-	m.settings = s
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	filePath := filepath.Join(m.dir, "settings.json")
-	return os.WriteFile(filePath, data, 0644)
+	m.settings.FFmpegPath = path
+	s := m.settings
+	m.mu.Unlock()
+	return m.Save(s)
 }
 
-// GetCookiesPath 获取 Cookie 存储路径
 func (m *ConfigManager) GetCookiesPath() string {
 	return filepath.Join(m.dir, "cookies.json")
 }
 
-// GetTasksPath 获取任务历史持久化路径
 func (m *ConfigManager) GetTasksPath() string {
 	return filepath.Join(m.dir, "tasks.json")
 }

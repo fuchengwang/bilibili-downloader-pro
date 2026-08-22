@@ -565,8 +565,18 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask) {
 	m.notifyChange(task)
 
 	ffmpegPath := cfg.FFmpegPath
-	if ffmpegPath == "" {
+	if ffmpegPath == "" || !fileExists(ffmpegPath) {
 		ffmpegPath = config.DetectFFmpeg()
+	}
+	if ffmpegPath == "" && task.AudioTmpPath != "" && fileExists(task.AudioTmpPath) {
+		task.SpeedStr = "部署合成引擎中..."
+		m.notifyChange(task)
+		if fp, err := EnsureFFmpeg(ctx, func(msg string) {
+			task.SpeedStr = msg
+			m.notifyChange(task)
+		}); err == nil && fp != "" {
+			ffmpegPath = fp
+		}
 	}
 
 	// 为最终输出文件名附加 [清晰度] 标识（如 [1080P]、[4K]）
