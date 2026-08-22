@@ -48,14 +48,19 @@ jobs:
         working-directory: ./frontend
         run: pnpm install --frozen-lockfile
 
-      - name: Build Windows Application (Installer & Binaries)
-        run: wails build -platform windows/amd64 -nsis
+      - name: Build Windows Application
+        run: wails build -platform windows/amd64
+
+      - name: Package Windows App into Zip
+        run: |
+          cd build/bin
+          zip -r -q "Bilibili-Downloader-Windows-amd64.zip" *.exe
 
       - name: Upload Windows Artifact to Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
         with:
-          files: build/bin/*.exe
+          files: build/bin/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -63,10 +68,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Bilibili-Downloader-Windows-x64
-          path: build/bin/*
+          path: build/bin/*.zip
 
-  build-macos-arm64:
-    name: Build macOS (Apple Silicon arm64)
+  build-macos:
+    name: Build macOS (Universal)
     runs-on: macos-14
 
     steps:
@@ -98,16 +103,48 @@ jobs:
         working-directory: ./frontend
         run: pnpm install --frozen-lockfile
 
+      - name: Import Apple Certificate
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: "build_keychain"
+        run: |
+          if [ -n "$APPLE_CERTIFICATE_BASE64" ]; then
+            CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+            KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+            echo -n "$APPLE_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
+            security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+            security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+            security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+            security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+            security list-keychain -d user -s $KEYCHAIN_PATH
+            security find-identity -v -p codesigning $KEYCHAIN_PATH
+          else
+            echo "Skipping certificate import because APPLE_CERTIFICATE_BASE64 is not set."
+          fi
+
       - name: Build macOS Application
-        run: wails build -platform darwin/arm64
+        run: wails build -platform darwin/universal
+
+      - name: Sign macOS App
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE_BASE64" ]; then
+            codesign --force --deep --sign "Developer ID Application: Wang Fucheng (CH654SF2Y4)" build/bin/*.app
+            echo "App successfully signed."
+          else
+            echo "Skipping codesign because certificate is not configured."
+          fi
 
       - name: Package macOS App into Zip
         run: |
           cd build/bin
           APP_NAME=$(ls -d *.app | head -n 1)
           if [ -n "$APP_NAME" ]; then
-            zip -r -y -q "Bilibili-Downloader-macOS-arm64.zip" "$APP_NAME"
-            echo "Successfully packaged $APP_NAME into Bilibili-Downloader-macOS-arm64.zip"
+            zip -r -y -q "Bilibili-Downloader-macOS-universal.zip" "$APP_NAME"
+            echo "Successfully packaged $APP_NAME into Bilibili-Downloader-macOS-universal.zip"
           fi
 
       - name: Upload macOS Artifact to Release
