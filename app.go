@@ -194,16 +194,6 @@ func (a *App) PollQRCode(key string) (*bilibili.QRStatus, error) {
 	return a.biliClient.PollQRCode(a.ctx, key)
 }
 
-// OpenBrowserLogin 打开系统浏览器进行登录
-func (a *App) OpenBrowserLogin() error {
-	return a.biliClient.OpenBrowserLogin()
-}
-
-// ExtractBrowserCookies 尝试从本机已安装的 Chrome/Edge 等浏览器中同步提取 Cookie
-func (a *App) ExtractBrowserCookies() (*bilibili.UserInfo, error) {
-	return a.biliClient.ExtractCookiesFromBrowser(a.ctx)
-}
-
 // GetUserInfo 获取当前登录用户信息
 func (a *App) GetUserInfo() (*bilibili.UserInfo, error) {
 	return a.biliClient.GetUserInfo(a.ctx)

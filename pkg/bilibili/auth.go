@@ -7,13 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
-	"runtime"
 	"strings"
 	"time"
-
-	"bilibili_downloader/pkg/utils"
 )
 
 // QRCodeInfo 二维码信息
@@ -179,32 +174,6 @@ func (c *Client) PollQRCode(ctx context.Context, qrcodeKey string) (*QRStatus, e
 	}
 
 	return status, nil
-}
-
-// OpenBrowserLogin 打开系统浏览器进入 B 站登录页面 (macOS 优先调用 Chrome / Edge 以便自动同步)
-func (c *Client) OpenBrowserLogin() error {
-	loginURL := "https://passport.bilibili.com/login"
-	if runtime.GOOS == "darwin" {
-		// 如果安装了 Chrome，优先用 Chrome 打开
-		if _, err := os.Stat("/Applications/Google Chrome.app"); err == nil {
-			if err := exec.Command("open", "-a", "Google Chrome", loginURL).Run(); err == nil {
-				return nil
-			}
-		}
-		// 如果安装了 Edge，用 Edge 打开
-		if _, err := os.Stat("/Applications/Microsoft Edge.app"); err == nil {
-			if err := exec.Command("open", "-a", "Microsoft Edge", loginURL).Run(); err == nil {
-				return nil
-			}
-		}
-		// 如果安装了 Brave
-		if _, err := os.Stat("/Applications/Brave Browser.app"); err == nil {
-			if err := exec.Command("open", "-a", "Brave Browser", loginURL).Run(); err == nil {
-				return nil
-			}
-		}
-	}
-	return utils.OpenFile(loginURL)
 }
 
 // GetUserInfo 获取当前登录账号的详细资料

@@ -22,10 +22,6 @@ export function DeleteTask(arg1, arg2) {
   return window['go']['main']['App']['DeleteTask'](arg1, arg2);
 }
 
-export function ExtractBrowserCookies() {
-  return window['go']['main']['App']['ExtractBrowserCookies']();
-}
-
 export function GenerateQRCode() {
   return window['go']['main']['App']['GenerateQRCode']();
 }
@@ -48,10 +44,6 @@ export function GetUserInfo() {
 
 export function Logout() {
   return window['go']['main']['App']['Logout']();
-}
-
-export function OpenBrowserLogin() {
-  return window['go']['main']['App']['OpenBrowserLogin']();
 }
 
 export function OpenDirectory(arg1) {

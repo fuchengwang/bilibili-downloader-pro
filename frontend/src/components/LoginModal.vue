@@ -4,25 +4,20 @@ import QRCode from 'qrcode'
 import {
   X,
   QrCode,
-  Globe,
   KeyRound,
   LogOut,
   RotateCw,
   Crown,
   Coins,
   ShieldCheck,
-  ExternalLink,
   Smartphone,
   Sparkles,
-  HelpCircle,
-  CheckCircle2
+  HelpCircle
 } from 'lucide-vue-next'
 import { bilibili } from '../../wailsjs/go/models'
 import {
   GenerateQRCode,
   PollQRCode,
-  OpenBrowserLogin,
-  ExtractBrowserCookies,
   GetUserInfo,
   Logout,
   SaveRawCookie
@@ -39,12 +34,11 @@ const emit = defineEmits<{
   (e: 'show-toast', msg: string, type: 'success' | 'error' | 'info'): void
 }>()
 
-const activeTab = ref<'qr' | 'browser' | 'cookie'>('qr')
+const activeTab = ref<'qr' | 'cookie'>('qr')
 const qrCodeDataUrl = ref('')
 const qrStatusText = ref('正在生成二维码...')
 const isQrExpired = ref(false)
 const isQrLoading = ref(false)
-const isSyncingBrowser = ref(false)
 const manualCookie = ref('')
 const isSavingCookie = ref(false)
 
@@ -68,116 +62,76 @@ function stopPolling() {
   }
 }
 
-function normalizeImg(url?: string) {
-  if (!url) return ''
-  if (url.startsWith('//')) return 'https:' + url
-  if (url.startsWith('http://')) return 'https://' + url.substring(7)
-  return url
-}
-
-// 初始化/刷新二维码
+// 初始化 B 站官方扫码登录
 async function initQrLogin() {
   stopPolling()
   isQrLoading.value = true
   isQrExpired.value = false
-  qrStatusText.value = '正在获取登录二维码...'
+  qrStatusText.value = '正在生成二维码...'
 
   try {
-    const res = await GenerateQRCode()
-    if (!res || !res.url || !res.qrcodeKey) {
-      throw new Error('获取二维码信息失败')
+    const info = await GenerateQRCode()
+    if (!info || !info.url || !info.qrcodeKey) {
+      throw new Error('未获取到二维码数据')
     }
 
-    currentQrKey = res.qrcodeKey
-    // 生成高清二维码 Data URL
-    qrCodeDataUrl.value = await QRCode.toDataURL(res.url, {
-      width: 220,
-      margin: 1,
+    currentQrKey = info.qrcodeKey
+    qrCodeDataUrl.value = await QRCode.toDataURL(info.url, {
+      width: 200,
+      margin: 2,
       color: {
-        dark: '#000000',
-        light: '#ffffff',
-      },
+        dark: '#0f172a',
+        light: '#ffffff'
+      }
     })
 
-    qrStatusText.value = '请打开哔哩哔哩手机 App 扫码'
+    qrStatusText.value = '请使用手机 B 站 App 扫码'
     isQrLoading.value = false
 
-    // 开始轮询 (每 2 秒一次)
-    pollTimer = setInterval(checkQrStatus, 2000)
+    // 开始轮询扫码结果 (每 1.5s 一次)
+    pollTimer = setInterval(pollQrStatus, 1500)
   } catch (err: any) {
     isQrLoading.value = false
-    qrStatusText.value = '生成二维码失败，请点击刷新'
-    isQrExpired.value = true
+    qrStatusText.value = '生成二维码失败，请点击重试'
+    emit('show-toast', '生成二维码失败: ' + err.message, 'error')
   }
 }
 
-// 轮询检查扫码状态
-async function checkQrStatus() {
+// 轮询二维码扫码状态
+async function pollQrStatus() {
   if (!currentQrKey) return
 
   try {
     const res = await PollQRCode(currentQrKey)
     if (!res) return
 
-    if (res.code === 0 && res.isSuccess) {
-      // 登录成功
+    if (res.isSuccess) {
       stopPolling()
-      qrStatusText.value = '登录成功！正在加载账号信息...'
-      emit('show-toast', '🎉 扫码登录成功！', 'success')
+      qrStatusText.value = '登录成功！正在加载个人信息...'
+      emit('show-toast', '登录成功！', 'success')
       
       const user = await GetUserInfo()
       if (user && user.isLogin) {
         emit('login-success', user)
-        emit('close')
       }
-    } else if (res.code === 86090) {
-      qrStatusText.value = '扫码成功，请在手机上点击「确认登录」'
-    } else if (res.code === 86038 || res.isExpired) {
+      setTimeout(() => {
+        emit('close')
+      }, 500)
+      return
+    }
+
+    if (res.isExpired) {
       stopPolling()
       isQrExpired.value = true
-      qrStatusText.value = '二维码已失效，请点击刷新'
-    } else {
-      qrStatusText.value = res.message || '等待手机 App 扫码...'
+      qrStatusText.value = '二维码已过期，请点击刷新'
+      return
+    }
+
+    if (res.message) {
+      qrStatusText.value = res.message
     }
   } catch (err) {
     // 轮询偶发网络错误忽略
-  }
-}
-
-// 打开系统默认浏览器登录
-async function handleOpenBrowser() {
-  try {
-    await OpenBrowserLogin()
-    emit('show-toast', '已在默认浏览器中打开登录页面', 'info')
-  } catch (err: any) {
-    emit('show-toast', '打开浏览器失败: ' + err.message, 'error')
-  }
-}
-
-// 同步浏览器登录状态 (支持自动读取 Chrome/Edge/Firefox 本地 Cookie)
-async function handleSyncStatus() {
-  isSyncingBrowser.value = true
-  try {
-    const user = await ExtractBrowserCookies()
-    if (user && user.isLogin) {
-      emit('show-toast', `从浏览器同步成功，欢迎回来 ${user.uname}！`, 'success')
-      emit('login-success', user)
-      emit('close')
-    } else {
-      // 降级检查内存态
-      const fallbackUser = await GetUserInfo()
-      if (fallbackUser && fallbackUser.isLogin) {
-        emit('show-toast', `欢迎回来 ${fallbackUser.uname}！`, 'success')
-        emit('login-success', fallbackUser)
-        emit('close')
-      } else {
-        emit('show-toast', '未能在浏览器中检测到登录 Cookie（受系统沙盒保护）。建议使用「扫码登录」或在「填入 Cookie」中粘贴', 'info')
-      }
-    }
-  } catch (err: any) {
-    emit('show-toast', err.message || '未能自动同步浏览器 Cookie，推荐使用手机扫码登录', 'info')
-  } finally {
-    isSyncingBrowser.value = false
   }
 }
 
@@ -194,14 +148,14 @@ async function handleSaveCookie() {
     await SaveRawCookie(c)
     const user = await GetUserInfo()
     if (user && user.isLogin) {
-      emit('show-toast', `Cookie 验证成功，欢迎 ${user.uname}！`, 'success')
+      emit('show-toast', `登录成功，欢迎回来 ${user.uname}！`, 'success')
       emit('login-success', user)
       emit('close')
     } else {
-      emit('show-toast', 'Cookie 已保存但无法获取用户信息，请检查 SESSDATA 是否正确', 'error')
+      emit('show-toast', 'Cookie 校验失败，请检查是否填写正确或已过期', 'error')
     }
   } catch (err: any) {
-    emit('show-toast', '保存失败: ' + err.message, 'error')
+    emit('show-toast', '保存 Cookie 失败: ' + err.message, 'error')
   } finally {
     isSavingCookie.value = false
   }
@@ -211,11 +165,11 @@ async function handleSaveCookie() {
 async function handleLogout() {
   try {
     await Logout()
-    emit('show-toast', '已退出当前账号', 'info')
     emit('logout-success')
-    initQrLogin()
+    emit('show-toast', '已退出当前账号', 'info')
+    emit('close')
   } catch (err: any) {
-    emit('show-toast', '退出失败: ' + err.message, 'error')
+    emit('show-toast', '退出登录失败: ' + err.message, 'error')
   }
 }
 </script>
@@ -227,34 +181,27 @@ async function handleLogout() {
       <div class="modal-header">
         <div class="header-title-box">
           <ShieldCheck class="header-icon" :size="20" />
-          <h2 class="title-text">{{ userInfo?.isLogin ? '我的哔哩账号' : '哔哩哔哩账号登录' }}</h2>
+          <h2 class="title-text">哔哩哔哩账号登录</h2>
         </div>
         <button class="btn-icon close-btn" @click="emit('close')" title="关闭">
           <X :size="18" />
         </button>
       </div>
 
-      <!-- State A: Already Logged In Profile Card -->
-      <div v-if="userInfo?.isLogin" class="profile-body">
-        <div class="profile-top">
-          <div class="avatar-large-box">
-            <img
-              :src="normalizeImg(userInfo.face)"
-              class="avatar-large"
-              referrerpolicy="no-referrer"
-              alt="Avatar"
-            />
-            <div v-if="userInfo.vipStatus === 1" class="vip-badge-icon" title="大会员">
-              <Crown :size="14" />
-            </div>
+      <!-- State A: Already Logged In Profile View -->
+      <div v-if="userInfo && userInfo.isLogin" class="profile-body">
+        <div class="user-card">
+          <div class="avatar-wrap">
+            <img :src="userInfo.face" class="user-avatar" alt="Avatar" />
+            <span class="user-level-badge">LV{{ userInfo.level }}</span>
           </div>
 
-          <div class="profile-main-info">
+          <div class="user-main-info">
             <div class="uname-row">
-              <span class="uname-text">{{ userInfo.uname }}</span>
-              <span class="level-tag">LV{{ userInfo.level }}</span>
-              <span v-if="userInfo.vipLabel" class="vip-status-tag">
-                {{ userInfo.vipLabel }}
+              <span class="uname">{{ userInfo.uname }}</span>
+              <span v-if="userInfo.vipStatus === 1" class="vip-badge">
+                <Crown :size="12" />
+                <span>{{ userInfo.vipLabel || '大会员' }}</span>
               </span>
             </div>
             <div class="uid-text">UID: {{ userInfo.mid }}</div>
@@ -304,15 +251,6 @@ async function handleLogout() {
 
           <button
             class="tab-btn"
-            :class="{ active: activeTab === 'browser' }"
-            @click="activeTab = 'browser'"
-          >
-            <Globe :size="15" />
-            <span>浏览器同步</span>
-          </button>
-
-          <button
-            class="tab-btn"
             :class="{ active: activeTab === 'cookie' }"
             @click="activeTab = 'cookie'"
           >
@@ -321,7 +259,7 @@ async function handleLogout() {
           </button>
         </div>
 
-        <!-- Tab 1: QR Code Scan Login (Most reliable & recommended) -->
+        <!-- Tab 1: QR Code Scan Login (Official, Safe, 100% Reliable across Win & Mac) -->
         <div v-show="activeTab === 'qr'" class="tab-pane qr-pane">
           <div class="qr-box" @click="isQrExpired ? initQrLogin() : null">
             <img v-if="qrCodeDataUrl && !isQrLoading" :src="qrCodeDataUrl" class="qr-image" alt="QR Code" />
@@ -348,41 +286,7 @@ async function handleLogout() {
           </div>
         </div>
 
-        <!-- Tab 2: Browser Authorization -->
-        <div v-show="activeTab === 'browser'" class="tab-pane browser-pane">
-          <div class="browser-icon-box">
-            <Globe :size="36" />
-          </div>
-
-          <h3 class="pane-title">在系统浏览器中登录并同步</h3>
-          <p class="pane-desc">
-            点击下方按钮前往 B 站登录，登录成功后点击「同步登录状态」
-          </p>
-
-          <div class="browser-actions">
-            <button class="btn-primary browser-open-btn" @click="handleOpenBrowser">
-              <ExternalLink :size="15" />
-              <span>1. 打开浏览器登录 (优先 Chrome/Edge)</span>
-            </button>
-
-            <button
-              class="btn-secondary browser-sync-btn"
-              :disabled="isSyncingBrowser"
-              @click="handleSyncStatus"
-            >
-              <RotateCw v-if="isSyncingBrowser" :size="14" class="spin-icon" />
-              <CheckCircle2 v-else :size="14" />
-              <span>2. {{ isSyncingBrowser ? '正在同步...' : '已在浏览器登录，同步状态' }}</span>
-            </button>
-          </div>
-
-          <div class="mac-hint-box">
-            <HelpCircle :size="13" class="hint-icon" />
-            <span>说明: macOS 对 Safari 实施了系统沙盒隔离(TCC)。Chrome / Edge / Firefox 可一键自动提取；若使用 Safari，推荐使用左侧「扫码登录」1 秒搞定！</span>
-          </div>
-        </div>
-
-        <!-- Tab 3: Manual Cookie Paste -->
+        <!-- Tab 2: Manual Cookie Paste -->
         <div v-show="activeTab === 'cookie'" class="tab-pane cookie-pane">
           <div class="form-item">
             <label class="item-label">
@@ -396,17 +300,20 @@ async function handleLogout() {
           </div>
 
           <div class="cookie-help">
-            💡 提示: 在网页端登录 bilibili.com 后，按 F12 ➔ 应用程序 (Application) ➔ Cookies ➔ 复制 <code>SESSDATA</code> 对应的值粘贴即可。
+            <HelpCircle :size="14" class="help-icon" />
+            <span>提示: 浏览器按 F12 > 应用 (Application) > Cookie > 找到 SESSDATA 复制其值粘贴即可</span>
           </div>
 
-          <button
-            class="btn-primary save-cookie-btn"
-            :disabled="isSavingCookie || !manualCookie.trim()"
-            @click="handleSaveCookie"
-          >
-            <KeyRound :size="14" />
-            <span>{{ isSavingCookie ? '验证中...' : '保存并验证 Cookie' }}</span>
-          </button>
+          <div class="cookie-actions">
+            <button
+              class="btn-primary cookie-save-btn"
+              :disabled="isSavingCookie"
+              @click="handleSaveCookie"
+            >
+              <RotateCw v-if="isSavingCookie" :size="14" class="spin-icon" />
+              <span>{{ isSavingCookie ? '正在验证...' : '保存并登录' }}</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -417,11 +324,6 @@ async function handleLogout() {
 .login-modal {
   width: 440px;
   max-width: 90vw;
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-  overflow: hidden;
 }
 
 .modal-header {
@@ -430,7 +332,6 @@ async function handleLogout() {
   justify-content: space-between;
   padding: 16px 20px;
   border-bottom: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.02);
 }
 
 .header-title-box {
@@ -440,332 +341,137 @@ async function handleLogout() {
 }
 
 .header-icon {
-  color: var(--bili-pink);
+  color: var(--primary);
 }
 
 .title-text {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
+  margin: 0;
 }
 
-/* Tab Switching */
-.login-tabs {
-  display: flex;
-  border-bottom: 1px solid var(--border-subtle);
-  background: rgba(0, 0, 0, 0.15);
-  padding: 4px 6px;
-  gap: 4px;
-}
-
-.tab-btn {
-  flex: 1;
-  height: 34px;
-  background: transparent;
+.close-btn {
   color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 500;
-  border-radius: var(--radius-sm);
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
   transition: all var(--transition-fast);
 }
 
-.tab-btn:hover {
+.close-btn:hover {
   color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bg-hover);
 }
 
-.tab-btn.active {
-  background: rgba(251, 114, 153, 0.12);
-  color: var(--bili-pink);
-  font-weight: 600;
-}
-
-.tab-pane {
+/* User Profile Card */
+.profile-body {
   padding: 24px 20px;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  gap: 20px;
 }
 
-/* QR Code */
-.qr-box {
-  position: relative;
-  width: 220px;
-  height: 220px;
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  background: #ffffff;
+.user-card {
   display: flex;
   align-items: center;
-  justify-content: center;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-}
-
-.qr-image {
-  width: 100%;
-  height: 100%;
-}
-
-.qr-loading-mask, .qr-expired-mask {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.85);
-  backdrop-filter: blur(4px);
-  color: #fff;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.qr-expired-mask {
-  cursor: pointer;
-}
-
-.refresh-hint {
-  font-size: 11px;
-  color: var(--bili-pink);
-}
-
-.qr-status-box {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 14px;
-}
-
-.status-device-icon {
-  color: var(--bili-pink);
-}
-
-.qr-status-text {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.qr-tips {
-  margin-top: 10px;
-  font-size: 11.5px;
-  color: var(--text-muted);
-  text-align: center;
-  background: rgba(255, 255, 255, 0.03);
-  padding: 8px 12px;
-  border-radius: var(--radius-xs);
-}
-
-/* Browser Tab */
-.browser-icon-box {
-  width: 60px;
-  height: 60px;
-  border-radius: var(--radius-full);
-  background: rgba(0, 174, 236, 0.12);
-  color: var(--bili-blue);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 12px;
-}
-
-.pane-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #fff;
-  margin-bottom: 6px;
-}
-
-.pane-desc {
-  font-size: 12px;
-  color: var(--text-muted);
-  text-align: center;
-  max-width: 320px;
-  margin-bottom: 20px;
-}
-
-.browser-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  width: 100%;
-}
-
-.browser-open-btn, .browser-sync-btn {
-  height: 38px;
-  font-size: 13px;
-  justify-content: center;
-}
-
-.mac-hint-box {
-  margin-top: 14px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--text-muted);
-  background: rgba(255, 255, 255, 0.02);
-  padding: 6px 10px;
-  border-radius: var(--radius-xs);
-}
-
-.hint-icon {
-  color: var(--bili-pink);
-  flex-shrink: 0;
-}
-
-/* Cookie Tab */
-.cookie-pane {
-  align-items: stretch;
-}
-
-.item-label {
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-weight: 500;
-  margin-bottom: 6px;
-  display: block;
-}
-
-.cookie-textarea {
-  width: 100%;
-  height: 90px;
-  padding: 8px 10px;
-  font-size: 11.5px;
-  font-family: monospace;
-  resize: vertical;
-}
-
-.cookie-help {
-  font-size: 11px;
-  color: var(--text-muted);
-  line-height: 1.5;
-  margin: 10px 0 16px 0;
-  background: rgba(255, 255, 255, 0.03);
-  padding: 8px 10px;
-  border-radius: var(--radius-xs);
-}
-
-.cookie-help code {
-  color: var(--bili-pink);
-  background: rgba(251, 114, 153, 0.1);
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-
-.save-cookie-btn {
-  height: 36px;
-  font-size: 13px;
-  justify-content: center;
-}
-
-/* Profile Body */
-.profile-body {
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
   gap: 16px;
+  background: var(--bg-tertiary);
+  padding: 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
 }
 
-.profile-top {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.avatar-large-box {
+.avatar-wrap {
   position: relative;
   width: 56px;
   height: 56px;
   flex-shrink: 0;
 }
 
-.avatar-large {
+.user-avatar {
   width: 100%;
   height: 100%;
-  border-radius: var(--radius-full);
+  border-radius: 50%;
   object-fit: cover;
-  border: 2px solid rgba(255, 255, 255, 0.2);
+  border: 2px solid var(--border-subtle);
 }
 
-.vip-badge-icon {
+.user-level-badge {
   position: absolute;
   bottom: -2px;
   right: -2px;
-  background: var(--vip-gold);
-  color: #000;
-  border-radius: var(--radius-full);
-  width: 18px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  background: var(--primary);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 4px;
+  border: 1px solid var(--bg-card);
 }
 
-.profile-main-info {
+.user-main-info {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   overflow: hidden;
 }
 
 .uname-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.uname-text {
-  font-size: 15px;
-  font-weight: 700;
+.uname {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vip-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: linear-gradient(135deg, #fb7299, #ff5722);
   color: #fff;
-}
-
-.level-tag {
   font-size: 10px;
-  font-weight: 700;
-  background: rgba(0, 174, 236, 0.15);
-  color: var(--bili-blue);
-  padding: 1px 5px;
+  font-weight: 600;
+  padding: 2px 6px;
   border-radius: 4px;
-}
-
-.vip-status-tag {
-  font-size: 10px;
-  font-weight: 700;
-  background: rgba(251, 114, 153, 0.15);
-  color: var(--bili-pink);
-  padding: 1px 5px;
-  border-radius: 4px;
+  flex-shrink: 0;
 }
 
 .uid-text {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
 .vip-expire-text {
   font-size: 11px;
-  color: var(--vip-gold);
+  color: var(--text-secondary);
 }
 
 .profile-stats-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
 }
 
 .stat-card {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.03);
+  padding: 12px;
+  background: var(--bg-tertiary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
 }
@@ -779,7 +485,7 @@ async function handleLogout() {
 }
 
 .vip-icon {
-  color: var(--vip-gold);
+  color: var(--primary);
 }
 
 .stat-info {
@@ -790,7 +496,7 @@ async function handleLogout() {
 }
 
 .stat-label {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-muted);
 }
 
@@ -806,15 +512,115 @@ async function handleLogout() {
 .profile-footer {
   display: flex;
   justify-content: flex-end;
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 14px;
 }
 
 .logout-btn {
-  height: 32px;
-  padding: 0 12px;
-  font-size: 12px;
-  gap: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.logout-btn:hover {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.05);
+}
+
+/* Login Tabs */
+.login-body {
+  padding: 20px;
+}
+
+.login-tabs {
+  display: flex;
+  gap: 8px;
+  background: var(--bg-tertiary);
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 20px;
+}
+
+.tab-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.tab-btn:hover {
+  color: var(--text-primary);
+}
+
+.tab-btn.active {
+  background: var(--bg-card);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+
+.tab-pane {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Tab 1: QR Pane */
+.qr-box {
+  position: relative;
+  width: 190px;
+  height: 190px;
+  background: #ffffff;
+  padding: 10px;
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.qr-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.qr-loading-mask,
+.qr-expired-mask {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(15, 23, 42, 0.85);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  text-align: center;
+  backdrop-filter: blur(2px);
+}
+
+.refresh-hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
 }
 
 .spin-icon {
@@ -824,5 +630,98 @@ async function handleLogout() {
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+.qr-status-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  margin-bottom: 6px;
+}
+
+.status-device-icon {
+  color: var(--primary);
+}
+
+.qr-status-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.qr-tips {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+/* Tab 2: Cookie Pane */
+.cookie-pane {
+  align-items: stretch;
+}
+
+.form-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.item-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.cookie-textarea {
+  width: 100%;
+  height: 100px;
+  padding: 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: monospace;
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.cookie-textarea:focus {
+  border-color: var(--primary);
+}
+
+.cookie-help {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.help-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.cookie-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.cookie-save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  font-size: 13px;
 }
 </style>

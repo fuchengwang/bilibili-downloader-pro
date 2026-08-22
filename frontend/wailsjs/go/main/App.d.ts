@@ -14,8 +14,6 @@ export function ClearCompletedTasks():Promise<void>;
 
 export function DeleteTask(arg1:string,arg2:boolean):Promise<void>;
 
-export function ExtractBrowserCookies():Promise<bilibili.UserInfo>;
-
 export function GenerateQRCode():Promise<bilibili.QRCodeInfo>;
 
 export function GetAvailableQualities(arg1:string,arg2:number,arg3:number,arg4:number,arg5:boolean):Promise<Array<bilibili.QualityOption>>;
@@ -27,8 +25,6 @@ export function GetTasks():Promise<Array<downloader.DownloadTask>>;
 export function GetUserInfo():Promise<bilibili.UserInfo>;
 
 export function Logout():Promise<void>;
-
-export function OpenBrowserLogin():Promise<void>;
 
 export function OpenDirectory(arg1:string):Promise<void>;
 
