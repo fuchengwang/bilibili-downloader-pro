@@ -143,8 +143,8 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 		}
 	}
 
-	// 生成规范的输出路径与文件名
-	sanitizedTitle := utils.SanitizeFilename(req.Title)
+	// 生成规范的输出路径与文件名（支持极端特殊字符与超长标题安全降级）
+	sanitizedTitle := utils.SanitizeFilename(req.Title, "bilibili_video")
 	var outDir string
 	var baseFileName string
 
@@ -155,14 +155,21 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 		// 合集/多P：保存在以合集标题命名的独立子文件夹内
 		outDir = filepath.Join(cfg.DownloadDir, sanitizedTitle)
 		partName := cleanPartTitle(req.Title, ep.Title, ep.Index)
-		baseFileName = utils.SanitizeFilename(partName)
+		fallbackPart := fmt.Sprintf("P%02d", ep.Index)
+		if ep.Index <= 0 {
+			fallbackPart = "video"
+		}
+		baseFileName = utils.SanitizeFilename(partName, fallbackPart)
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			// 如果因为异常路径或权限问题导致子文件夹创建失败，自动降级保存至主下载目录
+			outDir = cfg.DownloadDir
+		}
 	} else {
 		// 单视频：直接保存在下载主目录
 		outDir = cfg.DownloadDir
 		baseFileName = sanitizedTitle
+		_ = os.MkdirAll(outDir, 0755)
 	}
-
-	_ = os.MkdirAll(outDir, 0755)
 
 	outPath := filepath.Join(outDir, baseFileName+".mp4")
 
