@@ -24,13 +24,13 @@ func main() {
 	})
 
 	err := wails.Run(&options.App{
-		Title:             "BBDown Pro",
-		Width:             1140,
-		Height:            760,
-		MinWidth:          980,
-		MinHeight:         640,
-		StartHidden:       true,
-		BackgroundColour:  &options.RGBA{R: 12, G: 14, B: 20, A: 255}, // 严格匹配深色背景 #0c0e14
+		Title:            "BBDown Pro",
+		Width:            1140,
+		Height:           760,
+		MinWidth:         980,
+		MinHeight:        640,
+		StartHidden:      true,
+		BackgroundColour: &options.RGBA{R: 12, G: 14, B: 20, A: 255}, // 严格匹配深色背景 #0c0e14
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

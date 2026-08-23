@@ -17,9 +17,10 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'open-file', path: string): void
+  (e: 'open-file', path: string, task?: downloader.DownloadTask): void
   (e: 'open-dir', path: string): void
   (e: 'delete-task', id: string, deleteFile: boolean): void
+  (e: 'request-delete', task: downloader.DownloadTask): void
   (e: 'clear-completed'): void
 }>()
 
@@ -80,7 +81,7 @@ function formatCompletedDate(timestamp: number): string {
         :key="task.id"
         class="history-card"
       >
-        <div class="cover-box" @click="emit('open-file', task.outputPath)">
+        <div class="cover-box" @click="emit('open-file', task.outputPath, task)">
           <img
             v-if="task.cover"
             :src="normalizeImg(task.cover)"
@@ -124,7 +125,7 @@ function formatCompletedDate(timestamp: number): string {
         </div>
 
         <div class="btn-group">
-          <button class="btn-primary play-btn" @click="emit('open-file', task.outputPath)" title="播放视频">
+          <button class="btn-primary play-btn" @click="emit('open-file', task.outputPath, task)" title="播放视频">
             <Play :size="13" />
             <span>播放</span>
           </button>
@@ -133,7 +134,7 @@ function formatCompletedDate(timestamp: number): string {
             <FolderOpen :size="14" />
           </button>
 
-          <button class="btn-icon del-btn" @click="emit('delete-task', task.id, false)" title="删除记录">
+          <button class="btn-icon del-btn" @click="emit('delete-task', task.id, false)" title="清除记录">
             <Trash2 :size="14" />
           </button>
         </div>

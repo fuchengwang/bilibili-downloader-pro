@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"bilibili_downloader/pkg/bilibili"
 	"bilibili_downloader/pkg/config"
@@ -37,6 +38,12 @@ func (a *App) startup(ctx context.Context) {
 	// 注册下载管理器的状态变更回调，通过 Wails 事件广播至前端
 	a.downMgr.SetCallback(func(t *downloader.DownloadTask) {
 		wailsRuntime.EventsEmit(a.ctx, "task:progress", t)
+		wailsRuntime.EventsEmit(a.ctx, "task:update", t)
+		if t.Status == downloader.StatusCompleted {
+			wailsRuntime.EventsEmit(a.ctx, "task:completed", t)
+		} else if t.Status == downloader.StatusError {
+			wailsRuntime.EventsEmit(a.ctx, "task:error", t)
+		}
 	})
 }
 
@@ -185,10 +192,22 @@ func (a *App) OpenDirectory(path string) error {
 	return utils.OpenDirectory(path)
 }
 
+// CheckFileExists 检查指定本地路径文件是否存在且非目录
+func (a *App) CheckFileExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
 // OpenFile 使用系统默认播放器打开已下载的视频文件
 func (a *App) OpenFile(path string) error {
 	if path == "" {
 		return fmt.Errorf("文件路径为空")
+	}
+	if !a.CheckFileExists(path) {
+		return fmt.Errorf("FILE_NOT_FOUND")
 	}
 	return utils.OpenFile(path)
 }

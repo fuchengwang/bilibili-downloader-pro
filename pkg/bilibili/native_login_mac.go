@@ -151,7 +151,7 @@ func (c *Client) OpenNativeBrowserLogin(ctx context.Context) error {
 	var stderr bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
-	
+
 	err = cmd.Run()
 	if err != nil {
 		// user closed window or process killed
@@ -168,6 +168,6 @@ func (c *Client) OpenNativeBrowserLogin(ctx context.Context) error {
 			}
 		}
 	}
-	
+
 	return fmt.Errorf("未获取到登录 Cookie")
 }

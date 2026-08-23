@@ -14,6 +14,10 @@ export function CheckFFmpeg() {
   return window['go']['main']['App']['CheckFFmpeg']();
 }
 
+export function CheckFileExists(arg1) {
+  return window['go']['main']['App']['CheckFileExists'](arg1);
+}
+
 export function ClearCompletedTasks() {
   return window['go']['main']['App']['ClearCompletedTasks']();
 }

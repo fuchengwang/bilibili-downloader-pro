@@ -1,10 +1,12 @@
 package downloader
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,13 +54,13 @@ func TestPureGoMuxerAcrossCodecs(t *testing.T) {
 			aTmp := filepath.Join(tmpDir, "audio.m4s")
 			outMp4 := filepath.Join(tmpDir, "output_"+codec+".mp4")
 
-			vDownloader := NewStreamDownloader(sel.VideoURL, vTmp)
+			vDownloader := NewStreamDownloader(sel.VideoURLs, vTmp)
 			if err := vDownloader.DownloadSingleStream(ctx, nil); err != nil {
 				t.Fatalf("[%s] Video download err: %v", codec, err)
 			}
 
-			if sel.AudioURL != "" {
-				aDownloader := NewStreamDownloader(sel.AudioURL, aTmp)
+			if len(sel.AudioURLs) > 0 && sel.AudioURLs[0] != "" {
+				aDownloader := NewStreamDownloader(sel.AudioURLs, aTmp)
 				if err := aDownloader.DownloadSingleStream(ctx, nil); err != nil {
 					t.Fatalf("[%s] Audio download err: %v", codec, err)
 				}
@@ -109,5 +111,121 @@ func TestPureGoMuxerAcrossCodecs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestPureGoMuxerSize0Box 测试带有 Size 0 (EOF 盒) 异常流的健壮性与自动修正
+func TestPureGoMuxerSize0Box(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping live download in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	biliClient := bilibili.GetDefaultClient()
+	target, err := biliClient.ParseInput(ctx, "https://www.bilibili.com/video/BV1m1Lv6pEiN/")
+	if err != nil {
+		t.Fatalf("ParseInput err: %v", err)
+	}
+
+	detail, err := biliClient.FetchVideoDetail(ctx, target)
+	if err != nil {
+		t.Fatalf("FetchVideoDetail err: %v", err)
+	}
+
+	ep := detail.Episodes[0]
+	sel, err := biliClient.FetchStreamSelection(ctx, ep.BVID, ep.AID, ep.CID, ep.EPID, false, "32", "AVC")
+	if err != nil {
+		t.Fatalf("FetchStreamSelection err: %v", err)
+	}
+
+	tmpDir := filepath.Join(os.TempDir(), "pure_go_mux_size0_test")
+	_ = os.RemoveAll(tmpDir)
+	_ = os.MkdirAll(tmpDir, 0755)
+	defer os.RemoveAll(tmpDir)
+
+	vTmp := filepath.Join(tmpDir, "video_size0.m4s")
+	aTmp := filepath.Join(tmpDir, "audio.m4s")
+	outMp4 := filepath.Join(tmpDir, "output_size0.mp4")
+
+	vDownloader := NewStreamDownloader(sel.VideoURLs, vTmp)
+	if err := vDownloader.DownloadSingleStream(ctx, nil); err != nil {
+		t.Fatalf("Video download err: %v", err)
+	}
+
+	if len(sel.AudioURLs) > 0 && sel.AudioURLs[0] != "" {
+		aDownloader := NewStreamDownloader(sel.AudioURLs, aTmp)
+		if err := aDownloader.DownloadSingleStream(ctx, nil); err != nil {
+			t.Fatalf("Audio download err: %v", err)
+		}
+	}
+
+	// 模拟 B站 部分 CDN 将末尾 mdat 标记为 Size 0
+	vf, err := os.OpenFile(vTmp, os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("Open vTmp err: %v", err)
+	}
+	vfi, _ := vf.Stat()
+	vBoxes, _ := scanBoxes(vf, vfi.Size())
+	if len(vBoxes) > 0 {
+		lastBox := vBoxes[len(vBoxes)-1]
+		_, _ = vf.Seek(lastBox.Offset, 0)
+		_, _ = vf.Write([]byte{0, 0, 0, 0}) // 设置为 Size 0
+	}
+	vf.Close()
+
+	// 执行纯 Go 合成
+	if err := MergeAudioVideo(vTmp, aTmp, outMp4, false); err != nil {
+		t.Fatalf("MergeAudioVideo failed with Size 0 box: %v", err)
+	}
+
+	fi, err := os.Stat(outMp4)
+	if err != nil || fi.Size() == 0 {
+		t.Fatalf("Output file invalid: %v", err)
+	}
+	t.Logf("✓ [Size 0 测试] 纯 Go 合成成功！输出文件大小: %.2f MB", float64(fi.Size())/1024/1024)
+}
+
+// TestAtomicMergeFailureSafety 测试合成失败时绝不破坏已存在的同名成品，且安全清理临时文件
+func TestAtomicMergeFailureSafety(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "atomic_merge_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	outMp4 := filepath.Join(tmpDir, "existing_video.mp4")
+	originalContent := []byte("PRE_EXISTING_VALID_VIDEO_CONTENT_1234567890")
+	if err := os.WriteFile(outMp4, originalContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 构造非法的视频与音频损坏文件
+	badVideo := filepath.Join(tmpDir, "bad_video.m4s")
+	badAudio := filepath.Join(tmpDir, "bad_audio.m4s")
+	_ = os.WriteFile(badVideo, []byte("NOT_A_VALID_MP4_HEADER"), 0644)
+	_ = os.WriteFile(badAudio, []byte("NOT_A_VALID_MP4_AUDIO"), 0644)
+
+	// 执行合成，预期失败
+	err = MergeAudioVideo(badVideo, badAudio, outMp4, false)
+	if err == nil {
+		t.Fatal("非法输入文件合成应当返回错误，但返回了 nil")
+	}
+
+	// 校验原有文件内容是否完好无损（未被 O_TRUNC 截断或破坏）
+	readBack, err := os.ReadFile(outMp4)
+	if err != nil {
+		t.Fatalf("读取原文件失败: %v", err)
+	}
+	if !bytes.Equal(readBack, originalContent) {
+		t.Fatalf("原有成品文件被合成错误破坏！内容改变: %s", string(readBack))
+	}
+
+	// 校验临时 .merging.tmp 文件是否被彻底清理
+	files, _ := os.ReadDir(tmpDir)
+	for _, f := range files {
+		if strings.Contains(f.Name(), ".merging.") && strings.HasSuffix(f.Name(), ".tmp") {
+			t.Fatalf("临时合成文件未被清理: %s", f.Name())
+		}
 	}
 }

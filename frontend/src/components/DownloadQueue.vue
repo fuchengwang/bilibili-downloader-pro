@@ -23,8 +23,9 @@ const emit = defineEmits<{
   (e: 'resume-task', id: string): void
   (e: 'cancel-task', id: string): void
   (e: 'delete-task', id: string, deleteFile: boolean): void
+  (e: 'request-delete', task: downloader.DownloadTask): void
   (e: 'open-dir', path: string): void
-  (e: 'open-file', path: string): void
+  (e: 'open-file', path: string, task?: downloader.DownloadTask): void
   (e: 'pause-all'): void
   (e: 'resume-all'): void
   (e: 'clear-completed'): void
@@ -215,7 +216,7 @@ const filteredTasks = computed(() => {
           <button
             class="btn-icon task-btn delete-btn"
             @click="emit('delete-task', task.id, false)"
-            title="删除任务"
+            title="清除记录"
           >
             <Trash2 :size="15" />
           </button>

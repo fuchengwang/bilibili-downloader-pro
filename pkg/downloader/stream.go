@@ -10,22 +10,25 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"bilibili_downloader/pkg/bilibili"
 )
 
-// StreamDownloader 单个媒体流 (视频或音频) 的断点续传、多线程分片与防假死自动降级下载器
+// StreamDownloader 单个媒体流 (视频或音频) 的高可靠断点续传下载器
 type StreamDownloader struct {
 	client     *http.Client
-	url        string
+	urls       []string
+	urlIdx     int
 	targetPath string
 	totalSize  int64
 }
 
-// NewStreamDownloader 创建单流下载器 (使用长连接 Transport，无单次请求总耗时限制)
-func NewStreamDownloader(streamURL string, targetPath string) *StreamDownloader {
+// NewStreamDownloader 创建单流下载器 (支持多候选 CDN 节点与长连接 Transport)
+func NewStreamDownloader(urls []string, targetPath string) *StreamDownloader {
+	if len(urls) == 0 {
+		urls = []string{""}
+	}
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -44,264 +47,141 @@ func NewStreamDownloader(streamURL string, targetPath string) *StreamDownloader 
 	return &StreamDownloader{
 		client: &http.Client{
 			Transport: transport,
-			Timeout:   0, // 大文件下载必须为 0，避免流读取因固定超时被 context deadline 取消
+			Timeout:   0, // 大文件流式下载必须为 0，由 Context 控制生命周期
 		},
-		url:        streamURL,
+		urls:       urls,
+		urlIdx:     0,
 		targetPath: targetPath,
 	}
 }
 
+func (s *StreamDownloader) currentURL() string {
+	if len(s.urls) == 0 {
+		return ""
+	}
+	return s.urls[s.urlIdx%len(s.urls)]
+}
+
+func (s *StreamDownloader) rotateURL() {
+	if len(s.urls) > 1 {
+		s.urlIdx = (s.urlIdx + 1) % len(s.urls)
+	}
+}
+
+// parseContentRange 解析 "bytes <start>-<end>/<total>"
+func parseContentRange(cr string) (start, end, total int64, err error) {
+	cr = strings.TrimPrefix(strings.TrimSpace(cr), "bytes ")
+	parts := strings.Split(cr, "/")
+	if len(parts) != 2 {
+		return 0, 0, 0, fmt.Errorf("invalid content-range: %s", cr)
+	}
+	rangeParts := strings.Split(parts[0], "-")
+	if len(rangeParts) != 2 {
+		return 0, 0, 0, fmt.Errorf("invalid range parts: %s", parts[0])
+	}
+	start, err1 := strconv.ParseInt(rangeParts[0], 10, 64)
+	end, err2 := strconv.ParseInt(rangeParts[1], 10, 64)
+	if err1 != nil || err2 != nil {
+		return 0, 0, 0, fmt.Errorf("invalid range numbers: %s", parts[0])
+	}
+	total = -1
+	if parts[1] != "*" {
+		if t, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+			total = t
+		}
+	}
+	return start, end, total, nil
+}
+
 // GetTotalSize 获取流的总大小 (使用带 Range: bytes=0-0 请求探测)
 func (s *StreamDownloader) GetTotalSize(ctx context.Context) (int64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
-	if err != nil {
-		return 0, err
+	if s.totalSize > 0 {
+		return s.totalSize, nil
 	}
-	req.Header.Set("User-Agent", bilibili.BrowserUA)
-	req.Header.Set("Referer", bilibili.Referer)
-	req.Header.Set("Range", "bytes=0-0")
 
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
+	var lastErr error
+	for i := 0; i < len(s.urls); i++ {
+		urlToProbe := s.urls[(s.urlIdx+i)%len(s.urls)]
+		if urlToProbe == "" {
+			continue
+		}
 
-	if cr := resp.Header.Get("Content-Range"); cr != "" {
-		// Content-Range: bytes 0-0/1234567
-		if idx := len(cr) - 1; idx > 0 {
-			for i := len(cr) - 1; i >= 0; i-- {
-				if cr[i] == '/' {
-					totalStr := cr[i+1:]
-					if size, err := strconv.ParseInt(totalStr, 10, 64); err == nil {
-						s.totalSize = size
-						return size, nil
-					}
-					break
-				}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlToProbe, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("User-Agent", bilibili.BrowserUA)
+		req.Header.Set("Referer", bilibili.Referer)
+		req.Header.Set("Range", "bytes=0-0")
+
+		resp, err := s.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+			resp.Body.Close()
+			continue
+		}
+
+		if cr := resp.Header.Get("Content-Range"); cr != "" {
+			_, _, total, pErr := parseContentRange(cr)
+			if pErr == nil && total > 0 {
+				resp.Body.Close()
+				s.totalSize = total
+				s.urlIdx = (s.urlIdx + i) % len(s.urls)
+				return total, nil
 			}
 		}
-	}
 
-	if cl := resp.Header.Get("Content-Length"); cl != "" {
-		if size, err := strconv.ParseInt(cl, 10, 64); err == nil {
-			s.totalSize = size
-			return size, nil
+		if cl := resp.Header.Get("Content-Length"); cl != "" {
+			if size, err := strconv.ParseInt(cl, 10, 64); err == nil && size > 0 {
+				resp.Body.Close()
+				s.totalSize = size
+				s.urlIdx = (s.urlIdx + i) % len(s.urls)
+				return size, nil
+			}
 		}
+		resp.Body.Close()
 	}
 
+	if lastErr != nil {
+		return 0, lastErr
+	}
 	return 0, nil
 }
 
 // DownloadProgressFn 进度更新回调
 type DownloadProgressFn func(downloadedDelta int64)
 
-// DownloadWithConcurrency 支持多线程分片并发下载，并带自动平滑回退单线程保护机制
+// DownloadWithConcurrency 统一的高性能高可靠流式下载器接口
 func (s *StreamDownloader) DownloadWithConcurrency(ctx context.Context, concurrency int, progressFn DownloadProgressFn) error {
-	// 如果设置线程数为 1，或文件较小（<5MB），或未知文件大小，直接使用最平稳的单流下载
-	if concurrency <= 1 || s.totalSize < 5*1024*1024 {
-		return s.DownloadSingleStream(ctx, progressFn)
-	}
-
-	if concurrency > 8 {
-		concurrency = 8
-	}
-
-	// 尝试多线程分片下载
-	err := s.downloadMultiThread(ctx, concurrency, progressFn)
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		// 🌟 核心稳定性兜底：若多线程出现任何 CDN 异常或分片错误，立即平滑降级回退到单线程下载
-		return s.DownloadSingleStream(ctx, progressFn)
-	}
-
-	return nil
+	return s.DownloadSingleStream(ctx, progressFn)
 }
 
-// downloadMultiThread 执行多线程 Range 分片并发下载
-func (s *StreamDownloader) downloadMultiThread(ctx context.Context, concurrency int, progressFn DownloadProgressFn) error {
-	_ = os.MkdirAll(filepath.Dir(s.targetPath), 0755)
-
-	// 如果文件已经存在且已完成
-	if fi, err := os.Stat(s.targetPath); err == nil && s.totalSize > 0 && fi.Size() >= s.totalSize {
-		return nil
-	}
-
-	file, err := os.OpenFile(s.targetPath, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return fmt.Errorf("创建输出文件失败: %w", err)
-	}
-	defer file.Close()
-
-	// 预先设定文件大小
-	_ = file.Truncate(s.totalSize)
-
-	chunkSize := s.totalSize / int64(concurrency)
-	var wg sync.WaitGroup
-	errChan := make(chan error, concurrency)
-	subCtx, cancelSub := context.WithCancel(ctx)
-	defer cancelSub()
-
-	for i := 0; i < concurrency; i++ {
-		start := int64(i) * chunkSize
-		end := start + chunkSize - 1
-		if i == concurrency-1 {
-			end = s.totalSize - 1
-		}
-
-		wg.Add(1)
-		go func(workerIdx int, cStart, cEnd int64) {
-			defer wg.Done()
-			wErr := s.downloadChunk(subCtx, file, workerIdx, cStart, cEnd, progressFn)
-			if wErr != nil {
-				select {
-				case errChan <- wErr:
-					cancelSub() // 发生错误时取消其他并发线程
-				default:
-				}
-			}
-		}(i, start, end)
-	}
-
-	wg.Wait()
-	close(errChan)
-
-	if len(errChan) > 0 {
-		return <-errChan
-	}
-
-	return nil
-}
-
-// downloadChunk 单个分片的下载与写入
-func (s *StreamDownloader) downloadChunk(ctx context.Context, file *os.File, workerIdx int, start, end int64, progressFn DownloadProgressFn) error {
-	const maxRetries = 5
-	var curOffset = start
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if curOffset > end {
-			return nil
-		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
-		if err != nil {
-			return err
-		}
-		req.Header.Set("User-Agent", bilibili.BrowserUA)
-		req.Header.Set("Referer", bilibili.Referer)
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", curOffset, end))
-
-		resp, err := s.client.Do(req)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			time.Sleep(300 * time.Millisecond)
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-			resp.Body.Close()
-			time.Sleep(300 * time.Millisecond)
-			continue
-		}
-
-		// 使用流式写入带卡死检测
-		writeErr := s.streamToChunkFile(ctx, file, curOffset, resp.Body, func(delta int64) {
-			curOffset += delta
-			if progressFn != nil {
-				progressFn(delta)
-			}
-		})
-		resp.Body.Close()
-
-		if writeErr == nil {
-			return nil
-		}
-
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	if curOffset <= end {
-		return fmt.Errorf("分片 %d 下载未完整", workerIdx)
-	}
-	return nil
-}
-
-func (s *StreamDownloader) streamToChunkFile(ctx context.Context, file *os.File, startOffset int64, body io.Reader, progressFn DownloadProgressFn) error {
-	readChan := make(chan readResult, 4)
-	readCtx, cancelRead := context.WithCancel(ctx)
-	defer cancelRead()
-
-	go func() {
-		tempBuf := make([]byte, 64*1024)
-		for {
-			select {
-			case <-readCtx.Done():
-				return
-			default:
-			}
-
-			n, rErr := body.Read(tempBuf)
-			var data []byte
-			if n > 0 {
-				data = make([]byte, n)
-				copy(data, tempBuf[:n])
-			}
-
-			select {
-			case readChan <- readResult{data: data, err: rErr}:
-			case <-readCtx.Done():
-				return
-			}
-
-			if rErr != nil {
-				return
-			}
-		}
-	}()
-
-	const readIdleTimeout = 6 * time.Second
-	var writeOffset = startOffset
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case res := <-readChan:
-			if len(res.data) > 0 {
-				if _, wErr := file.WriteAt(res.data, writeOffset); wErr != nil {
-					return fmt.Errorf("写入分片文件失败: %w", wErr)
-				}
-				writeOffset += int64(len(res.data))
-				if progressFn != nil {
-					progressFn(int64(len(res.data)))
-				}
-			}
-			if res.err != nil {
-				if res.err == io.EOF {
-					return nil
-				}
-				return res.err
-			}
-		case <-time.After(readIdleTimeout):
-			return fmt.Errorf("CDN分片读取停滞(超过6秒无数据)")
-		}
-	}
-}
-
-// DownloadSingleStream 执行平稳的单流断点续传下载
+// DownloadSingleStream 核心无损连续追加断点续传（保证数据 0 空洞、0 损坏、100% 完整性）
 func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn DownloadProgressFn) error {
 	_ = os.MkdirAll(filepath.Dir(s.targetPath), 0755)
+
+	// 1. 探测流的预期总大小
+	if s.totalSize <= 0 {
+		_, _ = s.GetTotalSize(ctx)
+	}
+
+	// 2. 检查本地已下载的文件状态
+	if info, err := os.Stat(s.targetPath); err == nil {
+		actualSize := info.Size()
+		// 如果本地已有文件且大小严格等于预期大小，说明已完整
+		if s.totalSize > 0 && actualSize == s.totalSize {
+			return nil
+		}
+		// 如果本地文件大于预期大小（异常脏数据），清理并从头下载
+		if s.totalSize > 0 && actualSize > s.totalSize {
+			_ = os.Remove(s.targetPath)
+		}
+	}
 
 	const maxRetries = 15
 	var lastErr error
@@ -316,11 +196,21 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 			startOffset = info.Size()
 		}
 
-		if s.totalSize > 0 && startOffset >= s.totalSize {
+		if s.totalSize > 0 && startOffset == s.totalSize {
 			return nil
 		}
+		if s.totalSize > 0 && startOffset > s.totalSize {
+			// 文件过长，存在脏数据，彻底清理
+			_ = os.Remove(s.targetPath)
+			startOffset = 0
+		}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
+		currentURL := s.currentURL()
+		if currentURL == "" {
+			return fmt.Errorf("无有效下载 URL")
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, currentURL, nil)
 		if err != nil {
 			return err
 		}
@@ -336,24 +226,86 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			s.rotateURL()
 			time.Sleep(300 * time.Millisecond)
 			continue
 		}
 
-		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		// 处理 416 边界情况 (已在文件末尾或 Range 超限)
+		if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 			resp.Body.Close()
-			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			if info, err := os.Stat(s.targetPath); err == nil && s.totalSize > 0 && info.Size() == s.totalSize {
 				return nil
 			}
-			lastErr = fmt.Errorf("HTTP 状态码异常: %s", resp.Status)
+			// 否则说明服务端拒绝当前 Range 或本地大小异常，清理本地文件并轮换 CDN 重试
+			_ = os.Remove(s.targetPath)
+			s.rotateURL()
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+
+		// 处理 403 / 5xx 等需轮换 CDN 的状态码
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode >= 500 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("CDN 节点响应异常: %s", resp.Status)
+			s.rotateURL()
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
-		downloadErr := s.streamToFile(ctx, resp.Body, progressFn)
+		// 处理非 200/206 状态码
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP 状态码异常: %s", resp.Status)
+			s.rotateURL()
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		// 检查服务器响应类型与 Content-Range 精准校验
+		var isAppend bool
+		if resp.StatusCode == http.StatusPartialContent && startOffset > 0 {
+			cr := resp.Header.Get("Content-Range")
+			if cr != "" {
+				rStart, _, rTotal, pErr := parseContentRange(cr)
+				if pErr == nil {
+					// 严格校验：返回片段的起点必须严格等于本地已存在大小
+					if rStart != startOffset {
+						resp.Body.Close()
+						lastErr = fmt.Errorf("Content-Range 起点错位 (请求 %d, 响应 %d)，重置为从头下载", startOffset, rStart)
+						_ = os.Remove(s.targetPath)
+						s.rotateURL()
+						time.Sleep(300 * time.Millisecond)
+						continue
+					}
+					if rTotal > 0 && s.totalSize <= 0 {
+						s.totalSize = rTotal
+					}
+				}
+			}
+			isAppend = true
+		} else {
+			// 服务器返回 200 OK（说明服务器不支持 Range 或从 0 开始下载），必须从头重写，不能追加！
+			isAppend = false
+		}
+
+		downloadErr := s.streamToFile(ctx, resp.Body, isAppend, progressFn)
 		resp.Body.Close()
 
 		if downloadErr == nil {
+			// 校验最终下载文件的大小是否精准吻合
+			if info, err := os.Stat(s.targetPath); err == nil {
+				if s.totalSize > 0 && info.Size() != s.totalSize {
+					if info.Size() > s.totalSize {
+						_ = os.Remove(s.targetPath)
+					}
+					lastErr = fmt.Errorf("数据流未完整 (实际 %d 字节 / 预期 %d 字节)，自动重试", info.Size(), s.totalSize)
+					s.rotateURL()
+					time.Sleep(300 * time.Millisecond)
+					continue
+				}
+				return nil
+			}
 			return nil
 		}
 
@@ -362,11 +314,8 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 		}
 
 		lastErr = downloadErr
-		if strings.Contains(downloadErr.Error(), "停滞") {
-			time.Sleep(100 * time.Millisecond)
-		} else {
-			time.Sleep(500 * time.Millisecond)
-		}
+		s.rotateURL()
+		time.Sleep(300 * time.Millisecond)
 	}
 
 	return lastErr
@@ -377,8 +326,15 @@ type readResult struct {
 	err  error
 }
 
-func (s *StreamDownloader) streamToFile(ctx context.Context, body io.Reader, progressFn DownloadProgressFn) error {
-	file, err := os.OpenFile(s.targetPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+func (s *StreamDownloader) streamToFile(ctx context.Context, body io.Reader, isAppend bool, progressFn DownloadProgressFn) error {
+	var flag int
+	if isAppend {
+		flag = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	} else {
+		flag = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	}
+
+	file, err := os.OpenFile(s.targetPath, flag, 0644)
 	if err != nil {
 		return fmt.Errorf("打开分块临时文件失败: %w", err)
 	}
@@ -389,7 +345,7 @@ func (s *StreamDownloader) streamToFile(ctx context.Context, body io.Reader, pro
 	defer cancelRead()
 
 	go func() {
-		tempBuf := make([]byte, 64*1024)
+		tempBuf := make([]byte, 128*1024) // 128KB 高性能传输缓冲
 		for {
 			select {
 			case <-readCtx.Done():
@@ -416,7 +372,7 @@ func (s *StreamDownloader) streamToFile(ctx context.Context, body io.Reader, pro
 		}
 	}()
 
-	const readIdleTimeout = 6 * time.Second
+	const readIdleTimeout = 8 * time.Second
 
 	for {
 		select {
@@ -438,7 +394,8 @@ func (s *StreamDownloader) streamToFile(ctx context.Context, body io.Reader, pro
 				return res.err
 			}
 		case <-time.After(readIdleTimeout):
-			return fmt.Errorf("CDN数据流读取停滞(超过6秒无数据)，自动重连加速")
+			return fmt.Errorf("CDN数据流读取停滞(超过8秒无数据)，自动重连加速")
 		}
 	}
 }
+

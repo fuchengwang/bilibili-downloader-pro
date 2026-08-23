@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import confetti from 'canvas-confetti'
+import { AlertTriangle, Trash2, X } from 'lucide-vue-next'
 import Sidebar from './components/Sidebar.vue'
 import Header from './components/Header.vue'
 import QuickParse from './components/QuickParse.vue'
@@ -54,6 +55,10 @@ const activeEpisodeDetail = ref<bilibili.VideoDetail | null>(null)
 const activeEpisodeQuality = ref('highest')
 const activeEpisodeCodec = ref('auto')
 
+// Missing File Modal
+const showMissingFileModal = ref(false)
+const missingFileTask = ref<downloader.DownloadTask | null>(null)
+
 // Toasts
 const toasts = ref<ToastItem[]>([])
 
@@ -77,85 +82,92 @@ async function checkAndAutoParseClipboard() {
     if (isBili) {
       lastParsedClipboardText = text
       // 切换到解析页面并自动解析
+      showToast(`检测到剪贴板链接，已自动填入解析: ${text.substring(0, 32)}...`, 'info')
       activeTab.value = 'parse'
-      await nextTick()
-      if (quickParseRef.value?.setAndParse) {
-        quickParseRef.value.setAndParse(text)
-      }
+      nextTick(() => {
+        if (quickParseRef.value?.setAndParse) {
+          quickParseRef.value.setAndParse(text)
+        }
+      })
     }
   } catch (e) {
+    // ignore
   } finally {
     isCheckingClipboard = false
   }
 }
 
-function handleWindowFocus() {
-  checkAndAutoParseClipboard()
-}
-
-function handleVisibilityChange() {
-  if (document.visibilityState === 'visible') {
-    checkAndAutoParseClipboard()
-  }
-}
+// 轮询与事件监听
+let taskTimer: any = null
 
 onMounted(async () => {
-  // 1. 初始化设置
   try {
+    // 1. 加载偏好设置
     const s = await GetSettings()
-    if (s) settings.value = s
-  } catch (e) {}
+    if (s && s.downloadDir) {
+      settings.value = s
+    }
 
-  // 2. 初始化任务列表
-  try {
+    // 2. 加载用户信息
+    const u = await GetUserInfo()
+    if (u) {
+      userInfo.value = u
+    }
+
+    // 3. 初始拉取任务列表
     const tList = await GetTasks()
-    if (tList) tasks.value = tList
-  } catch (e) {}
+    if (tList) {
+      tasks.value = tList
+    }
+  } catch (err) {
+    console.error('初始化数据失败:', err)
+  }
 
-  // 3. 获取用户登录状态
-  try {
-    const user = await GetUserInfo()
-    if (user) userInfo.value = user
-  } catch (e) {}
-
-  // 4. 监听后端下载进度事件
-  EventsOn('task:progress', (updatedTask: downloader.DownloadTask) => {
-    handleTaskProgress(updatedTask)
+  // 4. 监听后端事件
+  EventsOn('task:update', (updatedTask: downloader.DownloadTask) => {
+    const idx = tasks.value.findIndex(t => t.id === updatedTask.id)
+    if (idx !== -1) {
+      tasks.value[idx] = updatedTask
+    } else {
+      tasks.value.unshift(updatedTask)
+    }
   })
 
-  // 5. 绑定窗口激活/前台唤醒及剪贴板监听
-  window.addEventListener('focus', handleWindowFocus)
-  document.addEventListener('visibilitychange', handleVisibilityChange)
-  EventsOn('app:wakeup', () => {
-    checkAndAutoParseClipboard()
+  EventsOn('task:completed', (completedTask: downloader.DownloadTask) => {
+    const idx = tasks.value.findIndex(t => t.id === completedTask.id)
+    if (idx !== -1) {
+      tasks.value[idx] = completedTask
+    }
+    showToast(`下载完成: ${completedTask.title}`, 'success')
+    triggerConfetti()
   })
+
+  EventsOn('task:error', (errorTask: downloader.DownloadTask) => {
+    const idx = tasks.value.findIndex(t => t.id === errorTask.id)
+    if (idx !== -1) {
+      tasks.value[idx] = errorTask
+    }
+    showToast(`下载出错: ${errorTask.title} (${errorTask.errorMsg})`, 'error')
+  })
+
+  // 定时兜底轮询
+  taskTimer = setInterval(async () => {
+    try {
+      const tList = await GetTasks()
+      if (tList) {
+        tasks.value = tList
+      }
+    } catch (e) {}
+  }, 1000)
+
+  // 剪贴板轮询 (每 1.5 秒感应一次)
   clipboardTimer = setInterval(checkAndAutoParseClipboard, 1500)
-
-  // 启动即刻检查一次剪贴板
-  setTimeout(checkAndAutoParseClipboard, 300)
 })
 
 onUnmounted(() => {
-  window.removeEventListener('focus', handleWindowFocus)
-  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  if (taskTimer) clearInterval(taskTimer)
   if (clipboardTimer) clearInterval(clipboardTimer)
 })
-
-function handleTaskProgress(updatedTask: downloader.DownloadTask) {
-  const idx = tasks.value.findIndex(t => t.id === updatedTask.id)
-  if (idx !== -1) {
-    const oldStatus = tasks.value[idx].status
-    tasks.value[idx] = updatedTask
-
-    // 如果任务刚完成，播放完成撒花动画与提示
-    if (oldStatus !== 'completed' && updatedTask.status === 'completed') {
-      triggerConfetti()
-      showToast(`视频下载完成: ${updatedTask.partTitle || updatedTask.title}`, 'success')
-    }
-  } else {
-    tasks.value.unshift(updatedTask)
-  }
-}
 
 function triggerConfetti() {
   try {
@@ -196,6 +208,10 @@ function handleTabChange(tab: string) {
 // 计算活跃任务数与总速度
 const activeTasks = computed(() => {
   return tasks.value.filter(t => t.status === 'downloading' || t.status === 'merging')
+})
+
+const completedTasks = computed(() => {
+  return tasks.value.filter(t => t.status === 'completed')
 })
 
 const totalSpeedStr = computed(() => {
@@ -258,13 +274,8 @@ async function handleQuickDownloadSingle(
 }
 
 // 批量提交分集下载
-async function handleEpisodeBatchSubmit(
-  cids: number[],
-  quality: string,
-  codec: string
-) {
-  if (!activeEpisodeDetail.value) return
-  showEpisodeModal.value = false
+async function handleEpisodeBatchSubmit(selectedCids: number[], quality: string, codec: string) {
+  if (!activeEpisodeDetail.value || selectedCids.length === 0) return
 
   try {
     const detail = activeEpisodeDetail.value
@@ -276,20 +287,20 @@ async function handleEpisodeBatchSubmit(
       isBangumi: detail.type === 'bangumi',
       targetQuality: quality,
       targetCodec: codec,
-      episodes: cids,
+      episodes: selectedCids,
     }
-
     const added = await AddDownloadTasks(req)
+    showEpisodeModal.value = false
     if (added && added.length > 0) {
-      showToast(`已成功添加 ${added.length} 集任务至下载队列！`, 'success')
+      showToast(`成功添加 ${added.length} 个任务至下载队列`, 'success')
       activeTab.value = 'queue'
     }
   } catch (err: any) {
-    showToast('批量添加失败: ' + err.message, 'error')
+    showToast('批量添加任务失败: ' + err.message, 'error')
   }
 }
 
-// 任务控制
+// 队列操作
 async function onPauseTask(id: string) {
   await PauseTask(id)
 }
@@ -302,9 +313,29 @@ async function onCancelTask(id: string) {
   await CancelTask(id)
 }
 
-async function onDeleteTask(id: string, deleteFile: boolean) {
-  await DeleteTask(id, deleteFile)
-  tasks.value = tasks.value.filter(t => t.id !== id)
+async function onDeleteTask(id: string, deleteFile: boolean = false) {
+  try {
+    await DeleteTask(id, deleteFile)
+    tasks.value = tasks.value.filter(t => t.id !== id)
+    showToast('已清除该记录', 'info')
+  } catch (e: any) {
+    showToast('清除失败: ' + (e?.message || e), 'error')
+  }
+}
+
+async function confirmMissingFileClean() {
+  if (!missingFileTask.value) return
+  const id = missingFileTask.value.id
+  try {
+    await DeleteTask(id, false)
+    tasks.value = tasks.value.filter(t => t.id !== id)
+    showToast('已从已完成列表中清除该条记录', 'info')
+  } catch (e: any) {
+    showToast('清除记录失败: ' + (e?.message || e), 'error')
+  } finally {
+    showMissingFileModal.value = false
+    missingFileTask.value = null
+  }
 }
 
 async function onPauseAll() {
@@ -329,11 +360,17 @@ async function onOpenDir(path: string) {
   }
 }
 
-async function onOpenFile(path: string) {
+async function onOpenFile(path: string, task?: downloader.DownloadTask) {
   try {
     await OpenFile(path)
   } catch (e: any) {
-    showToast('打开文件失败: ' + e.message, 'error')
+    const msg = String(e?.message || e || '')
+    if (task && (msg.includes('FILE_NOT_FOUND') || msg.includes('不存在') || msg.includes('系统找不到指定的文件'))) {
+      missingFileTask.value = task
+      showMissingFileModal.value = true
+      return
+    }
+    showToast('打开文件失败: ' + (e?.message || e), 'error')
   }
 }
 
@@ -361,6 +398,7 @@ function handleLogoutSuccess() {
       :active-tab="activeTab"
       :user-info="userInfo"
       :active-task-count="activeTasks.length"
+      :completed-task-count="completedTasks.length"
       @change-tab="handleTabChange"
       @open-login="showLoginModal = true"
     />
@@ -445,6 +483,38 @@ function handleLogoutSuccess() {
       @show-toast="showToast"
     />
 
+    <!-- Modal 1: Missing File Clean Confirmation -->
+    <div v-if="showMissingFileModal && missingFileTask" class="modal-backdrop" @click.self="showMissingFileModal = false">
+      <div class="confirm-dialog">
+        <div class="dialog-header">
+          <div class="dialog-icon-wrap warn">
+            <AlertTriangle :size="20" />
+          </div>
+          <div class="dialog-title-box">
+            <h3 class="dialog-title">本地文件不存在</h3>
+            <p class="dialog-desc">检测到该视频文件已在本地磁盘被移动或删除</p>
+          </div>
+          <button class="btn-close" @click="showMissingFileModal = false">
+            <X :size="16" />
+          </button>
+        </div>
+
+        <div class="dialog-body">
+          <div class="file-info-card">
+            <div class="file-name">{{ missingFileTask.title }}</div>
+            <div v-if="missingFileTask.partTitle && missingFileTask.partTitle !== missingFileTask.title" class="file-sub">{{ missingFileTask.partTitle }}</div>
+            <div class="file-path" :title="missingFileTask.outputPath">{{ missingFileTask.outputPath }}</div>
+          </div>
+          <p class="dialog-question">是否从已完成列表中清除此条无效记录？</p>
+        </div>
+
+        <div class="dialog-footer">
+          <button class="btn-secondary" @click="showMissingFileModal = false">保留记录</button>
+          <button class="btn-danger" @click="confirmMissingFileClean">清除记录</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Global Toast Notifications -->
     <Toast
       :toasts="toasts"
@@ -482,5 +552,177 @@ function handleLogoutSuccess() {
 .tab-view {
   width: 100%;
   animation: fadeIn 0.2s ease-out;
+}
+
+/* Modal Dialogs */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.confirm-dialog {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  width: 440px;
+  max-width: 90vw;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  animation: scaleUp 0.15s ease-out;
+}
+
+.dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 20px 14px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.dialog-icon-wrap {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.dialog-icon-wrap.warn {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+}
+
+.dialog-icon-wrap.delete {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.dialog-title-box {
+  flex: 1;
+}
+
+.dialog-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.dialog-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 2px 0 0 0;
+}
+
+.btn-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+}
+
+.btn-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.dialog-body {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.file-info-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+}
+
+.file-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.file-sub {
+  font-size: 12px;
+  color: var(--bili-pink);
+  margin-top: 2px;
+}
+
+.file-path {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: monospace;
+  margin-top: 6px;
+  word-break: break-all;
+}
+
+.dialog-question {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.checkbox-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  margin-top: 4px;
+  user-select: none;
+}
+
+.custom-chk {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--bili-pink);
+  cursor: pointer;
+}
+
+.dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 20px;
+  background: rgba(0, 0, 0, 0.15);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.btn-danger {
+  background: #ef4444;
+  color: #fff;
+  border: none;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-danger:hover {
+  background: #dc2626;
 }
 </style>

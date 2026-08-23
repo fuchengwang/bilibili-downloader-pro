@@ -39,16 +39,18 @@ type QualityOption struct {
 
 // StreamSelection 选定的视频与音频下载直链信息
 type StreamSelection struct {
-	VideoURL     string `json:"videoUrl"`
-	AudioURL     string `json:"audioUrl"`
-	QualityID    int    `json:"qualityId"`
-	QualityLabel string `json:"qualityLabel"`
-	Codec        string `json:"codec"`
-	Width        int    `json:"width"`
-	Height       int    `json:"height"`
-	Duration     int    `json:"duration"`
-	VideoSize    int64  `json:"videoSize"`
-	AudioSize    int64  `json:"audioSize"`
+	VideoURL     string   `json:"videoUrl"`
+	VideoURLs    []string `json:"videoUrls"`
+	AudioURL     string   `json:"audioUrl"`
+	AudioURLs    []string `json:"audioUrls"`
+	QualityID    int      `json:"qualityId"`
+	QualityLabel string   `json:"qualityLabel"`
+	Codec        string   `json:"codec"`
+	Width        int      `json:"width"`
+	Height       int      `json:"height"`
+	Duration     int      `json:"duration"`
+	VideoSize    int64    `json:"videoSize"`
+	AudioSize    int64    `json:"audioSize"`
 }
 
 type DashStream struct {
@@ -79,10 +81,10 @@ type playurlAPIResp struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    *struct {
-		Dash               *DashData `json:"dash"`
-		AcceptDescription  []string  `json:"accept_description"`
-		AcceptQuality      []int     `json:"accept_quality"`
-		SupportFormats     []struct {
+		Dash              *DashData `json:"dash"`
+		AcceptDescription []string  `json:"accept_description"`
+		AcceptQuality     []int     `json:"accept_quality"`
+		SupportFormats    []struct {
 			Quality        int      `json:"quality"`
 			Format         string   `json:"format"`
 			NewDescription string   `json:"new_description"`
@@ -91,10 +93,10 @@ type playurlAPIResp struct {
 		} `json:"support_formats"`
 	} `json:"data"`
 	Result *struct {
-		Dash               *DashData `json:"dash"`
-		AcceptDescription  []string  `json:"accept_description"`
-		AcceptQuality      []int     `json:"accept_quality"`
-		SupportFormats     []struct {
+		Dash              *DashData `json:"dash"`
+		AcceptDescription []string  `json:"accept_description"`
+		AcceptQuality     []int     `json:"accept_quality"`
+		SupportFormats    []struct {
 			Quality        int      `json:"quality"`
 			Format         string   `json:"format"`
 			NewDescription string   `json:"new_description"`
@@ -234,10 +236,19 @@ func (c *Client) FetchStreamSelection(ctx context.Context, bvid string, aid, cid
 		return nil, fmt.Errorf("未找到满足条件的可用视频轨")
 	}
 
-	videoURL := chooseBestCDN(video.BaseURL, video.BackupURL)
+	videoURLs := collectSortedCDNs(video.BaseURL, video.BackupURL)
+	videoURL := ""
+	if len(videoURLs) > 0 {
+		videoURL = videoURLs[0]
+	}
+
+	var audioURLs []string
 	audioURL := ""
 	if audio != nil {
-		audioURL = chooseBestCDN(audio.BaseURL, audio.BackupURL)
+		audioURLs = collectSortedCDNs(audio.BaseURL, audio.BackupURL)
+		if len(audioURLs) > 0 {
+			audioURL = audioURLs[0]
+		}
 	}
 
 	label, ok := QualityMap[video.ID]
@@ -257,7 +268,9 @@ func (c *Client) FetchStreamSelection(ctx context.Context, bvid string, aid, cid
 
 	return &StreamSelection{
 		VideoURL:     videoURL,
+		VideoURLs:    videoURLs,
 		AudioURL:     audioURL,
+		AudioURLs:    audioURLs,
 		QualityID:    video.ID,
 		QualityLabel: label,
 		Codec:        codecName,
@@ -503,31 +516,82 @@ var reExplicitPort = regexp.MustCompile(`https?://[^/]+:\d+`)
 
 // chooseBestCDN 挑选最优质稳定的官方骨干 CDN 节点 (彻底规避 PCDN 与限速边缘节点)
 func chooseBestCDN(baseURL string, backupURLs []string) string {
-	candidates := append([]string{baseURL}, backupURLs...)
-	for _, u := range candidates {
-		if u == "" {
-			continue
-		}
-		// 排除带端口或明显 PCDN 节点
-		if strings.Contains(u, "mcdn.bilivideo") || strings.Contains(u, "upos-tf-all") || reExplicitPort.MatchString(u) {
-			continue
-		}
-		// 优先选用顶级骨干网
-		if strings.Contains(u, "upos-sz-mirrorcos") || strings.Contains(u, "upos-sz-mirrorali") || strings.Contains(u, "upos-sz-mirrorbos") {
-			return u
-		}
+	sorted := collectSortedCDNs(baseURL, backupURLs)
+	if len(sorted) > 0 {
+		return sorted[0]
 	}
-
-	for _, u := range candidates {
-		if u != "" && !reExplicitPort.MatchString(u) && !strings.Contains(u, "mcdn.bilivideo") {
-			return u
-		}
-	}
-
-	// 如果全部候选都是 PCDN 节点，直接将第一个候选强制替换为腾讯云骨干 CDN，瞬间拉满速度
-	if len(candidates) > 0 && candidates[0] != "" {
-		return ReplaceCDNServer(candidates[0], "upos-sz-mirrorcos.bilivideo.com")
-	}
-
 	return baseURL
+}
+
+// collectSortedCDNs 收集并排序所有可用 CDN 节点（顶级骨干网优先，规避 PCDN，保留备用节点供故障转移）
+func collectSortedCDNs(baseURL string, backupURLs []string) []string {
+	var rawCandidates []string
+	if baseURL != "" {
+		rawCandidates = append(rawCandidates, baseURL)
+	}
+	rawCandidates = append(rawCandidates, backupURLs...)
+
+	// 去重
+	seen := make(map[string]bool)
+	var candidates []string
+	for _, u := range rawCandidates {
+		u = strings.TrimSpace(u)
+		if u != "" && !seen[u] {
+			seen[u] = true
+			candidates = append(candidates, u)
+		}
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	var tier1Backbone []string // 顶级骨干网
+	var tier2Regular []string  // 普通正规 CDN
+	var tier3Other []string    // PCDN 或其他
+
+	for _, u := range candidates {
+		isPCDN := strings.Contains(u, "mcdn.bilivideo") || strings.Contains(u, "upos-tf-all") || reExplicitPort.MatchString(u)
+		if isPCDN {
+			tier3Other = append(tier3Other, u)
+			continue
+		}
+
+		isBackbone := strings.Contains(u, "upos-sz-mirrorcos") ||
+			strings.Contains(u, "upos-sz-mirrorali") ||
+			strings.Contains(u, "upos-sz-mirrorbos") ||
+			strings.Contains(u, "upos-sz-upcdnbwc")
+		if isBackbone {
+			tier1Backbone = append(tier1Backbone, u)
+		} else {
+			tier2Regular = append(tier2Regular, u)
+		}
+	}
+
+	var result []string
+	result = append(result, tier1Backbone...)
+	result = append(result, tier2Regular...)
+
+	// 如果没有原生骨干网，构造一个注入腾讯云骨干 CDN 的高优先级候选
+	if len(tier1Backbone) == 0 && len(candidates) > 0 {
+		boosted := ReplaceCDNServer(candidates[0], "upos-sz-mirrorcos.bilivideo.com")
+		if !seen[boosted] {
+			seen[boosted] = true
+			result = append([]string{boosted}, result...)
+		}
+	}
+
+	// 最后追加兜底的其他候选
+	for _, u := range tier3Other {
+		if !seen[u] {
+			seen[u] = true
+			result = append(result, u)
+		}
+	}
+
+	if len(result) == 0 {
+		result = append(result, baseURL)
+	}
+
+	return result
 }

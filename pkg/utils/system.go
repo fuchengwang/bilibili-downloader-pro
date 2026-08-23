@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 )
 
@@ -87,42 +86,15 @@ func OpenDirectory(path string) error {
 		}
 	}
 
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		if fi, err := os.Stat(targetToOpen); err == nil && !fi.IsDir() {
-			cmd = exec.Command("open", "-R", targetToOpen)
-		} else {
-			cmd = exec.Command("open", targetToOpen)
-		}
-	case "windows":
-		if fi, err := os.Stat(targetToOpen); err == nil && !fi.IsDir() {
-			cmd = exec.Command("explorer", "/select,", targetToOpen)
-		} else {
-			cmd = exec.Command("explorer", targetToOpen)
-		}
-	default:
-		if fi, err := os.Stat(targetToOpen); err == nil && !fi.IsDir() {
-			cmd = exec.Command("xdg-open", filepath.Dir(targetToOpen))
-		} else {
-			cmd = exec.Command("xdg-open", targetToOpen)
-		}
-	}
-	return cmd.Start()
+	return openDirectoryOS(targetToOpen)
 }
 
 // OpenFile 使用系统默认播放器打开/播放指定文件
 func OpenFile(path string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", path)
-	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", "", path)
-	default:
-		cmd = exec.Command("xdg-open", path)
+	if path == "" {
+		return fmt.Errorf("文件路径为空")
 	}
-	return cmd.Start()
+	return openFileOS(path)
 }
 
 // FFmpegVersionInfo 获取 FFmpeg 版本信息

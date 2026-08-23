@@ -27,17 +27,17 @@ type QRStatus struct {
 
 // UserInfo 用户个人账号信息
 type UserInfo struct {
-	IsLogin     bool   `json:"isLogin"`
-	Mid         int64  `json:"mid"`
-	Uname       string `json:"uname"`
-	Face        string `json:"face"`
-	Level       int    `json:"level"`
-	VipType     int    `json:"vipType"`     // 0: 无, 1: 月度大会员, 2: 年度及以上大会员
-	VipStatus   int    `json:"vipStatus"`   // 1: 有效, 0: 无效
-	VipLabel    string `json:"vipLabel"`    // 大会员标签文字
-	VipDueDate  int64  `json:"vipDueDate"`  // 到期时间戳
-	VipDueStr   string `json:"vipDueStr"`   // 到期时间文本
-	Money       float64`json:"money"`       // 硬币数
+	IsLogin    bool    `json:"isLogin"`
+	Mid        int64   `json:"mid"`
+	Uname      string  `json:"uname"`
+	Face       string  `json:"face"`
+	Level      int     `json:"level"`
+	VipType    int     `json:"vipType"`    // 0: 无, 1: 月度大会员, 2: 年度及以上大会员
+	VipStatus  int     `json:"vipStatus"`  // 1: 有效, 0: 无效
+	VipLabel   string  `json:"vipLabel"`   // 大会员标签文字
+	VipDueDate int64   `json:"vipDueDate"` // 到期时间戳
+	VipDueStr  string  `json:"vipDueStr"`  // 到期时间文本
+	Money      float64 `json:"money"`      // 硬币数
 }
 
 type qrGenerateResp struct {
@@ -64,17 +64,17 @@ type navUserInfoResp struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    struct {
-		IsLogin bool   `json:"isLogin"`
-		Mid     int64  `json:"mid"`
-		Uname   string `json:"uname"`
-		Face    string `json:"face"`
+		IsLogin   bool   `json:"isLogin"`
+		Mid       int64  `json:"mid"`
+		Uname     string `json:"uname"`
+		Face      string `json:"face"`
 		LevelInfo struct {
 			CurrentLevel int `json:"current_level"`
 		} `json:"level_info"`
-		VipType   int `json:"vipType"`
-		VipStatus int `json:"vipStatus"`
+		VipType    int   `json:"vipType"`
+		VipStatus  int   `json:"vipStatus"`
 		VipDueDate int64 `json:"vipDueDate"`
-		VipLabel  struct {
+		VipLabel   struct {
 			Text string `json:"text"`
 		} `json:"vip_label"`
 		Money float64 `json:"money"`
@@ -209,17 +209,17 @@ func (c *Client) GetUserInfo(ctx context.Context) (*UserInfo, error) {
 	}
 
 	return &UserInfo{
-		IsLogin:     true,
-		Mid:         d.Mid,
-		Uname:       d.Uname,
-		Face:        d.Face,
-		Level:       d.LevelInfo.CurrentLevel,
-		VipType:     d.VipType,
-		VipStatus:   d.VipStatus,
-		VipLabel:    vipLabel,
-		VipDueDate:  d.VipDueDate,
-		VipDueStr:   dueStr,
-		Money:       d.Money,
+		IsLogin:    true,
+		Mid:        d.Mid,
+		Uname:      d.Uname,
+		Face:       d.Face,
+		Level:      d.LevelInfo.CurrentLevel,
+		VipType:    d.VipType,
+		VipStatus:  d.VipStatus,
+		VipLabel:   vipLabel,
+		VipDueDate: d.VipDueDate,
+		VipDueStr:  dueStr,
+		Money:      d.Money,
 	}, nil
 }
 

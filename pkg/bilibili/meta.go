@@ -87,12 +87,12 @@ type viewResponse struct {
 			Sections []struct {
 				Title    string `json:"title"`
 				Episodes []struct {
-					ID       int64  `json:"id"`
-					Aid      int64  `json:"aid"`
-					Cid      int64  `json:"cid"`
-					Title    string `json:"title"`
-					Bvid     string `json:"bvid"`
-					Arc      struct {
+					ID    int64  `json:"id"`
+					Aid   int64  `json:"aid"`
+					Cid   int64  `json:"cid"`
+					Title string `json:"title"`
+					Bvid  string `json:"bvid"`
+					Arc   struct {
 						Pic      string `json:"pic"`
 						Duration int    `json:"duration"`
 					} `json:"arc"`

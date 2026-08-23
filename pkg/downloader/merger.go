@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -9,7 +10,68 @@ import (
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
-// MergeAudioVideo 纯 Go 原生极速无损音视频流复用封装器 (100% 零外部依赖，毫秒级完成)
+// BoxInfo MP4 容器顶级 Box 元信息
+type BoxInfo struct {
+	Type      string
+	Offset    int64
+	Size      uint64
+	HeaderLen int64
+}
+
+// scanBoxes 扫描 MP4 顶层 Box 结构，完美兼容 Size 0 (EOF 盒) 与 Size 1 (64位大文件盒)
+func scanBoxes(f *os.File, fileSize int64) ([]BoxInfo, error) {
+	var boxes []BoxInfo
+	var offset int64 = 0
+	buf := make([]byte, 16)
+
+	for offset < fileSize {
+		_, _ = f.Seek(offset, io.SeekStart)
+		n, err := io.ReadFull(f, buf[:8])
+		if err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				break
+			}
+			return nil, err
+		}
+		if n < 8 {
+			break
+		}
+
+		size := uint64(binary.BigEndian.Uint32(buf[0:4]))
+		boxType := string(buf[4:8])
+		headerLen := int64(8)
+
+		if size == 1 {
+			// 64-bit large size
+			_, err = io.ReadFull(f, buf[8:16])
+			if err != nil {
+				return nil, err
+			}
+			size = binary.BigEndian.Uint64(buf[8:16])
+			headerLen = 16
+		} else if size == 0 {
+			// Size 0 规范定义：Box 延伸至文件 EOF，动态计算其实际大小
+			size = uint64(fileSize - offset)
+		}
+
+		if size < uint64(headerLen) {
+			break
+		}
+
+		boxes = append(boxes, BoxInfo{
+			Type:      boxType,
+			Offset:    offset,
+			Size:      size,
+			HeaderLen: headerLen,
+		})
+
+		offset += int64(size)
+	}
+
+	return boxes, nil
+}
+
+// MergeAudioVideo 纯 Go 原生极速无损音视频流复用封装器 (100% 零外部依赖，毫秒级完成，零内存复制)
 func MergeAudioVideo(videoPath, audioPath, outputPath string, deleteTemp bool) error {
 	_ = os.MkdirAll(filepath.Dir(outputPath), 0755)
 
@@ -24,112 +86,225 @@ func MergeAudioVideo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 		return nil
 	}
 
-	// 1. 解码纯视频流 FMP4
-	vFh, err := os.Open(videoPath)
+	vF, err := os.Open(videoPath)
 	if err != nil {
 		return fmt.Errorf("打开视频流文件失败: %w", err)
 	}
-	defer vFh.Close()
+	defer vF.Close()
 
-	vMp4, err := mp4.DecodeFile(vFh)
+	vFi, err := vF.Stat()
+	if err != nil {
+		return err
+	}
+	vFileSize := vFi.Size()
+
+	aF, err := os.Open(audioPath)
+	if err != nil {
+		return fmt.Errorf("打开音频流文件失败: %w", err)
+	}
+	defer aF.Close()
+
+	aFi, err := aF.Stat()
+	if err != nil {
+		return err
+	}
+	aFileSize := aFi.Size()
+
+	// 1. 扫描视频与音频的 Box 结构 (支持 Size 0 动态换算)
+	vBoxes, err := scanBoxes(vF, vFileSize)
 	if err != nil {
 		return fmt.Errorf("解析视频 FMP4 结构失败: %w", err)
 	}
 
-	// 2. 解码纯音频流 FMP4
-	aFh, err := os.Open(audioPath)
-	if err != nil {
-		return fmt.Errorf("打开音频流文件失败: %w", err)
-	}
-	defer aFh.Close()
-
-	aMp4, err := mp4.DecodeFile(aFh)
+	aBoxes, err := scanBoxes(aF, aFileSize)
 	if err != nil {
 		return fmt.Errorf("解析音频 FMP4 结构失败: %w", err)
 	}
 
-	// 3. 构建多轨道复合 FMP4 容器元数据
-	if vMp4.Moov == nil || len(vMp4.Moov.Traks) == 0 {
+	// 2. 解码并构建复合 moov 元数据
+	var vFtyp *mp4.FtypBox
+	var vMoov *mp4.MoovBox
+	for _, b := range vBoxes {
+		if b.Type == "ftyp" && vFtyp == nil {
+			_, _ = vF.Seek(b.Offset, io.SeekStart)
+			box, err := mp4.DecodeBox(uint64(b.Offset), vF)
+			if err == nil {
+				if ftyp, ok := box.(*mp4.FtypBox); ok {
+					vFtyp = ftyp
+				}
+			}
+		} else if b.Type == "moov" && vMoov == nil {
+			_, _ = vF.Seek(b.Offset, io.SeekStart)
+			box, err := mp4.DecodeBox(uint64(b.Offset), vF)
+			if err == nil {
+				if moov, ok := box.(*mp4.MoovBox); ok {
+					vMoov = moov
+				}
+			}
+		}
+	}
+
+	if vMoov == nil || len(vMoov.Traks) == 0 {
 		return fmt.Errorf("视频流缺少 moov 元数据")
 	}
-	if aMp4.Moov == nil || len(aMp4.Moov.Traks) == 0 {
+
+	var aMoov *mp4.MoovBox
+	for _, b := range aBoxes {
+		if b.Type == "moov" && aMoov == nil {
+			_, _ = aF.Seek(b.Offset, io.SeekStart)
+			box, err := mp4.DecodeBox(uint64(b.Offset), aF)
+			if err == nil {
+				if moov, ok := box.(*mp4.MoovBox); ok {
+					aMoov = moov
+				}
+			}
+			break
+		}
+	}
+
+	if aMoov == nil || len(aMoov.Traks) == 0 {
 		return fmt.Errorf("音频流缺少 moov 元数据")
 	}
 
 	// 将音频轨道 Track ID 调整为 2 (避免与视频轨 ID 1 冲突)
 	const audioTrackID = uint32(2)
-	aTrak := aMp4.Moov.Traks[0]
+	aTrak := aMoov.Traks[0]
 	aTrak.Tkhd.TrackID = audioTrackID
 
-	if aMp4.Moov.Mvex != nil && len(aMp4.Moov.Mvex.Trexs) > 0 {
-		aMp4.Moov.Mvex.Trexs[0].TrackID = audioTrackID
-		if vMp4.Moov.Mvex != nil {
-			vMp4.Moov.Mvex.AddChild(aMp4.Moov.Mvex.Trexs[0])
+	if aMoov.Mvex != nil && len(aMoov.Mvex.Trexs) > 0 {
+		aMoov.Mvex.Trexs[0].TrackID = audioTrackID
+		if vMoov.Mvex != nil {
+			vMoov.Mvex.AddChild(aMoov.Mvex.Trexs[0])
 		}
 	}
 
-	// 将音频 trak 加入到视频 moov 中
-	vMp4.Moov.AddChild(aTrak)
-	vMp4.Moov.Mvhd.NextTrackID = 3
+	vMoov.AddChild(aTrak)
+	vMoov.Mvhd.NextTrackID = 3
 
-	// 更新所有音频分片 moof 中的 Track ID 为 2
-	for _, child := range aMp4.Children {
-		if moof, ok := child.(*mp4.MoofBox); ok {
-			for _, traf := range moof.Trafs {
-				traf.Tfhd.TrackID = audioTrackID
-			}
-		}
-	}
-
-	// 4. 创建最终输出 MP4
-	outFh, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// 3. 创建同目录下的事务性临时输出文件，防止中断时破坏已有文件
+	tmpOutputPath := outputPath + fmt.Sprintf(".merging.%d.tmp", os.Getpid())
+	outFh, err := os.OpenFile(tmpOutputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
-		return fmt.Errorf("创建最终合成文件失败: %w", err)
+		return fmt.Errorf("创建最终合成临时文件失败: %w", err)
 	}
-	defer outFh.Close()
+
+	success := false
+	defer func() {
+		if !success {
+			_ = outFh.Close()
+			_ = os.Remove(tmpOutputPath)
+		}
+	}()
 
 	// 写入 ftyp
-	if vMp4.Ftyp != nil {
-		if err := vMp4.Ftyp.Encode(outFh); err != nil {
+	if vFtyp != nil {
+		if err := vFtyp.Encode(outFh); err != nil {
 			return fmt.Errorf("写入 ftyp 失败: %w", err)
 		}
 	}
 
-	// 写入包含双轨道的复合 moov
-	if err := vMp4.Moov.Encode(outFh); err != nil {
+	// 写入合并后的 moov
+	if err := vMoov.Encode(outFh); err != nil {
 		return fmt.Errorf("写入 moov 失败: %w", err)
 	}
 
-	// 5. 依次写入视频与音频的媒体分片数据 (moof + mdat)
-	for _, child := range vMp4.Children {
-		switch box := child.(type) {
-		case *mp4.MoofBox:
+	// 4. 流式管道写入视频媒体数据 (moof + mdat)
+	streamBuf := make([]byte, 1024*1024) // 1MB 流式传输缓冲，恒定微小内存占用
+	for _, b := range vBoxes {
+		if b.Type == "moof" {
+			_, _ = vF.Seek(b.Offset, io.SeekStart)
+			box, err := mp4.DecodeBox(uint64(b.Offset), vF)
+			if err != nil {
+				return fmt.Errorf("解析视频 moof 失败: %w", err)
+			}
 			if err := box.Encode(outFh); err != nil {
 				return fmt.Errorf("写入视频 moof 失败: %w", err)
 			}
-		case *mp4.MdatBox:
-			if err := box.Encode(outFh); err != nil {
-				return fmt.Errorf("写入视频 mdat 失败: %w", err)
+		} else if b.Type == "mdat" {
+			// 写入规范的 8 字节或 16 字节 mdat 头部
+			if b.Size < 1<<32 {
+				hdr := make([]byte, 8)
+				binary.BigEndian.PutUint32(hdr[0:4], uint32(b.Size))
+				copy(hdr[4:8], "mdat")
+				if _, err := outFh.Write(hdr); err != nil {
+					return fmt.Errorf("写入视频 mdat 头部失败: %w", err)
+				}
+			} else {
+				hdr := make([]byte, 16)
+				binary.BigEndian.PutUint32(hdr[0:4], 1)
+				copy(hdr[4:8], "mdat")
+				binary.BigEndian.PutUint64(hdr[8:16], b.Size)
+				if _, err := outFh.Write(hdr); err != nil {
+					return fmt.Errorf("写入视频 mdat 头部失败: %w", err)
+				}
+			}
+
+			payloadLen := int64(b.Size) - b.HeaderLen
+			_, _ = vF.Seek(b.Offset+b.HeaderLen, io.SeekStart)
+			if _, err := io.CopyBuffer(outFh, io.LimitReader(vF, payloadLen), streamBuf); err != nil {
+				return fmt.Errorf("写入视频 mdat 媒体数据失败: %w", err)
 			}
 		}
 	}
 
-	for _, child := range aMp4.Children {
-		switch box := child.(type) {
-		case *mp4.MoofBox:
-			if err := box.Encode(outFh); err != nil {
-				return fmt.Errorf("写入音频 moof 失败: %w", err)
+	// 5. 流式管道写入音频媒体数据 (moof + mdat)，并将音频 TrackID 调整为 2
+	for _, b := range aBoxes {
+		if b.Type == "moof" {
+			_, _ = aF.Seek(b.Offset, io.SeekStart)
+			box, err := mp4.DecodeBox(uint64(b.Offset), aF)
+			if err != nil {
+				return fmt.Errorf("解析音频 moof 失败: %w", err)
 			}
-		case *mp4.MdatBox:
-			if err := box.Encode(outFh); err != nil {
-				return fmt.Errorf("写入音频 mdat 失败: %w", err)
+			if moof, ok := box.(*mp4.MoofBox); ok {
+				for _, traf := range moof.Trafs {
+					if traf.Tfhd != nil {
+						traf.Tfhd.TrackID = audioTrackID
+					}
+				}
+				if err := moof.Encode(outFh); err != nil {
+					return fmt.Errorf("写入音频 moof 失败: %w", err)
+				}
+			}
+		} else if b.Type == "mdat" {
+			if b.Size < 1<<32 {
+				hdr := make([]byte, 8)
+				binary.BigEndian.PutUint32(hdr[0:4], uint32(b.Size))
+				copy(hdr[4:8], "mdat")
+				if _, err := outFh.Write(hdr); err != nil {
+					return fmt.Errorf("写入音频 mdat 头部失败: %w", err)
+				}
+			} else {
+				hdr := make([]byte, 16)
+				binary.BigEndian.PutUint32(hdr[0:4], 1)
+				copy(hdr[4:8], "mdat")
+				binary.BigEndian.PutUint64(hdr[8:16], b.Size)
+				if _, err := outFh.Write(hdr); err != nil {
+					return fmt.Errorf("写入音频 mdat 头部失败: %w", err)
+				}
+			}
+
+			payloadLen := int64(b.Size) - b.HeaderLen
+			_, _ = aF.Seek(b.Offset+b.HeaderLen, io.SeekStart)
+			if _, err := io.CopyBuffer(outFh, io.LimitReader(aF, payloadLen), streamBuf); err != nil {
+				return fmt.Errorf("写入音频 mdat 媒体数据失败: %w", err)
 			}
 		}
 	}
 
-	outFh.Close()
+	_ = outFh.Sync()
+	_ = outFh.Close()
+	_ = vF.Close()
+	_ = aF.Close()
 
-	// 6. 清理临时分块文件
+	// 原子替换至最终目标路径
+	if err := copyOrRename(tmpOutputPath, outputPath); err != nil {
+		_ = os.Remove(tmpOutputPath)
+		return fmt.Errorf("移动最终合成文件失败: %w", err)
+	}
+
+	success = true
+
+	// 6. 清理临时分块文件 (在合成完全成功后安全移除)
 	if deleteTemp {
 		_ = os.Remove(videoPath)
 		if audioPath != "" {

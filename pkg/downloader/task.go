@@ -48,12 +48,12 @@ type DownloadTask struct {
 
 // DownloadRequest 前端发起的下载请求结构体
 type DownloadRequest struct {
-	BVID          string   `json:"bvid"`
-	AID           int64    `json:"aid"`
-	Title         string   `json:"title"`
-	Cover         string   `json:"cover"`
-	IsBangumi     bool     `json:"isBangumi"`
-	TargetQuality string   `json:"targetQuality"` // 用户选定的画质 ("highest", "120", "80", etc.)
-	TargetCodec   string   `json:"targetCodec"`   // 用户选定的编码 ("auto", "AVC", "HEVC", "AV1")
-	Episodes      []int64  `json:"episodes"`      // 选中的集数 CID 列表
+	BVID          string  `json:"bvid"`
+	AID           int64   `json:"aid"`
+	Title         string  `json:"title"`
+	Cover         string  `json:"cover"`
+	IsBangumi     bool    `json:"isBangumi"`
+	TargetQuality string  `json:"targetQuality"` // 用户选定的画质 ("highest", "120", "80", etc.)
+	TargetCodec   string  `json:"targetCodec"`   // 用户选定的编码 ("auto", "AVC", "HEVC", "AV1")
+	Episodes      []int64 `json:"episodes"`      // 选中的集数 CID 列表
 }

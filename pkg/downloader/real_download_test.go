@@ -58,10 +58,15 @@ func TestRealVideoDownload(t *testing.T) {
 	_ = os.MkdirAll(testDownloadDir, 0755)
 	defer os.RemoveAll(testDownloadDir)
 
-	cfg := cfgMgr.Get()
-	cfg.DownloadDir = testDownloadDir
-	cfg.ThreadsPerTask = 4
-	_ = cfgMgr.Save(cfg)
+	origCfg := cfgMgr.Get()
+	defer func() {
+		_ = cfgMgr.Save(origCfg)
+	}()
+
+	testCfg := origCfg
+	testCfg.DownloadDir = testDownloadDir
+	testCfg.ThreadsPerTask = 4
+	_ = cfgMgr.Save(testCfg)
 
 	manager := GetManager()
 

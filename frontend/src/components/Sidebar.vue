@@ -15,6 +15,7 @@ const props = defineProps<{
   activeTab: string
   userInfo: bilibili.UserInfo | null
   activeTaskCount: number
+  completedTaskCount?: number
 }>()
 
 const emit = defineEmits<{
@@ -75,6 +76,7 @@ function normalizeImg(url?: string) {
       >
         <CheckCircle2 class="nav-icon" :size="16" />
         <span class="nav-label">已完成</span>
+        <span v-if="(completedTaskCount || 0) > 0" class="nav-badge completed-badge">{{ completedTaskCount }}</span>
       </button>
 
       <button
@@ -237,6 +239,12 @@ function normalizeImg(url?: string) {
   padding: 1px 6px;
   border-radius: var(--radius-full);
   line-height: 1.3;
+}
+
+.nav-badge.completed-badge {
+  background: rgba(16, 185, 129, 0.25);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.4);
 }
 
 .user-card {

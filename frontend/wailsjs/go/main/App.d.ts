@@ -10,6 +10,8 @@ export function CancelTask(arg1:string):Promise<void>;
 
 export function CheckFFmpeg():Promise<Record<string, any>>;
 
+export function CheckFileExists(arg1:string):Promise<boolean>;
+
 export function ClearCompletedTasks():Promise<void>;
 
 export function DeleteTask(arg1:string,arg2:boolean):Promise<void>;
