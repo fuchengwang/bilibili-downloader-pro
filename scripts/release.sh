@@ -100,8 +100,22 @@ if [ ! -f "$DMG_PATH" ]; then
 fi
 
 if [ "$SIGN_IDENTITY" != "-" ]; then
-  echo "==> 对 DMG 镜像文件进行签名..."
+  echo "==> 对 DMG 镜像文件进行 Developer ID 签名..."
   codesign --force --sign "$SIGN_IDENTITY" "$DMG_PATH"
+
+  # Apple 官方公证校验 (Notarization) 与票据装订 (Staple)
+  APPLE_ID="${APPLE_ID:-wangfucheng56@gmail.com}"
+  APPLE_PWD="${APPLE_APP_SPECIFIC_PASSWORD:-rsvf-uqdq-mqqk-sfyg}"
+  APPLE_TEAM="${APPLE_TEAM_ID:-CH654SF2Y4}"
+
+  echo "==> 向 Apple 官方服务器提交公证校验 (xcrun notarytool)..."
+  xcrun notarytool submit "$DMG_PATH" --apple-id "$APPLE_ID" --password "$APPLE_PWD" --team-id "$APPLE_TEAM" --wait
+
+  echo "==> 装订公证票据至 DMG (xcrun stapler staple)..."
+  xcrun stapler staple "$DMG_PATH"
+
+  echo "==> 验证 macOS Gatekeeper 校验状态..."
+  spctl --assess --type open --context context:primary-signature --verbose "$DMG_PATH"
 fi
 
 # 7. 构建与打包 Windows x64 版本
