@@ -20,7 +20,16 @@ func TestRealVideoDownload(t *testing.T) {
 	defer cancel()
 
 	biliClient := bilibili.GetDefaultClient()
-	cfgMgr := config.GetManager()
+
+	tmpDir := t.TempDir()
+	testDownloadDir := filepath.Join(tmpDir, "downloads")
+	_ = os.MkdirAll(testDownloadDir, 0755)
+
+	cfgMgr := config.NewConfigManager(tmpDir)
+	testCfg := cfgMgr.Get()
+	testCfg.DownloadDir = testDownloadDir
+	testCfg.ThreadsPerTask = 4
+	_ = cfgMgr.Save(testCfg)
 
 	// 1. 解析目标链接
 	url := "https://www.bilibili.com/video/BV1m1Lv6pEiN/"
@@ -46,29 +55,13 @@ func TestRealVideoDownload(t *testing.T) {
 		}
 	}
 
-	// 2. 选择前 2 集测试
 	numToTest := 2
 	if len(detail.Episodes) < numToTest {
 		numToTest = len(detail.Episodes)
 	}
 
-	// 使用临时测试下载目录
-	testDownloadDir := filepath.Join(os.TempDir(), "bili_live_test_downloads")
-	_ = os.RemoveAll(testDownloadDir)
-	_ = os.MkdirAll(testDownloadDir, 0755)
-	defer os.RemoveAll(testDownloadDir)
-
-	origCfg := cfgMgr.Get()
-	defer func() {
-		_ = cfgMgr.Save(origCfg)
-	}()
-
-	testCfg := origCfg
-	testCfg.DownloadDir = testDownloadDir
-	testCfg.ThreadsPerTask = 4
-	_ = cfgMgr.Save(testCfg)
-
-	manager := GetManager()
+	manager := NewDownloadManager(cfgMgr)
+	go manager.schedulerLoop()
 
 	fmt.Printf("\n=== [2] 添加 %d 个下载任务到下载队列 ===\n", numToTest)
 	manager.SetCallback(func(task *DownloadTask) {
