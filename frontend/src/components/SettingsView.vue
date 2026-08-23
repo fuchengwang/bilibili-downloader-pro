@@ -33,7 +33,7 @@ const form = ref<config.Settings>({
   threadsPerTask: props.initialSettings?.threadsPerTask || 4,
   autoMerge: props.initialSettings?.autoMerge ?? true,
   deleteTempFiles: props.initialSettings?.deleteTempFiles ?? true,
-  autoClipboard: props.initialSettings?.autoClipboard ?? false,
+  autoClipboard: props.initialSettings?.autoClipboard ?? true,
   fileNameTemplate: props.initialSettings?.fileNameTemplate || '{title} - {part}',
   theme: props.initialSettings?.theme || 'dark'
 })
@@ -207,14 +207,14 @@ async function handleSave() {
           </div>
           <div class="header-text">
             <h3 class="card-title">系统交互与感应</h3>
-            <p class="card-subtitle">后台复制链接时提供智能感应</p>
+            <p class="card-subtitle">智能识别剪贴板视频链接</p>
           </div>
         </div>
 
         <div class="card-body">
           <label class="toggle-item">
             <input v-model="form.autoClipboard" type="checkbox" />
-            <span class="toggle-text">开启剪贴板自动感应 (在后台复制 B 站链接时自动弹出快捷解析提示)</span>
+            <span class="toggle-text">开启剪贴板自动感应 (切换到应用时若剪贴板为 B 站链接则自动填入并直接解析)</span>
           </label>
         </div>
       </div>

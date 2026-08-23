@@ -1,7 +1,7 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "bilibili_downloader",
-  "outputfilename": "bilibili下载器专业版",
+  "name": "BBDown Pro",
+  "outputfilename": "BBDown Pro",
   "frontend:install": "pnpm install",
   "frontend:build": "pnpm run build",
   "frontend:dev:watcher": "pnpm run dev",
@@ -9,5 +9,12 @@
   "author": {
     "name": "真的是你吗阿诚",
     "email": "wynfrith@outlook.com"
+  },
+  "info": {
+    "companyName": "BBDown Pro",
+    "productName": "BBDown Pro",
+    "productVersion": "1.0.3",
+    "copyright": "Copyright © 2026 BBDown Pro",
+    "comments": "BBDown Pro Desktop Client"
   }
 }

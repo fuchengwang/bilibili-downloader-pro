@@ -45,6 +45,15 @@ func (a *App) domReady(ctx context.Context) {
 	wailsRuntime.WindowShow(ctx)
 }
 
+// ShowMainWindow brings the window to the foreground and unminimizes it
+func (a *App) ShowMainWindow() {
+	if a.ctx != nil {
+		wailsRuntime.WindowShow(a.ctx)
+		wailsRuntime.WindowUnminimise(a.ctx)
+		wailsRuntime.EventsEmit(a.ctx, "app:wakeup")
+	}
+}
+
 // ParseURL 解析用户输入的链接或 ID，返回视频及全部分P详情
 func (a *App) ParseURL(input string) (*bilibili.VideoDetail, error) {
 	target, err := a.biliClient.ParseInput(a.ctx, input)

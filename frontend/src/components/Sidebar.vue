@@ -42,7 +42,7 @@ function normalizeImg(url?: string) {
         <Tv class="logo-icon" :size="18" />
       </div>
       <div class="brand-text">
-        <span class="brand-title">BiliDown</span>
+        <span class="brand-title">BBDown</span>
         <span class="brand-sub">PRO</span>
       </div>
     </div>

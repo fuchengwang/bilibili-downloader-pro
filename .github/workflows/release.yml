@@ -54,7 +54,7 @@ jobs:
       - name: Package Windows App into Zip
         shell: pwsh
         run: |
-          Compress-Archive -Path build/bin/*.exe -DestinationPath build/bin/Bilibili-Downloader-Windows-amd64.zip -Force
+          Compress-Archive -Path build/bin/*.exe -DestinationPath build/bin/BBDown-Pro-Windows-amd64.zip -Force
 
       - name: Upload Windows Artifact to Release
         uses: softprops/action-gh-release@v2
@@ -67,5 +67,5 @@ jobs:
       - name: Upload Artifacts (Fallback)
         uses: actions/upload-artifact@v4
         with:
-          name: Bilibili-Downloader-Windows-x64
+          name: BBDown-Pro-Windows-x64
           path: build/bin/*.zip

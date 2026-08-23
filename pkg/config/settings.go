@@ -72,7 +72,7 @@ func GetManager() *ConfigManager {
 				ThreadsPerTask:   4,
 				AutoMerge:        true,
 				DeleteTempFiles:  true,
-				AutoClipboard:    false,
+				AutoClipboard:    true,
 				FileNameTemplate: "{title} - {part}",
 				Theme:            "dark",
 			},

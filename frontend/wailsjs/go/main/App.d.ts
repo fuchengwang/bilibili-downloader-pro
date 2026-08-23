@@ -51,3 +51,5 @@ export function SaveRawCookie(arg1:string):Promise<void>;
 export function SaveSettings(arg1:config.Settings):Promise<void>;
 
 export function SelectDirectory():Promise<string>;
+
+export function ShowMainWindow():Promise<void>;

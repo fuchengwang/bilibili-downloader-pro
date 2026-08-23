@@ -97,3 +97,7 @@ export function SaveSettings(arg1) {
 export function SelectDirectory() {
   return window['go']['main']['App']['SelectDirectory']();
 }
+
+export function ShowMainWindow() {
+  return window['go']['main']['App']['ShowMainWindow']();
+}

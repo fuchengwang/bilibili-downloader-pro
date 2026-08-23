@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import confetti from 'canvas-confetti'
 import Sidebar from './components/Sidebar.vue'
 import Header from './components/Header.vue'
@@ -42,7 +42,7 @@ const settings = ref<config.Settings>({
   threadsPerTask: 4,
   autoMerge: true,
   deleteTempFiles: true,
-  autoClipboard: false,
+  autoClipboard: true,
   fileNameTemplate: '{title} - {part}',
   theme: 'dark'
 })
@@ -60,9 +60,44 @@ const toasts = ref<ToastItem[]>([])
 // QuickParse ref
 const quickParseRef = ref<any>(null)
 
-// Clipboard Watcher
+// 剪贴板自动感应与解析
 let clipboardTimer: any = null
-let lastClipboardText = ''
+let lastParsedClipboardText = ''
+let isCheckingClipboard = false
+
+async function checkAndAutoParseClipboard() {
+  if (!settings.value.autoClipboard || isCheckingClipboard) return
+  isCheckingClipboard = true
+  try {
+    const text = (await ReadClipboard())?.trim()
+    if (!text || text === lastParsedClipboardText) return
+
+    // 判断是否包含 B站 特征
+    const isBili = /(bilibili\.com|b23\.tv|BV1[a-zA-Z0-9]{9}|av\d+|ep\d+|ss\d+)/i.test(text)
+    if (isBili) {
+      lastParsedClipboardText = text
+      // 切换到解析页面并自动解析
+      activeTab.value = 'parse'
+      await nextTick()
+      if (quickParseRef.value?.setAndParse) {
+        quickParseRef.value.setAndParse(text)
+      }
+    }
+  } catch (e) {
+  } finally {
+    isCheckingClipboard = false
+  }
+}
+
+function handleWindowFocus() {
+  checkAndAutoParseClipboard()
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    checkAndAutoParseClipboard()
+  }
+}
 
 onMounted(async () => {
   // 1. 初始化设置
@@ -88,11 +123,21 @@ onMounted(async () => {
     handleTaskProgress(updatedTask)
   })
 
-  // 5. 启动剪贴板监听
-  startClipboardWatcher()
+  // 5. 绑定窗口激活/前台唤醒及剪贴板监听
+  window.addEventListener('focus', handleWindowFocus)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  EventsOn('app:wakeup', () => {
+    checkAndAutoParseClipboard()
+  })
+  clipboardTimer = setInterval(checkAndAutoParseClipboard, 1500)
+
+  // 启动即刻检查一次剪贴板
+  setTimeout(checkAndAutoParseClipboard, 300)
 })
 
 onUnmounted(() => {
+  window.removeEventListener('focus', handleWindowFocus)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
   if (clipboardTimer) clearInterval(clipboardTimer)
 })
 
@@ -121,35 +166,6 @@ function triggerConfetti() {
       colors: ['#FB7299', '#00AEEC', '#10B981', '#F59E0B']
     })
   } catch (e) {}
-}
-
-// 剪贴板轮询检测
-function startClipboardWatcher() {
-  clipboardTimer = setInterval(async () => {
-    if (!settings.value.autoClipboard) return
-    try {
-      const text = (await ReadClipboard())?.trim()
-      if (!text || text === lastClipboardText) return
-      lastClipboardText = text
-
-      // 判断是否包含 B站 特征
-      const isBili = /(bilibili\.com|b23\.tv|BV1[a-zA-Z0-9]{9}|av\d+|ep\d+|ss\d+)/i.test(text)
-      if (isBili) {
-        showClipboardToast(text)
-      }
-    } catch (e) {}
-  }, 2500)
-}
-
-function showClipboardToast(url: string) {
-  if (toasts.value.some(t => t.type === 'clipboard' && t.actionUrl === url)) return
-
-  toasts.value.push({
-    id: Math.random().toString(),
-    message: '检测到剪贴板中的 B站 链接，是否立即解析？',
-    type: 'clipboard',
-    actionUrl: url,
-  })
 }
 
 function handleClipboardAction(url: string, toastId: string) {

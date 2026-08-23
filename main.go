@@ -3,6 +3,8 @@ package main
 import (
 	"embed"
 
+	"bilibili_downloader/pkg/instance"
+
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -16,8 +18,13 @@ var assets embed.FS
 func main() {
 	app := NewApp()
 
+	// Ensure single instance
+	_ = instance.SetupSingleInstance(func() {
+		app.ShowMainWindow()
+	})
+
 	err := wails.Run(&options.App{
-		Title:             "哔哩哔哩下载器专业版",
+		Title:             "BBDown Pro",
 		Width:             1140,
 		Height:            760,
 		MinWidth:          980,
@@ -38,7 +45,7 @@ func main() {
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
 			About: &mac.AboutInfo{
-				Title:   "哔哩哔哩下载器专业版",
+				Title:   "BBDown Pro",
 				Message: "高品质、极速、现代的 Bilibili 桌面下载工具",
 			},
 			Preferences: &mac.Preferences{
