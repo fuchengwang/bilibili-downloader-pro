@@ -41,9 +41,6 @@ jobs:
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
-      - name: Install NSIS
-        run: choco install nsis -y
-
       - name: Install Frontend Dependencies
         working-directory: ./frontend
         run: pnpm install --frozen-lockfile
@@ -54,18 +51,61 @@ jobs:
       - name: Package Windows App into Zip
         shell: pwsh
         run: |
-          Compress-Archive -Path build/bin/*.exe -DestinationPath build/bin/BBDown-Pro-Windows-amd64.zip -Force
+          Compress-Archive -Path "build/bin/BBDown Pro.exe" -DestinationPath build/bin/BBDown-Pro-Windows-amd64.zip -Force
 
       - name: Upload Windows Artifact to Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
         with:
-          files: build/bin/*.zip
+          files: build/bin/BBDown-Pro-Windows-amd64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Artifacts (Fallback)
-        uses: actions/upload-artifact@v4
+  build-macos:
+    name: Build macOS (Universal)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          name: BBDown-Pro-Windows-x64
-          path: build/bin/*.zip
+          go-version: '1.22'
+          cache: true
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          cache-dependency-path: 'frontend/pnpm-lock.yaml'
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Install Frontend Dependencies
+        working-directory: ./frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build macOS Universal Application
+        run: wails build -platform darwin/universal
+
+      - name: Package macOS App into Zip
+        run: |
+          cd build/bin
+          zip -r -y BBDown-Pro-macOS-universal.zip "BBDown Pro.app"
+
+      - name: Upload macOS Artifact to Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+        with:
+          files: build/bin/BBDown-Pro-macOS-universal.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
