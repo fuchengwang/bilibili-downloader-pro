@@ -200,3 +200,112 @@ func TestAtomicSaveAndDeepCopy(t *testing.T) {
 	// 清理
 	_ = mgr.DeleteTask(task.ID, false)
 }
+
+// TestDeleteTaskAndFile 测试删除单个任务记录及联动删除本地源文件
+func TestDeleteTaskAndFile(t *testing.T) {
+	mgr := GetManager()
+	tmpDir := t.TempDir()
+
+	subDir := filepath.Join(tmpDir, "TestCollection")
+	_ = os.MkdirAll(subDir, 0755)
+
+	outPath := filepath.Join(subDir, "video1.mp4")
+	vTmp := filepath.Join(subDir, "video1.video.downloading")
+	aTmp := filepath.Join(subDir, "video1.audio.downloading")
+
+	_ = os.WriteFile(outPath, []byte("dummy video content"), 0644)
+	_ = os.WriteFile(vTmp, []byte("dummy tmp video"), 0644)
+	_ = os.WriteFile(aTmp, []byte("dummy tmp audio"), 0644)
+
+	task := &DownloadTask{
+		ID:           "test_delete_file_1",
+		Title:        "Test Delete File",
+		Status:       StatusCompleted,
+		OutputPath:   outPath,
+		VideoTmpPath: vTmp,
+		AudioTmpPath: aTmp,
+	}
+
+	mgr.mu.Lock()
+	mgr.tasks = append(mgr.tasks, task)
+	mgr.mu.Unlock()
+
+	// 1. 测试仅清除记录 (deleteFile = false)
+	_ = mgr.DeleteTask("test_delete_file_1", false)
+
+	if _, err := os.Stat(outPath); os.IsNotExist(err) {
+		t.Fatal("deleteFile=false 时不应删除本地视频文件")
+	}
+
+	// 2. 重新添加并测试同时删除文件 (deleteFile = true)
+	task2 := &DownloadTask{
+		ID:           "test_delete_file_2",
+		Title:        "Test Delete File 2",
+		Status:       StatusCompleted,
+		OutputPath:   outPath,
+		VideoTmpPath: vTmp,
+		AudioTmpPath: aTmp,
+	}
+	mgr.mu.Lock()
+	mgr.tasks = append(mgr.tasks, task2)
+	mgr.mu.Unlock()
+
+	_ = mgr.DeleteTask("test_delete_file_2", true)
+
+	if _, err := os.Stat(outPath); !os.IsNotExist(err) {
+		t.Fatal("deleteFile=true 时未能成功删除本地视频文件")
+	}
+	if _, err := os.Stat(vTmp); !os.IsNotExist(err) {
+		t.Fatal("deleteFile=true 时未能成功删除临时视频文件")
+	}
+	if _, err := os.Stat(aTmp); !os.IsNotExist(err) {
+		t.Fatal("deleteFile=true 时未能成功删除临时音频文件")
+	}
+}
+
+// TestClearCompletedWithFiles 测试批量清空已完成记录及文件
+func TestClearCompletedWithFiles(t *testing.T) {
+	mgr := GetManager()
+	tmpDir := t.TempDir()
+
+	out1 := filepath.Join(tmpDir, "comp1.mp4")
+	out2 := filepath.Join(tmpDir, "comp2.mp4")
+	out3 := filepath.Join(tmpDir, "queued.mp4")
+
+	_ = os.WriteFile(out1, []byte("comp1"), 0644)
+	_ = os.WriteFile(out2, []byte("comp2"), 0644)
+	_ = os.WriteFile(out3, []byte("queued"), 0644)
+
+	t1 := &DownloadTask{ID: "t_comp_1", Title: "Comp 1", Status: StatusCompleted, OutputPath: out1}
+	t2 := &DownloadTask{ID: "t_comp_2", Title: "Comp 2", Status: StatusCompleted, OutputPath: out2}
+	t3 := &DownloadTask{ID: "t_queue_3", Title: "Queue 3", Status: StatusQueued, OutputPath: out3}
+
+	mgr.mu.Lock()
+	mgr.tasks = append(mgr.tasks, t1, t2, t3)
+	mgr.mu.Unlock()
+
+	// 批量清空并删除文件
+	mgr.ClearCompleted(true)
+
+	if _, err := os.Stat(out1); !os.IsNotExist(err) {
+		t.Fatal("ClearCompleted(true) 未能删除已完成任务 1 的文件")
+	}
+	if _, err := os.Stat(out2); !os.IsNotExist(err) {
+		t.Fatal("ClearCompleted(true) 未能删除已完成任务 2 的文件")
+	}
+	if _, err := os.Stat(out3); os.IsNotExist(err) {
+		t.Fatal("ClearCompleted(true) 误删了排队中任务的文件")
+	}
+
+	// 验证任务列表状态
+	tasks := mgr.GetTasks()
+	for _, tk := range tasks {
+		if tk.ID == "t_comp_1" || tk.ID == "t_comp_2" {
+			t.Fatalf("ClearCompleted 未能从列表中移除已完成任务: %s", tk.ID)
+		}
+	}
+
+	// 清理剩余任务
+	_ = mgr.DeleteTask("t_queue_3", true)
+}
+

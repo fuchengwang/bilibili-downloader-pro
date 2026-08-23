@@ -323,6 +323,14 @@ func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 		_ = os.Remove(target.AudioTmpPath)
 		if deleteFile && target.OutputPath != "" {
 			_ = os.Remove(target.OutputPath)
+			// 如果所在目录是合集子目录且已经为空，顺便清理空文件夹
+			dir := filepath.Dir(target.OutputPath)
+			if dir != "" && dir != "." {
+				entries, err := os.ReadDir(dir)
+				if err == nil && len(entries) == 0 {
+					_ = os.Remove(dir)
+				}
+			}
 		}
 		m.SaveTasks()
 		m.triggerSchedule()
@@ -376,17 +384,48 @@ func (m *DownloadManager) ResumeAll() {
 	m.triggerSchedule()
 }
 
-// ClearCompleted 清理已完成的任务列表记录
-func (m *DownloadManager) ClearCompleted() {
+// ClearCompleted 清理已完成的任务列表记录 (可选择是否同时删除本地文件)
+func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) {
+	deleteFile := false
+	if len(deleteFiles) > 0 {
+		deleteFile = deleteFiles[0]
+	}
+
 	m.mu.Lock()
 	var remaining []*DownloadTask
+	var removed []*DownloadTask
 	for _, t := range m.tasks {
 		if t.Status != StatusCompleted && t.Status != StatusCancelled {
 			remaining = append(remaining, t)
+		} else {
+			removed = append(removed, t)
 		}
 	}
 	m.tasks = remaining
 	m.mu.Unlock()
+
+	if deleteFile {
+		dirsToCheck := make(map[string]bool)
+		for _, t := range removed {
+			if t.OutputPath != "" {
+				_ = os.Remove(t.OutputPath)
+				dir := filepath.Dir(t.OutputPath)
+				if dir != "" && dir != "." {
+					dirsToCheck[dir] = true
+				}
+			}
+			_ = os.Remove(t.VideoTmpPath)
+			_ = os.Remove(t.AudioTmpPath)
+		}
+		// 顺便清理可能残留的空合集目录
+		for dir := range dirsToCheck {
+			entries, err := os.ReadDir(dir)
+			if err == nil && len(entries) == 0 {
+				_ = os.Remove(dir)
+			}
+		}
+	}
+
 	m.SaveTasks()
 }
 

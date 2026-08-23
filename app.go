@@ -145,9 +145,9 @@ func (a *App) ResumeAllTasks() error {
 	return nil
 }
 
-// ClearCompletedTasks 清理已完成任务列表
-func (a *App) ClearCompletedTasks() error {
-	a.downMgr.ClearCompleted()
+// ClearCompletedTasks 清理已完成任务列表 (可选择是否同时删除本地文件)
+func (a *App) ClearCompletedTasks(deleteFile bool) error {
+	a.downMgr.ClearCompleted(deleteFile)
 	return nil
 }
 

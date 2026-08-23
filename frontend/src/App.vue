@@ -317,9 +317,9 @@ async function onDeleteTask(id: string, deleteFile: boolean = false) {
   try {
     await DeleteTask(id, deleteFile)
     tasks.value = tasks.value.filter(t => t.id !== id)
-    showToast('已清除该记录', 'info')
+    showToast(deleteFile ? '已删除记录及本地文件' : '已清除该记录', 'info')
   } catch (e: any) {
-    showToast('清除失败: ' + (e?.message || e), 'error')
+    showToast('删除失败: ' + (e?.message || e), 'error')
   }
 }
 
@@ -346,10 +346,14 @@ async function onResumeAll() {
   await ResumeAllTasks()
 }
 
-async function onClearCompleted() {
-  await ClearCompletedTasks()
-  tasks.value = tasks.value.filter(t => t.status !== 'completed' && t.status !== 'cancelled')
-  showToast('已清空完成记录', 'info')
+async function onClearCompleted(deleteFiles: boolean = false) {
+  try {
+    await ClearCompletedTasks(deleteFiles)
+    tasks.value = tasks.value.filter(t => t.status !== 'completed' && t.status !== 'cancelled')
+    showToast(deleteFiles ? '已清空记录并删除本地文件' : '已清空完成记录', 'info')
+  } catch (e: any) {
+    showToast('清空失败: ' + (e?.message || e), 'error')
+  }
 }
 
 async function onOpenDir(path: string) {

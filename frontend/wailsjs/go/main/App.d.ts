@@ -12,7 +12,7 @@ export function CheckFFmpeg():Promise<Record<string, any>>;
 
 export function CheckFileExists(arg1:string):Promise<boolean>;
 
-export function ClearCompletedTasks():Promise<void>;
+export function ClearCompletedTasks(arg1:boolean):Promise<void>;
 
 export function DeleteTask(arg1:string,arg2:boolean):Promise<void>;
 

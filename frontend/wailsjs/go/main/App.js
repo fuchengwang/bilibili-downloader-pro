@@ -18,8 +18,8 @@ export function CheckFileExists(arg1) {
   return window['go']['main']['App']['CheckFileExists'](arg1);
 }
 
-export function ClearCompletedTasks() {
-  return window['go']['main']['App']['ClearCompletedTasks']();
+export function ClearCompletedTasks(arg1) {
+  return window['go']['main']['App']['ClearCompletedTasks'](arg1);
 }
 
 export function DeleteTask(arg1, arg2) {
