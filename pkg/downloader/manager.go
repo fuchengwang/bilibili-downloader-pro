@@ -42,17 +42,23 @@ var (
 	managerOnce     sync.Once
 )
 
+// NewDownloadManager 创建一个独立的下载管理器实例（用于测试与沙箱隔离）
+func NewDownloadManager(cfgMgr *config.ConfigManager) *DownloadManager {
+	m := &DownloadManager{
+		tasks:        make([]*DownloadTask, 0),
+		workers:      make(map[string]workerHandle),
+		biliClient:   bilibili.GetDefaultClient(),
+		cfgMgr:       cfgMgr,
+		workerNotify: make(chan struct{}, 50),
+	}
+	m.loadTasks()
+	return m
+}
+
 // GetManager 获取全局下载管理器单例
 func GetManager() *DownloadManager {
 	managerOnce.Do(func() {
-		m := &DownloadManager{
-			tasks:        make([]*DownloadTask, 0),
-			workers:      make(map[string]workerHandle),
-			biliClient:   bilibili.GetDefaultClient(),
-			cfgMgr:       config.GetManager(),
-			workerNotify: make(chan struct{}, 50),
-		}
-		m.loadTasks()
+		m := NewDownloadManager(config.GetManager())
 		go m.schedulerLoop()
 		managerInstance = m
 	})

@@ -9,11 +9,18 @@ import (
 	"time"
 
 	"bilibili_downloader/pkg/bilibili"
+	"bilibili_downloader/pkg/config"
 )
+
+func newTestManager(t *testing.T) *DownloadManager {
+	tmpDir := t.TempDir()
+	cfg := config.NewConfigManager(tmpDir)
+	return NewDownloadManager(cfg)
+}
 
 // TestPauseResumeDeadlock 测试全部暂停与全部继续在高并发场景下绝无死锁
 func TestPauseResumeDeadlock(t *testing.T) {
-	mgr := GetManager()
+	mgr := newTestManager(t)
 
 	callbackCount := 0
 	var cbMu sync.Mutex
@@ -57,7 +64,7 @@ func TestPauseResumeDeadlock(t *testing.T) {
 
 // TestWorkerTokenIsolation 测试快速暂停恢复时 Worker Token 隔离与取消句柄安全性
 func TestWorkerTokenIsolation(t *testing.T) {
-	mgr := GetManager()
+	mgr := newTestManager(t)
 	taskID := "test_worker_token_task"
 
 	mgr.mu.Lock()
@@ -111,7 +118,7 @@ func TestWorkerTokenIsolation(t *testing.T) {
 
 // TestTaskDeduplication 测试任务去重机制
 func TestTaskDeduplication(t *testing.T) {
-	mgr := GetManager()
+	mgr := newTestManager(t)
 
 	req := &DownloadRequest{
 		Title:         "去重测试视频",
@@ -146,7 +153,7 @@ func TestTaskDeduplication(t *testing.T) {
 
 // TestAtomicSaveAndDeepCopy 测试 GetTasks 深拷贝快照与 SaveTasks 原子写入
 func TestAtomicSaveAndDeepCopy(t *testing.T) {
-	mgr := GetManager()
+	mgr := newTestManager(t)
 
 	task := &DownloadTask{
 		ID:        "test_deep_copy_task",
@@ -203,7 +210,7 @@ func TestAtomicSaveAndDeepCopy(t *testing.T) {
 
 // TestDeleteTaskAndFile 测试删除单个任务记录及联动删除本地源文件
 func TestDeleteTaskAndFile(t *testing.T) {
-	mgr := GetManager()
+	mgr := newTestManager(t)
 	tmpDir := t.TempDir()
 
 	subDir := filepath.Join(tmpDir, "TestCollection")
@@ -265,7 +272,7 @@ func TestDeleteTaskAndFile(t *testing.T) {
 
 // TestClearCompletedWithFiles 测试批量清空已完成记录及文件
 func TestClearCompletedWithFiles(t *testing.T) {
-	mgr := GetManager()
+	mgr := newTestManager(t)
 	tmpDir := t.TempDir()
 
 	out1 := filepath.Join(tmpDir, "comp1.mp4")
@@ -308,4 +315,3 @@ func TestClearCompletedWithFiles(t *testing.T) {
 	// 清理剩余任务
 	_ = mgr.DeleteTask("t_queue_3", true)
 }
-

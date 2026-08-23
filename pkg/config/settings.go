@@ -58,6 +58,28 @@ func DefaultDownloadDir() string {
 	return "./downloads"
 }
 
+// NewConfigManager 创建一个独立的配置管理器实例（用于测试与环境隔离）
+func NewConfigManager(dir string) *ConfigManager {
+	_ = os.MkdirAll(dir, 0755)
+	mgr := &ConfigManager{
+		dir: dir,
+		settings: Settings{
+			DownloadDir:      filepath.Join(dir, "downloads"),
+			DefaultQuality:   "highest",
+			DefaultCodec:     "auto",
+			MaxConcurrent:    3,
+			ThreadsPerTask:   4,
+			AutoMerge:        true,
+			DeleteTempFiles:  true,
+			AutoClipboard:    true,
+			FileNameTemplate: "{title} - {part}",
+			Theme:            "dark",
+		},
+	}
+	_ = mgr.load()
+	return mgr
+}
+
 // GetManager 获取单例配置管理器
 func GetManager() *ConfigManager {
 	once.Do(func() {
