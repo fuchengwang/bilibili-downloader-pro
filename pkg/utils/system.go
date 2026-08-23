@@ -70,16 +70,21 @@ func OpenDirectory(path string) error {
 
 	cleanPath := filepath.Clean(path)
 
-	// 检查目标是否存在；如果最终 .mp4 尚未生成，检查并定位正在下载中的 .downloading 文件
 	targetToOpen := cleanPath
 	if _, err := os.Stat(cleanPath); err != nil {
 		dir := filepath.Dir(cleanPath)
 		base := strings.TrimSuffix(filepath.Base(cleanPath), ".mp4")
-		downloadingVideo := filepath.Join(dir, base+".video.downloading")
-		if _, err := os.Stat(downloadingVideo); err == nil {
-			targetToOpen = downloadingVideo
-		} else if _, err := os.Stat(dir); err == nil {
-			targetToOpen = dir
+		matched := ""
+		if entries, rErr := os.ReadDir(dir); rErr == nil {
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), base) && strings.Contains(e.Name(), ".downloading") {
+					matched = filepath.Join(dir, e.Name())
+					break
+				}
+			}
+		}
+		if matched != "" {
+			targetToOpen = matched
 		} else {
 			_ = os.MkdirAll(dir, 0755)
 			targetToOpen = dir
