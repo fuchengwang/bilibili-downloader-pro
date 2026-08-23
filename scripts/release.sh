@@ -73,7 +73,19 @@ fi
 echo "==> 执行 macOS 应用签名 (Hardened Runtime + Timestamp)..."
 xattr -cr "$APP_PATH"
 if [ "$SIGN_IDENTITY" != "-" ]; then
-  codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_PATH"
+  signed=false
+  for i in 1 2 3 4 5; do
+    echo "  -> 尝试代码签名 (第 ${i}/5 次)..."
+    if codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_PATH"; then
+      signed=true
+      break
+    fi
+    sleep 2
+  done
+  if [ "$signed" != "true" ]; then
+    echo "代码签名失败，已重试 5 次。" >&2
+    exit 1
+  fi
 else
   codesign --force --deep --sign - "$APP_PATH"
 fi
