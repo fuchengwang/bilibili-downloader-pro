@@ -40,7 +40,7 @@ function normalizeImg(url?: string) {
     <!-- App Logo & Brand (with top clearance for macOS traffic light buttons) -->
     <div class="brand" style="--wails-draggable: drag">
       <div class="logo-box">
-        <Tv class="logo-icon" :size="18" />
+        <img src="../assets/images/logo-universal.png" class="logo-img" alt="BBDown Logo" />
       </div>
       <div class="brand-text">
         <span class="brand-title">BBDown</span>
@@ -147,19 +147,20 @@ function normalizeImg(url?: string) {
 }
 
 .logo-box {
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   border-radius: 8px;
-  background: linear-gradient(135deg, var(--bili-pink), #ff5c8a);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 12px rgba(251, 114, 153, 0.35);
   flex-shrink: 0;
 }
 
-.logo-icon {
-  color: #ffffff;
+.logo-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.3));
 }
 
 .brand-text {
