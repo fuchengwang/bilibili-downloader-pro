@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"syscall"
 )
 
 func openDirectoryOS(target string) error {
@@ -37,3 +38,9 @@ func openFileOS(path string) error {
 	}
 	return cmd.Start()
 }
+
+// HideWindowSysProcAttr POSIX (macOS / Linux) 平台无需隐藏窗口属性，返回 nil
+func HideWindowSysProcAttr() *syscall.SysProcAttr {
+	return nil
+}
+

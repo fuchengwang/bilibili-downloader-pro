@@ -149,6 +149,17 @@ func (c *Client) PollQRCode(ctx context.Context, qrcodeKey string) (*QRStatus, e
 		}
 
 		if sessData != "" {
+			if buvid3 == "" {
+				// 主动拉取官方指纹接口补齐 buvid3 与 buvid4
+				if b3, b4, err := c.fetchFingerprintSpi(ctx); err == nil && b3 != "" {
+					buvid3 = b3
+					cookies["buvid3"] = b3
+					if b4 != "" {
+						cookies["buvid4"] = b4
+					}
+				}
+			}
+
 			cookieData := &CookieData{
 				SessData: sessData,
 				BiliJCT:  biliJCT,
@@ -260,3 +271,24 @@ func (c *Client) ParseAndSaveRawCookie(cookieStr string) error {
 
 	return c.SetCookies(cookieData)
 }
+
+type spiResp struct {
+	Code int `json:"code"`
+	Data struct {
+		B3 string `json:"b_3"`
+		B4 string `json:"b_4"`
+	} `json:"data"`
+}
+
+func (c *Client) fetchFingerprintSpi(ctx context.Context) (string, string, error) {
+	apiURL := "https://api.bilibili.com/x/frontend/finger/spi"
+	var resp spiResp
+	if err := c.GetJSON(ctx, apiURL, &resp); err != nil {
+		return "", "", err
+	}
+	if resp.Code != 0 {
+		return "", "", fmt.Errorf("spi api code %d", resp.Code)
+	}
+	return resp.Data.B3, resp.Data.B4, nil
+}
+

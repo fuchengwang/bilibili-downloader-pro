@@ -48,6 +48,7 @@ var (
 func GetDefaultClient() *Client {
 	clientOnce.Do(func() {
 		tr := &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
 			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 			MaxIdleConns:        100,
 			MaxIdleConnsPerHost: 20,
@@ -93,6 +94,17 @@ func (c *Client) ClearCookies() error {
 	cookiePath := config.GetManager().GetCookiesPath()
 	_ = os.Remove(cookiePath)
 	return nil
+}
+
+// GetCookies 获取当前内存中的 CookieData 快照
+func (c *Client) GetCookies() *CookieData {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.cookieData == nil {
+		return nil
+	}
+	cp := *c.cookieData
+	return &cp
 }
 
 // GetCookieHeader 构造用于请求头的 Cookie 字符串

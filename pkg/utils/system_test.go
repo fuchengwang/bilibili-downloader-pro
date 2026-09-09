@@ -130,3 +130,60 @@ func TestSanitizeFilename_Fallbacks(t *testing.T) {
 		}
 	}
 }
+
+// TestFormatBytes 测试字节大小格式化转换
+func TestFormatBytes(t *testing.T) {
+	cases := []struct {
+		bytes    int64
+		expected string
+	}{
+		{0, "0 B"},
+		{500, "500 B"},
+		{1024, "1.00 KB"},
+		{1536, "1.50 KB"},
+		{1048576, "1.00 MB"},
+		{1073741824, "1.00 GB"},
+	}
+
+	for _, c := range cases {
+		actual := FormatBytes(c.bytes)
+		if actual != c.expected {
+			t.Errorf("FormatBytes(%d) = %q, expected %q", c.bytes, actual, c.expected)
+		}
+	}
+}
+
+// TestFormatSpeed 测试下载速度格式化
+func TestFormatSpeed(t *testing.T) {
+	if FormatSpeed(0) != "0 KB/s" {
+		t.Errorf("FormatSpeed(0) = %q, expected '0 KB/s'", FormatSpeed(0))
+	}
+	if FormatSpeed(-100) != "0 KB/s" {
+		t.Errorf("FormatSpeed(-100) = %q, expected '0 KB/s'", FormatSpeed(-100))
+	}
+	if FormatSpeed(1048576) != "1.00 MB/s" {
+		t.Errorf("FormatSpeed(1048576) = %q, expected '1.00 MB/s'", FormatSpeed(1048576))
+	}
+}
+
+// TestFormatDuration 测试时间秒数转 00:00:00
+func TestFormatDuration(t *testing.T) {
+	cases := []struct {
+		sec      int
+		expected string
+	}{
+		{0, "00:00"},
+		{-10, "00:00"},
+		{45, "00:45"},
+		{75, "01:15"},
+		{3665, "01:01:05"},
+	}
+
+	for _, c := range cases {
+		actual := FormatDuration(c.sec)
+		if actual != c.expected {
+			t.Errorf("FormatDuration(%d) = %q, expected %q", c.sec, actual, c.expected)
+		}
+	}
+}
+

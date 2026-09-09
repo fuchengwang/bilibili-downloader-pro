@@ -69,7 +69,7 @@ func TestRealVideoDownload(t *testing.T) {
 			fmt.Printf("\r[下载中] %s | 进度: %.1f%% | 速度: %s | 预估剩余: %s",
 				task.PartTitle, task.Progress, task.SpeedStr, task.ETAStr)
 		} else if task.Status == StatusMerging {
-			fmt.Printf("\n[合成中] %s -> FFmpeg 正在封装音视频...\n", task.PartTitle)
+			fmt.Printf("\n[合成中] %s -> 纯 Go 原生引擎正在封装音视频...\n", task.PartTitle)
 		} else if task.Status == StatusCompleted {
 			fmt.Printf("\n[已完成] %s -> 保存至: %s\n", task.PartTitle, task.OutputPath)
 		} else if task.Status == StatusError {

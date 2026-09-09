@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -355,3 +356,184 @@ func TestClearCompletedWithFiles(t *testing.T) {
 	// 清理剩余任务
 	_ = mgr.DeleteTask("t_queue_3", true)
 }
+
+// TestAddDownloadTask_MultiPartNaming 测试单 P 与多 P 任务添加时的目录与文件名规范化
+func TestAddDownloadTask_MultiPartNaming(t *testing.T) {
+	mgr := newTestManager(t)
+
+	// 1. 单 P 普通视频
+	reqSingle := &DownloadRequest{
+		Title:         "单个测试视频",
+		TargetQuality: "80",
+		TargetCodec:   "AVC",
+		Episodes:      []int64{1001},
+	}
+	epSingle := &bilibili.EpisodeInfo{CID: 1001, Title: "单个测试视频", Index: 1}
+	task1, err := mgr.AddDownloadTask(reqSingle, epSingle)
+	if err != nil {
+		t.Fatalf("AddDownloadTask 单P失败: %v", err)
+	}
+	if filepath.Base(task1.OutputPath) != "单个测试视频.mp4" {
+		t.Errorf("单P文件名生成不符: %s", filepath.Base(task1.OutputPath))
+	}
+
+	// 2. 多 P 合集视频
+	reqMulti := &DownloadRequest{
+		Title:         "系列教程合集",
+		TargetQuality: "80",
+		TargetCodec:   "AVC",
+		Episodes:      []int64{2001, 2002},
+	}
+	epMulti2 := &bilibili.EpisodeInfo{CID: 2002, Title: "第二讲 进阶", Index: 2}
+	task2, err := mgr.AddDownloadTask(reqMulti, epMulti2)
+	if err != nil {
+		t.Fatalf("AddDownloadTask 多P失败: %v", err)
+	}
+	if filepath.Base(filepath.Dir(task2.OutputPath)) != "系列教程合集" {
+		t.Errorf("多P合集子文件夹生成不符: %s", filepath.Dir(task2.OutputPath))
+	}
+	if filepath.Base(task2.OutputPath) != "P02. 第二讲 进阶.mp4" {
+		t.Errorf("多P文件名生成不符: %s", filepath.Base(task2.OutputPath))
+	}
+}
+
+// TestIndividualTaskLifecycle 测试单个任务的暂停、继续、取消与删除全生命周期
+func TestIndividualTaskLifecycle(t *testing.T) {
+	mgr := newTestManager(t)
+
+	task := &DownloadTask{
+		ID:            "t_lifecycle_1",
+		Title:         "生命周期测试任务",
+		Status:        StatusQueued,
+		TargetQuality: "80",
+		TargetCodec:   "AVC",
+		OutputPath:    filepath.Join(t.TempDir(), "lifecycle.mp4"),
+	}
+
+	mgr.mu.Lock()
+	mgr.tasks = append(mgr.tasks, task)
+	mgr.mu.Unlock()
+
+	// 1. 暂停单个任务
+	_ = mgr.PauseTask(task.ID)
+	mgr.mu.RLock()
+	if task.Status != StatusPaused {
+		t.Fatalf("暂停后状态预期为 %s，实际为: %s", StatusPaused, task.Status)
+	}
+	mgr.mu.RUnlock()
+
+	// 2. 继续单个任务
+	_ = mgr.ResumeTask(task.ID)
+	mgr.mu.RLock()
+	if task.Status != StatusQueued {
+		t.Fatalf("继续后状态预期为 %s，实际为: %s", StatusQueued, task.Status)
+	}
+	mgr.mu.RUnlock()
+
+	// 3. 取消单个任务
+	_ = mgr.CancelTask(task.ID)
+	mgr.mu.RLock()
+	if task.Status != StatusCancelled {
+		t.Fatalf("取消后状态预期为 %s，实际为: %s", StatusCancelled, task.Status)
+	}
+	mgr.mu.RUnlock()
+
+	// 4. 删除单个任务
+	err := mgr.DeleteTask(task.ID, false)
+	if err != nil {
+		t.Fatalf("DeleteTask 失败: %v", err)
+	}
+	tasks := mgr.GetTasks()
+	for _, tk := range tasks {
+		if tk.ID == task.ID {
+			t.Fatal("DeleteTask 后任务依然存在于任务列表中")
+		}
+	}
+}
+
+func TestCleanPartTitle_EdgeCases(t *testing.T) {
+	tests := []struct {
+		mainTitle string
+		partTitle string
+		index     int
+		expected  string
+	}{
+		{"狂飙 全集", "狂飙 全集 - 第01集 初识", 1, "P01. 第01集 初识"},
+		{"教程合集", "P1 基础入门", 1, "P1 基础入门"},
+		{"教程合集", "P02 进阶操作", 2, "P02 进阶操作"},
+		{"教程合集", "第3话 高级应用", 3, "第3话 高级应用"},
+		{"独立短片", "", 1, "P01"},
+		{"独立短片", "   ", 0, "独立短片"},
+		{"系列课", "实战篇", 5, "P05. 实战篇"},
+	}
+
+	for _, tc := range tests {
+		got := cleanPartTitle(tc.mainTitle, tc.partTitle, tc.index)
+		if got != tc.expected {
+			t.Errorf("cleanPartTitle(%q, %q, %d) = %q, expected %q", tc.mainTitle, tc.partTitle, tc.index, got, tc.expected)
+		}
+	}
+}
+
+func TestGetQualityTag_AllResolutions(t *testing.T) {
+	tests := []struct {
+		qn       int
+		label    string
+		expected string
+	}{
+		{127, "8K 超高清", "[8K]"},
+		{126, "杜比视界", "[杜比视界]"},
+		{125, "HDR 真彩", "[HDR]"},
+		{120, "4K 超清", "[4K]"},
+		{116, "1080P 60帧", "[1080P60]"},
+		{112, "1080P 高码率", "[1080P+]"},
+		{80, "1080P 高清", "[1080P]"},
+		{74, "720P 60帧", "[720P60]"},
+		{64, "720P 高清", "[720P]"},
+		{32, "480P 清晰", "[480P]"},
+		{16, "360P 流畅", "[360P]"},
+		{999, "8K 60帧", "[8K]"},
+		{999, "4K 极清", "[4K]"},
+		{999, "1080P60 超清", "[1080P60]"},
+		{999, "1080P 清晰", "[1080P]"},
+		{999, "720P 高清", "[720P]"},
+		{999, "480P 流畅", "[480P]"},
+		{999, "360P", "[360P]"},
+		{0, "", ""},
+	}
+
+	for _, tc := range tests {
+		got := getQualityTag(tc.qn, tc.label)
+		if got != tc.expected {
+			t.Errorf("getQualityTag(%d, %q) = %q, expected %q", tc.qn, tc.label, got, tc.expected)
+		}
+	}
+}
+
+func TestFormatFriendlyError_Categorization(t *testing.T) {
+	if formatFriendlyError(nil) != "" {
+		t.Errorf("Nil error should return empty string")
+	}
+
+	timeoutErr := fmt.Errorf("context deadline exceeded or connection timeout")
+	if !strings.Contains(formatFriendlyError(timeoutErr), "超时") {
+		t.Errorf("Timeout error mapping failed: %s", formatFriendlyError(timeoutErr))
+	}
+
+	resetErr := fmt.Errorf("read: connection reset by peer or EOF")
+	if !strings.Contains(formatFriendlyError(resetErr), "连接中断") {
+		t.Errorf("Reset error mapping failed: %s", formatFriendlyError(resetErr))
+	}
+
+	forbiddenErr := fmt.Errorf("HTTP 403 Forbidden")
+	if !strings.Contains(formatFriendlyError(forbiddenErr), "过期") {
+		t.Errorf("403 error mapping failed: %s", formatFriendlyError(forbiddenErr))
+	}
+
+	diskErr := fmt.Errorf("write: no space left on device")
+	if !strings.Contains(formatFriendlyError(diskErr), "空间不足") {
+		t.Errorf("Disk full error mapping failed: %s", formatFriendlyError(diskErr))
+	}
+}
+
+

@@ -242,14 +242,14 @@ func (a *App) SaveRawCookie(cookieStr string) error {
 	return a.biliClient.ParseAndSaveRawCookie(cookieStr)
 }
 
-// CheckFFmpeg 检查内置合成引擎状态 (纯 Go 原生极速合成，100% 始终就绪)
+// CheckFFmpeg 检查音视频合成引擎状态 (纯 Go 原生复用引擎，零外部依赖)
 func (a *App) CheckFFmpeg() (map[string]any, error) {
 	return map[string]any{
 		"ready":   true,
-		"path":    "内置 Go 原生合成引擎",
-		"info":    "Pure Go Built-in Muxer (Zero Dependency, Native Fast Muxing)",
+		"path":    "纯 Go 原生复用引擎 (零外部依赖)",
+		"info":    "Pure Go Built-in Muxer (fMP4 / MP4 / FLAC)",
 		"error":   "",
-		"autoDir": "",
+		"autoDir": a.cfgMgr.GetBinDir(),
 	}, nil
 }
 

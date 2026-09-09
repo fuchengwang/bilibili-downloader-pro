@@ -325,9 +325,10 @@ func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 		_ = os.Remove(target.AudioTmpPath)
 		if deleteFile && target.OutputPath != "" {
 			_ = os.Remove(target.OutputPath)
-			// 如果所在目录是合集子目录且已经为空，顺便清理空文件夹
+			// 如果所在目录是合集子目录且已经为空，顺便清理空文件夹 (严格排除主下载目录)
 			dir := filepath.Dir(target.OutputPath)
-			if dir != "" && dir != "." {
+			rootDir := filepath.Clean(m.cfgMgr.Get().DownloadDir)
+			if dir != "" && dir != "." && filepath.Clean(dir) != rootDir {
 				entries, err := os.ReadDir(dir)
 				if err == nil && len(entries) == 0 {
 					_ = os.Remove(dir)
@@ -418,11 +419,14 @@ func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) {
 			_ = os.Remove(t.VideoTmpPath)
 			_ = os.Remove(t.AudioTmpPath)
 		}
-		// 顺便清理可能残留的空合集目录
+		// 顺便清理可能残留的空合集目录 (严格排除主下载目录)
+		rootDir := filepath.Clean(m.cfgMgr.Get().DownloadDir)
 		for dir := range dirsToCheck {
-			entries, err := os.ReadDir(dir)
-			if err == nil && len(entries) == 0 {
-				_ = os.Remove(dir)
+			if filepath.Clean(dir) != rootDir {
+				entries, err := os.ReadDir(dir)
+				if err == nil && len(entries) == 0 {
+					_ = os.Remove(dir)
+				}
 			}
 		}
 	}
@@ -664,6 +668,9 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	err = vDownloader.DownloadWithConcurrency(ctx, threads, func(delta int64) {
 		m.mu.Lock()
 		task.DownloadedBytes += delta
+		if task.DownloadedBytes < 0 {
+			task.DownloadedBytes = 0
+		}
 		m.mu.Unlock()
 	})
 	if err != nil {
@@ -680,6 +687,9 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		err = aDownloader.DownloadSingleStream(ctx, func(delta int64) {
 			m.mu.Lock()
 			task.DownloadedBytes += delta
+			if task.DownloadedBytes < 0 {
+				task.DownloadedBytes = 0
+			}
 			m.mu.Unlock()
 		})
 		if err != nil {

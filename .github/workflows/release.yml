@@ -97,6 +97,7 @@ jobs:
       - name: Build macOS Universal Application
         run: wails build -platform darwin/universal
 
+
       - name: Package macOS App into Zip
         run: |
           cd build/bin

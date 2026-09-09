@@ -160,19 +160,25 @@ func (c *Client) OpenNativeBrowserLogin(ctx context.Context) error {
 		return c.runNativeLoginCmd(ctx, exec.CommandContext(ctx, helperBin))
 	}
 
-	// 2. 检测系统是否具备 swift 解释器 (若开发者安装了 Xcode / Command Line Tools)
-	swiftPath, err := exec.LookPath("swift")
-	if err == nil && swiftPath != "" {
-		tmpFile := filepath.Join(os.TempDir(), "bilibili_mac_login.swift")
-		if wErr := os.WriteFile(tmpFile, []byte(swiftLoginScript), 0600); wErr == nil {
-			defer os.Remove(tmpFile)
-			return c.runNativeLoginCmd(ctx, exec.CommandContext(ctx, swiftPath, tmpFile))
+	// 2. 检测系统是否真正安装了 Xcode / Command Line Tools (使用 xcode-select -p 避免命中 /usr/bin/swift 导致系统弹窗)
+	if hasDevTools() {
+		if swiftPath, err := exec.LookPath("swift"); err == nil && swiftPath != "" {
+			tmpFile := filepath.Join(os.TempDir(), "bilibili_mac_login.swift")
+			if wErr := os.WriteFile(tmpFile, []byte(swiftLoginScript), 0600); wErr == nil {
+				defer os.Remove(tmpFile)
+				return c.runNativeLoginCmd(ctx, exec.CommandContext(ctx, swiftPath, tmpFile))
+			}
 		}
 	}
 
 	// 3. 干净系统兜底：打开系统默认浏览器，并引导用户使用扫码或粘贴 Cookie
 	_ = exec.CommandContext(ctx, "open", "https://passport.bilibili.com/login").Start()
-	return fmt.Errorf("当前系统未安装 Swift 开发者工具。已为您在默认浏览器中打开登录页面，登录后可在「填入 Cookie」中粘贴凭证，或推荐直接使用官方「扫码登录」")
+	return fmt.Errorf("已为您在默认浏览器中打开登录页面，登录后可在「填入 Cookie」中粘贴凭证，或推荐直接使用更便捷的官方「扫码登录」")
+}
+
+func hasDevTools() bool {
+	cmd := exec.Command("xcode-select", "-p")
+	return cmd.Run() == nil
 }
 
 func (c *Client) runNativeLoginCmd(ctx context.Context, cmd *exec.Cmd) error {

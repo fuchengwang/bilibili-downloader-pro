@@ -70,6 +70,7 @@ if [ ! -d "$APP_PATH" ]; then
   exit 1
 fi
 
+
 echo "==> 执行 macOS 应用签名 (Hardened Runtime + Timestamp)..."
 xattr -cr "$APP_PATH"
 if [ "$SIGN_IDENTITY" != "-" ]; then
@@ -145,8 +146,9 @@ if [ ! -f "$WIN_EXE" ]; then
   exit 1
 fi
 
-echo "==> 压缩 Windows 发布包..."
-(cd build/bin && rm -f "$WIN_ZIP" && zip -9 "BBDown-Pro-Windows-amd64.zip" "BBDown Pro.exe")
+echo "==> 压缩 Windows 发布包 (纯 Go 原生极简)..."
+(cd build/bin && rm -f "$WIN_ZIP" && zip -9 "$WIN_ZIP" "BBDown Pro.exe")
+
 
 # 8. 发布 / 更新到 GitHub Releases
 echo "==> [6/6] 上传发布至 GitHub Releases (${TAG})..."

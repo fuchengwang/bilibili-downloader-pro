@@ -130,7 +130,11 @@ func (m *ConfigManager) Save(s Settings) error {
 		return err
 	}
 	filePath := filepath.Join(m.dir, "settings.json")
-	return os.WriteFile(filePath, data, 0644)
+	tmpPath := filePath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, filePath)
 }
 
 func (m *ConfigManager) Get() Settings {
@@ -146,3 +150,11 @@ func (m *ConfigManager) GetCookiesPath() string {
 func (m *ConfigManager) GetTasksPath() string {
 	return filepath.Join(m.dir, "tasks.json")
 }
+
+// GetBinDir 获取用户数据目录下的内置二进制程序目录 (用于持久化自愈部署的 ffmpeg 等)
+func (m *ConfigManager) GetBinDir() string {
+	binDir := filepath.Join(m.dir, "bin")
+	_ = os.MkdirAll(binDir, 0755)
+	return binDir
+}
+

@@ -88,11 +88,18 @@ func (c *Client) SignWbiParams(ctx context.Context, params map[string]string) (s
 	mixinKey := c.wbiMixin
 	c.mu.RUnlock()
 
-	params["wts"] = strconv.FormatInt(time.Now().Unix(), 10)
+	// 浅拷贝避免多任务并发签名时修改调用方 map 导致 concurrent map writes 致命崩溃
+	clonedParams := make(map[string]string, len(params)+1)
+	for k, v := range params {
+		clonedParams[k] = v
+	}
+	if _, ok := clonedParams["wts"]; !ok {
+		clonedParams["wts"] = strconv.FormatInt(time.Now().Unix(), 10)
+	}
 
 	// 1. 字典序排列 key
 	var keys []string
-	for k := range params {
+	for k := range clonedParams {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -100,7 +107,7 @@ func (c *Client) SignWbiParams(ctx context.Context, params map[string]string) (s
 	// 2. 拼接 query
 	var queryParts []string
 	for _, k := range keys {
-		v := params[k]
+		v := clonedParams[k]
 		// 过滤字符: ! ' ( ) *
 		cleaned := strings.Map(func(r rune) rune {
 			if r == '!' || r == '\'' || r == '(' || r == ')' || r == '*' {

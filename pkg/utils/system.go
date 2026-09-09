@@ -3,7 +3,6 @@ package utils
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -165,18 +164,5 @@ func OpenFile(path string) error {
 	return openFileOS(path)
 }
 
-// FFmpegVersionInfo 获取 FFmpeg 版本信息
-func FFmpegVersionInfo(ffmpegPath string) (bool, string, error) {
-	if ffmpegPath == "" {
-		return false, "未配置 FFmpeg 路径", fmt.Errorf("ffmpeg path is empty")
-	}
-	out, err := exec.Command(ffmpegPath, "-version").CombinedOutput()
-	if err != nil {
-		return false, string(out), err
-	}
-	lines := strings.Split(string(out), "\n")
-	if len(lines) > 0 {
-		return true, strings.TrimSpace(lines[0]), nil
-	}
-	return true, "FFmpeg 已就绪", nil
-}
+
+

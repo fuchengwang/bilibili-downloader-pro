@@ -121,30 +121,33 @@ func (s *StreamDownloader) GetTotalSize(ctx context.Context) (int64, error) {
 			continue
 		}
 
-		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		// 处理 206 Partial Content：必须严格依赖 Content-Range 头计算文件总大小，严禁读取仅代表分片大小的 Content-Length
+		if resp.StatusCode == http.StatusPartialContent {
+			if cr := resp.Header.Get("Content-Range"); cr != "" {
+				_, _, total, pErr := parseContentRange(cr)
+				if pErr == nil && total > 0 {
+					resp.Body.Close()
+					s.totalSize = total
+					s.urlIdx = (s.urlIdx + i) % len(s.urls)
+					return total, nil
+				}
+			}
 			resp.Body.Close()
 			continue
 		}
 
-		if cr := resp.Header.Get("Content-Range"); cr != "" {
-			_, _, total, pErr := parseContentRange(cr)
-			if pErr == nil && total > 0 {
-				resp.Body.Close()
-				s.totalSize = total
-				s.urlIdx = (s.urlIdx + i) % len(s.urls)
-				return total, nil
+		// 处理 200 OK：服务端未按 Range 响应而是返回整个流实体，此时方可读取 Content-Length
+		if resp.StatusCode == http.StatusOK {
+			if cl := resp.Header.Get("Content-Length"); cl != "" {
+				if size, err := strconv.ParseInt(cl, 10, 64); err == nil && size > 0 {
+					resp.Body.Close()
+					s.totalSize = size
+					s.urlIdx = (s.urlIdx + i) % len(s.urls)
+					return size, nil
+				}
 			}
+			resp.Body.Close()
 		}
-
-		if cl := resp.Header.Get("Content-Length"); cl != "" {
-			if size, err := strconv.ParseInt(cl, 10, 64); err == nil && size > 0 {
-				resp.Body.Close()
-				s.totalSize = size
-				s.urlIdx = (s.urlIdx + i) % len(s.urls)
-				return size, nil
-			}
-		}
-		resp.Body.Close()
 	}
 
 	if lastErr != nil {
@@ -200,8 +203,11 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 			return nil
 		}
 		if s.totalSize > 0 && startOffset > s.totalSize {
-			// 文件过长，存在脏数据，彻底清理
+			// 文件过长，存在脏数据，彻底清理并扣减进度统计
 			_ = os.Remove(s.targetPath)
+			if progressFn != nil && startOffset > 0 {
+				progressFn(-startOffset)
+			}
 			startOffset = 0
 		}
 
@@ -237,8 +243,15 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 			if info, err := os.Stat(s.targetPath); err == nil && s.totalSize > 0 && info.Size() == s.totalSize {
 				return nil
 			}
-			// 否则说明服务端拒绝当前 Range 或本地大小异常，清理本地文件并轮换 CDN 重试
+			// 否则说明服务端拒绝当前 Range 或本地大小异常，清理本地文件并扣减进度后轮换 CDN 重试
+			var removedBytes int64 = 0
+			if fi, err := os.Stat(s.targetPath); err == nil {
+				removedBytes = fi.Size()
+			}
 			_ = os.Remove(s.targetPath)
+			if progressFn != nil && removedBytes > 0 {
+				progressFn(-removedBytes)
+			}
 			s.rotateURL()
 			time.Sleep(300 * time.Millisecond)
 			continue
@@ -273,7 +286,14 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 					if rStart != startOffset {
 						resp.Body.Close()
 						lastErr = fmt.Errorf("Content-Range 起点错位 (请求 %d, 响应 %d)，重置为从头下载", startOffset, rStart)
+						var removedBytes int64 = 0
+						if fi, err := os.Stat(s.targetPath); err == nil {
+							removedBytes = fi.Size()
+						}
 						_ = os.Remove(s.targetPath)
+						if progressFn != nil && removedBytes > 0 {
+							progressFn(-removedBytes)
+						}
 						s.rotateURL()
 						time.Sleep(300 * time.Millisecond)
 						continue

@@ -150,11 +150,9 @@ onMounted(async () => {
     showToast(`下载出错: ${errorTask.title} (${errorTask.errorMsg})`, 'error')
   })
 
-  // 5. 监听窗口重新激活事件，切回应用时立即触发一次剪贴板检测
+  // 5. 监听窗口重新聚焦与唤醒事件，用户复制链接切回软件时毫秒级自动感应，杜绝后台无谓轮询触发系统隐私告警
   window.addEventListener('focus', checkAndAutoParseClipboard)
-
-  // 剪贴板低频保底轮询 (由 1.5 秒放宽至 3.5 秒，配合 focus 事件毫秒级感应且避免频繁触碰系统剪贴板)
-  clipboardTimer = setInterval(checkAndAutoParseClipboard, 3500)
+  EventsOn('app:wakeup', checkAndAutoParseClipboard)
 })
 
 onUnmounted(() => {

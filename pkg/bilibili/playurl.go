@@ -581,13 +581,8 @@ func collectSortedCDNs(baseURL string, backupURLs []string) []string {
 		}
 	}
 
-	// 最后追加兜底的其他候选
-	for _, u := range tier3Other {
-		if !seen[u] {
-			seen[u] = true
-			result = append(result, u)
-		}
-	}
+	// 最后追加兜底的其他候选 (如 PCDN 边缘节点)
+	result = append(result, tier3Other...)
 
 	if len(result) == 0 {
 		result = append(result, baseURL)

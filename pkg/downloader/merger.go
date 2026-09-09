@@ -72,11 +72,52 @@ func scanBoxes(f *os.File, fileSize int64) ([]BoxInfo, error) {
 	return boxes, nil
 }
 
-// MergeAudioVideo 纯 Go 原生极速无损音视频流复用封装器 (100% 零外部依赖，毫秒级完成，零内存复制)
+// MergeAudioVideo 纯 Go 原生音视频复用封装器 (零 FFmpeg 外部依赖，原生支持 fMP4 / MP4 / 裸 FLAC)
 func MergeAudioVideo(videoPath, audioPath, outputPath string, deleteTemp bool) error {
 	_ = os.MkdirAll(filepath.Dir(outputPath), 0755)
 
 	// 如果无音频流或音频文件不存在，直接重命名/拷贝视频流
+	if audioPath == "" || !fileExists(audioPath) {
+		if err := copyOrRename(videoPath, outputPath); err != nil {
+			return err
+		}
+		if deleteTemp {
+			_ = os.Remove(videoPath)
+		}
+		return nil
+	}
+
+	actualAudioPath := audioPath
+	var tmpFmp4 string
+
+	// 检测是否为原生裸 FLAC 音频流 (以 "fLaC" 签名开头)
+	if IsRawFlac(audioPath) {
+		tmpFmp4 = filepath.Join(filepath.Dir(outputPath), fmt.Sprintf(".flac.%d.m4s", os.Getpid()))
+		_ = os.Remove(tmpFmp4)
+		if err := PackageRawFlacToFMP4(audioPath, tmpFmp4); err != nil {
+			_ = os.Remove(tmpFmp4)
+			return fmt.Errorf("裸 FLAC 音频封装为 fMP4 失败: %w", err)
+		}
+		actualAudioPath = tmpFmp4
+	}
+
+	// 直接调用纯 Go 原生复用封装
+	err := mergeWithPureGo(videoPath, actualAudioPath, outputPath, deleteTemp)
+
+	if tmpFmp4 != "" {
+		_ = os.Remove(tmpFmp4)
+		if err == nil && deleteTemp {
+			_ = os.Remove(audioPath)
+		}
+	}
+
+	return err
+}
+
+
+func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) error {
+	_ = os.MkdirAll(filepath.Dir(outputPath), 0755)
+
 	if audioPath == "" || !fileExists(audioPath) {
 		if err := copyOrRename(videoPath, outputPath); err != nil {
 			return err
