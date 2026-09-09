@@ -150,23 +150,16 @@ onMounted(async () => {
     showToast(`下载出错: ${errorTask.title} (${errorTask.errorMsg})`, 'error')
   })
 
-  // 定时兜底轮询
-  taskTimer = setInterval(async () => {
-    try {
-      const tList = await GetTasks()
-      if (tList) {
-        tasks.value = tList
-      }
-    } catch (e) {}
-  }, 1000)
+  // 5. 监听窗口重新激活事件，切回应用时立即触发一次剪贴板检测
+  window.addEventListener('focus', checkAndAutoParseClipboard)
 
-  // 剪贴板轮询 (每 1.5 秒感应一次)
-  clipboardTimer = setInterval(checkAndAutoParseClipboard, 1500)
+  // 剪贴板低频保底轮询 (由 1.5 秒放宽至 3.5 秒，配合 focus 事件毫秒级感应且避免频繁触碰系统剪贴板)
+  clipboardTimer = setInterval(checkAndAutoParseClipboard, 3500)
 })
 
 onUnmounted(() => {
-  if (taskTimer) clearInterval(taskTimer)
   if (clipboardTimer) clearInterval(clipboardTimer)
+  window.removeEventListener('focus', checkAndAutoParseClipboard)
 })
 
 function triggerConfetti() {

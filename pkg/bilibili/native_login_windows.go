@@ -177,7 +177,16 @@ func (c *Client) OpenNativeBrowserLogin(appCtx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		go func(dir string) {
+			for i := 0; i < 5; i++ {
+				time.Sleep(500 * time.Millisecond)
+				if err := os.RemoveAll(dir); err == nil {
+					return
+				}
+			}
+		}(tmpDir)
+	}()
 
 	// 3. Configure Chrome/Edge launch options
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
@@ -189,7 +198,7 @@ func (c *Client) OpenNativeBrowserLogin(appCtx context.Context) error {
 		chromedp.UserDataDir(tmpDir),
 	)
 
-	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(appCtx, opts...)
 	defer cancelAlloc()
 
 	// Ensure the browser window itself is closed if we exit early

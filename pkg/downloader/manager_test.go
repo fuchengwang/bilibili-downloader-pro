@@ -74,7 +74,6 @@ func TestWorkerTokenIsolation(t *testing.T) {
 			// cancel v1
 		},
 	}
-	mgr.activeCount = 1
 	mgr.mu.Unlock()
 
 	// 模拟新 worker (token_v2) 已经拉起
@@ -85,35 +84,76 @@ func TestWorkerTokenIsolation(t *testing.T) {
 			// cancel v2
 		},
 	}
-	mgr.activeCount = 2
 	mgr.mu.Unlock()
 
 	// 旧 worker (token_v1) 退出并执行清理逻辑
 	mgr.mu.Lock()
 	if w, ok := mgr.workers[taskID]; ok && w.token == "token_v1" {
 		delete(mgr.workers, taskID)
-		mgr.activeCount--
 	}
 	mgr.mu.Unlock()
 
 	// 验证 token_v2 未被旧 worker 误删
 	mgr.mu.RLock()
 	w, exists := mgr.workers[taskID]
-	active := mgr.activeCount
+	active := len(mgr.workers)
 	mgr.mu.RUnlock()
 
 	if !exists || w.token != "token_v2" {
 		t.Fatalf("新 Worker Token 被旧 Worker 错误覆盖或删除了: exists=%v, token=%s", exists, w.token)
 	}
-	if active != 2 {
+	if active != 1 {
 		t.Fatalf("Active count 计算异常: %d", active)
 	}
 
 	// 清理模拟状态
 	mgr.mu.Lock()
 	delete(mgr.workers, taskID)
-	mgr.activeCount = 0
 	mgr.mu.Unlock()
+}
+
+// TestPauseNoDeadlockOnQueue 验证暂停后 worker 槽位正确释放，后续排队任务可继续拉起
+func TestPauseNoDeadlockOnQueue(t *testing.T) {
+	mgr := newTestManager(t)
+
+	// 模拟 3 个任务被暂停，确认 workers 映射为空，调度器容量可用
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("task_%d", i)
+		mgr.mu.Lock()
+		mgr.tasks = append(mgr.tasks, &DownloadTask{
+			ID:     id,
+			Status: StatusDownloading,
+		})
+		mgr.workers[id] = workerHandle{
+			token:  fmt.Sprintf("token_%d", i),
+			cancel: func() {},
+		}
+		mgr.mu.Unlock()
+	}
+
+	if len(mgr.workers) != 3 {
+		t.Fatalf("预设 worker 数量错误: %d", len(mgr.workers))
+	}
+
+	// 触发全部暂停，模拟各任务退出清理
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("task_%d", i)
+		_ = mgr.PauseTask(id)
+		// 模拟 runTask defer 的清理
+		mgr.mu.Lock()
+		if w, ok := mgr.workers[id]; ok && w.token == fmt.Sprintf("token_%d", i) {
+			delete(mgr.workers, id)
+		}
+		mgr.mu.Unlock()
+	}
+
+	mgr.mu.RLock()
+	activeRemaining := len(mgr.workers)
+	mgr.mu.RUnlock()
+
+	if activeRemaining != 0 {
+		t.Fatalf("暂停后仍有残留活跃 worker: %d", activeRemaining)
+	}
 }
 
 // TestTaskDeduplication 测试任务去重机制

@@ -133,7 +133,10 @@ async function fetchQualities(detail: bilibili.VideoDetail, ep: bilibili.Episode
 
 function handleSingleDownload() {
   if (!parsedDetail.value || !parsedDetail.value.episodes || parsedDetail.value.episodes.length === 0) return
-  const ep = parsedDetail.value.episodes[0]
+  const targetIdx = (parsedDetail.value.defaultPage && parsedDetail.value.defaultPage > 0)
+    ? parsedDetail.value.defaultPage - 1
+    : 0
+  const ep = parsedDetail.value.episodes[targetIdx] || parsedDetail.value.episodes[0]
   emit('quick-download-single', parsedDetail.value, ep, selectedQuality.value, props.defaultCodec || 'auto')
 }
 

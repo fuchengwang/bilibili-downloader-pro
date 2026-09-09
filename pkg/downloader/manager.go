@@ -29,7 +29,6 @@ type workerHandle struct {
 type DownloadManager struct {
 	mu           sync.RWMutex
 	tasks        []*DownloadTask
-	activeCount  int
 	workers      map[string]workerHandle
 	callback     ProgressCallback
 	biliClient   *bilibili.Client
@@ -226,7 +225,6 @@ func (m *DownloadManager) PauseTask(id string) error {
 	m.mu.Lock()
 	if w, ok := m.workers[id]; ok {
 		w.cancel()
-		delete(m.workers, id)
 	}
 
 	var task *DownloadTask
@@ -281,7 +279,6 @@ func (m *DownloadManager) CancelTask(id string) error {
 	m.mu.Lock()
 	if w, ok := m.workers[id]; ok {
 		w.cancel()
-		delete(m.workers, id)
 	}
 
 	var task *DownloadTask
@@ -309,7 +306,6 @@ func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 	m.mu.Lock()
 	if w, ok := m.workers[id]; ok {
 		w.cancel()
-		delete(m.workers, id)
 	}
 
 	var newTasks []*DownloadTask
@@ -350,7 +346,6 @@ func (m *DownloadManager) PauseAll() {
 	for _, w := range m.workers {
 		w.cancel()
 	}
-	m.workers = make(map[string]workerHandle)
 
 	var modified []*DownloadTask
 	for _, t := range m.tasks {
@@ -476,7 +471,7 @@ func (m *DownloadManager) checkAndSpawnTasks() {
 		maxCon = 3
 	}
 
-	if m.activeCount >= maxCon {
+	if len(m.workers) >= maxCon {
 		m.mu.Unlock()
 		return
 	}
@@ -499,7 +494,6 @@ func (m *DownloadManager) checkAndSpawnTasks() {
 
 	nextTask.Status = StatusDownloading
 	nextTask.ErrorMsg = ""
-	m.activeCount++
 
 	token := newUUID()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -541,7 +535,6 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		// 校验 token：仅当当前任务句柄属于本 worker 时才清理，防止旧 worker 退出误删新 worker 的取消句柄
 		if w, ok := m.workers[task.ID]; ok && w.token == token {
 			delete(m.workers, task.ID)
-			m.activeCount--
 		}
 		m.mu.Unlock()
 		m.SaveTasks()

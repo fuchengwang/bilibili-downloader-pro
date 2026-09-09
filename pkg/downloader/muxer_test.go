@@ -229,3 +229,30 @@ func TestAtomicMergeFailureSafety(t *testing.T) {
 		}
 	}
 }
+
+// TestWindowsCopyCleanup 模拟 Windows 下重命名失败走复制降级时，源临时文件必须被彻底删除
+func TestWindowsCopyCleanup(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "test.merging.123.tmp")
+	dstFile := filepath.Join(tmpDir, "output.mp4")
+
+	testData := []byte("VALID_VIDEO_DATA_STREAM_TEST")
+	if err := os.WriteFile(srcFile, testData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyOrRename(srcFile, dstFile); err != nil {
+		t.Fatalf("copyOrRename failed: %v", err)
+	}
+
+	// 验证目标文件已写入
+	dstContent, err := os.ReadFile(dstFile)
+	if err != nil || !bytes.Equal(dstContent, testData) {
+		t.Fatalf("目标文件内容不符: %v", err)
+	}
+
+	// 验证源临时文件已被彻底删除
+	if _, err := os.Stat(srcFile); !os.IsNotExist(err) {
+		t.Fatalf("Windows 复制降级后未能删除源临时文件，存在磁盘泄漏风险: %s", srcFile)
+	}
+}

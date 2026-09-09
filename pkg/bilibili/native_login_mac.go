@@ -137,25 +137,53 @@ app.delegate = delegate
 app.run()
 `
 
-// OpenNativeBrowserLogin opens a native macOS WebKit window and blocks until SESSDATA is acquired or window is closed.
+// OpenNativeBrowserLogin 优先使用应用内置预编译登录器，环境无开发工具时自动平滑降级引导
 func (c *Client) OpenNativeBrowserLogin(ctx context.Context) error {
-	tmpFile := filepath.Join(os.TempDir(), "bilibili_mac_login.swift")
-	err := os.WriteFile(tmpFile, []byte(swiftLoginScript), 0600)
-	if err != nil {
-		return fmt.Errorf("failed to create swift script: %w", err)
+	// 1. 优先检测是否存在预编译好的原生二进制 Helper
+	execDir := filepath.Dir(os.Args[0])
+	candidates := []string{
+		filepath.Join(execDir, "bili-mac-login"),
+		filepath.Join(execDir, "..", "MacOS", "bili-mac-login"),
+		filepath.Join(execDir, "..", "Resources", "bili-mac-login"),
+		filepath.Join(os.TempDir(), "bili_mac_login_bin"),
 	}
-	defer os.Remove(tmpFile)
 
-	cmd := exec.CommandContext(ctx, "swift", tmpFile)
+	var helperBin string
+	for _, cand := range candidates {
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Mode()&0111 != 0 {
+			helperBin = cand
+			break
+		}
+	}
+
+	if helperBin != "" {
+		return c.runNativeLoginCmd(ctx, exec.CommandContext(ctx, helperBin))
+	}
+
+	// 2. 检测系统是否具备 swift 解释器 (若开发者安装了 Xcode / Command Line Tools)
+	swiftPath, err := exec.LookPath("swift")
+	if err == nil && swiftPath != "" {
+		tmpFile := filepath.Join(os.TempDir(), "bilibili_mac_login.swift")
+		if wErr := os.WriteFile(tmpFile, []byte(swiftLoginScript), 0600); wErr == nil {
+			defer os.Remove(tmpFile)
+			return c.runNativeLoginCmd(ctx, exec.CommandContext(ctx, swiftPath, tmpFile))
+		}
+	}
+
+	// 3. 干净系统兜底：打开系统默认浏览器，并引导用户使用扫码或粘贴 Cookie
+	_ = exec.CommandContext(ctx, "open", "https://passport.bilibili.com/login").Start()
+	return fmt.Errorf("当前系统未安装 Swift 开发者工具。已为您在默认浏览器中打开登录页面，登录后可在「填入 Cookie」中粘贴凭证，或推荐直接使用官方「扫码登录」")
+}
+
+func (c *Client) runNativeLoginCmd(ctx context.Context, cmd *exec.Cmd) error {
 	var out bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
+	err := cmd.Run()
 	if err != nil {
-		// user closed window or process killed
-		return fmt.Errorf("登录已取消或失败: %v, stderr: %s", err, stderr.String())
+		return fmt.Errorf("登录窗口已关闭或已取消: %v", err)
 	}
 
 	output := out.String()
@@ -163,11 +191,12 @@ func (c *Client) OpenNativeBrowserLogin(ctx context.Context) error {
 		lines := strings.Split(output, "\n")
 		for _, line := range lines {
 			if strings.HasPrefix(line, "SESSDATA=") {
-				c.ParseAndSaveRawCookie(line)
+				_ = c.ParseAndSaveRawCookie(line)
+				_, _ = c.GetUserInfo(context.Background())
 				return nil
 			}
 		}
 	}
 
-	return fmt.Errorf("未获取到登录 Cookie")
+	return fmt.Errorf("未获取到有效登录 Cookie")
 }

@@ -3,6 +3,7 @@
 package utils
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,9 +16,8 @@ func openDirectoryOS(target string) error {
 	target = filepath.Clean(target)
 	fi, err := os.Stat(target)
 	if err == nil && !fi.IsDir() {
-		// 目标是文件：调用 explorer.exe /select, <path>
-		// explorer.exe 本身是 Win32 GUI 程序，Start() 不会产生任何 CMD/控制台弹窗
-		cmd := exec.Command("explorer", "/select,", target)
+		// 目标是文件：调用 explorer.exe /select,"<path>" 紧凑格式，防止路径识别失败退化为打开根目录
+		cmd := exec.Command("explorer", fmt.Sprintf("/select,%s", target))
 		return cmd.Start()
 	}
 
