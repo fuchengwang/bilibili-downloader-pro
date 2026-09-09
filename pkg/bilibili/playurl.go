@@ -309,13 +309,17 @@ func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid
 		}
 		reqURL := "https://api.bilibili.com/pgc/player/web/v2/playurl?" + params.Encode()
 		var resp playurlAPIResp
-		if err := c.GetJSON(ctx, reqURL, &resp); err == nil {
-			if resp.Code == 0 && resp.getDash() != nil {
-				return &resp, nil
-			}
-			if resp.Result != nil && (resp.Result.Dash != nil || len(resp.Result.AcceptQuality) > 0) {
-				return &resp, nil
-			}
+		if err := c.GetJSON(ctx, reqURL, &resp); err != nil {
+			return nil, fmt.Errorf("请求番剧媒体流失败: %w", err)
+		}
+		if resp.Code == 0 && resp.getDash() != nil {
+			return &resp, nil
+		}
+		if resp.Result != nil && (resp.Result.Dash != nil || len(resp.Result.AcceptQuality) > 0) {
+			return &resp, nil
+		}
+		if resp.Message != "" {
+			return nil, fmt.Errorf("番剧媒体流返回异常 (code=%d): %s (请确认是否需要大会员权限)", resp.Code, resp.Message)
 		}
 		return nil, fmt.Errorf("该视频为哔哩哔哩大会员专享内容，当前账号未开通大会员或未登录，无法下载。请登录大会员账号后再试。")
 	}

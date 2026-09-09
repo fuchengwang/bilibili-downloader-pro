@@ -308,6 +308,10 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 		} else {
 			// 服务器返回 200 OK（说明服务器不支持 Range 或从 0 开始下载），必须从头重写，不能追加！
 			isAppend = false
+			// 扣除之前已计入的字节进度，消除从头重写导致的进度统计漂移
+			if startOffset > 0 && progressFn != nil {
+				progressFn(-startOffset)
+			}
 		}
 
 		downloadErr := s.streamToFile(ctx, resp.Body, isAppend, progressFn)

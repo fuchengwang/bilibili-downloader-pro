@@ -2,7 +2,7 @@ package bilibili
 
 import (
 	"context"
-	"crypto/tls"
+
 	"encoding/json"
 	"fmt"
 	"io"
@@ -51,7 +51,7 @@ func GetDefaultClient() *Client {
 	clientOnce.Do(func() {
 		tr := &http.Transport{
 			Proxy:               http.ProxyFromEnvironment,
-			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+
 			MaxIdleConns:        100,
 			MaxIdleConnsPerHost: 20,
 			IdleConnTimeout:     90 * time.Second,

@@ -322,20 +322,24 @@ func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 	m.mu.Unlock()
 
 	if target != nil {
-		_ = os.Remove(target.VideoTmpPath)
-		_ = os.Remove(target.AudioTmpPath)
-		if deleteFile && target.OutputPath != "" {
-			_ = os.Remove(target.OutputPath)
-			// 如果所在目录是合集子目录且已经为空，顺便清理空文件夹 (严格排除主下载目录)
-			dir := filepath.Dir(target.OutputPath)
-			rootDir := filepath.Clean(m.cfgMgr.Get().DownloadDir)
-			if dir != "" && dir != "." && filepath.Clean(dir) != rootDir {
-				entries, err := os.ReadDir(dir)
-				if err == nil && len(entries) == 0 {
-					_ = os.Remove(dir)
+		// 异步延迟清理临时文件，等待 Worker 协程释放文件句柄后再删除 (修复 Windows EACCES)
+		go func(vTmp, aTmp, outPath string, delFile bool) {
+			time.Sleep(500 * time.Millisecond)
+			_ = os.Remove(vTmp)
+			_ = os.Remove(aTmp)
+			if delFile && outPath != "" {
+				_ = os.Remove(outPath)
+				// 如果所在目录是合集子目录且已经为空，顺便清理空文件夹 (严格排除主下载目录)
+				dir := filepath.Dir(outPath)
+				rootDir := filepath.Clean(m.cfgMgr.Get().DownloadDir)
+				if dir != "" && dir != "." && filepath.Clean(dir) != rootDir {
+					entries, err := os.ReadDir(dir)
+					if err == nil && len(entries) == 0 {
+						_ = os.Remove(dir)
+					}
 				}
 			}
-		}
+		}(target.VideoTmpPath, target.AudioTmpPath, target.OutputPath, deleteFile)
 		m.SaveTasks()
 		m.triggerSchedule()
 	}

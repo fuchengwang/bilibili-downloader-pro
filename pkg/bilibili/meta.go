@@ -182,6 +182,11 @@ func (c *Client) fetchNormalDetail(ctx context.Context, target *ParsedTarget) (*
 			target.EPID = m[1]
 			return c.fetchBangumiDetail(ctx, target)
 		}
+		if m := reSS.FindStringSubmatch(d.RedirectURL); len(m) > 1 {
+			target.Type = TargetBangumi
+			target.SSID = m[1]
+			return c.fetchBangumiDetail(ctx, target)
+		}
 	}
 
 	detail := &VideoDetail{

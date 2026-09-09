@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/Eyevinn/mp4ff/mp4"
 )
@@ -92,7 +93,7 @@ func MergeAudioVideo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 
 	// 检测是否为原生裸 FLAC 音频流 (以 "fLaC" 签名开头)
 	if IsRawFlac(audioPath) {
-		tmpFmp4 = filepath.Join(filepath.Dir(outputPath), fmt.Sprintf(".flac.%d.m4s", os.Getpid()))
+		tmpFmp4 = filepath.Join(filepath.Dir(outputPath), fmt.Sprintf(".flac.%d.%d.m4s", os.Getpid(), time.Now().UnixNano()))
 		_ = os.Remove(tmpFmp4)
 		if err := PackageRawFlacToFMP4(audioPath, tmpFmp4); err != nil {
 			_ = os.Remove(tmpFmp4)
@@ -208,8 +209,15 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 		return fmt.Errorf("音频流缺少 moov 元数据")
 	}
 
-	// 将音频轨道 Track ID 调整为 2 (避免与视频轨 ID 1 冲突)
-	const audioTrackID = uint32(2)
+	// 动态计算音频轨道 Track ID (取视频 moov 中最大 Track ID + 1)，
+	// 避免与包含多条视频/字幕轨的源文件发生 ID 冲突
+	maxTrackID := uint32(0)
+	for _, trak := range vMoov.Traks {
+		if trak.Tkhd != nil && trak.Tkhd.TrackID > maxTrackID {
+			maxTrackID = trak.Tkhd.TrackID
+		}
+	}
+	audioTrackID := maxTrackID + 1
 	aTrak := aMoov.Traks[0]
 	aTrak.Tkhd.TrackID = audioTrackID
 
@@ -221,10 +229,10 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 	}
 
 	vMoov.AddChild(aTrak)
-	vMoov.Mvhd.NextTrackID = 3
+	vMoov.Mvhd.NextTrackID = audioTrackID + 1
 
 	// 3. 创建同目录下的事务性临时输出文件，防止中断时破坏已有文件
-	tmpOutputPath := outputPath + fmt.Sprintf(".merging.%d.tmp", os.Getpid())
+	tmpOutputPath := outputPath + fmt.Sprintf(".merging.%d.%d.tmp", os.Getpid(), time.Now().UnixNano())
 	outFh, err := os.OpenFile(tmpOutputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("创建最终合成临时文件失败: %w", err)

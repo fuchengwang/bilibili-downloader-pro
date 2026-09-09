@@ -23,7 +23,7 @@ func (l *windowsInstanceLock) Release() error {
 }
 
 func tryAcquireSystemLock(configDir string) (*windowsInstanceLock, error) {
-	mutexName, err := windows.UTF16PtrFromString("Global\\BBDownProSingleInstanceMutex_Default")
+	mutexName, err := windows.UTF16PtrFromString("Local\\BBDownProSingleInstanceMutex_Default")
 	if err != nil {
 		return nil, err
 	}

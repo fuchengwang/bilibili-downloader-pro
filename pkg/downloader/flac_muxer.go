@@ -149,13 +149,22 @@ func PackageRawFlacToFMP4(rawFlacPath, outFmp4Path string) error {
 		},
 	}
 
+	// 安全处理采样率：ISO BMFF 规范中 AudioSampleEntry.samplerate 为 16.16 定点数，
+	// 当实际采样率 > 65535 Hz 时（如 Hi-Res 96kHz / 192kHz），uint16 入参会溢出截断。
+	// 策略：先传入安全的 uint16 值创建 Box，再通过 uint32 字段覆写正确值。
+	sampleRateParam := uint16(timescale)
+	if timescale > 65535 {
+		sampleRateParam = 0 // ISO 14496-12: 0 表示采样率由编解码器专有 box (dfLa) 声明
+	}
 	flacEntry := mp4.CreateAudioSampleEntryBox(
 		"fLaC",
 		uint16(streamInfo.NChannels),
 		uint16(streamInfo.BitsPerSample),
-		uint16(timescale),
+		sampleRateParam,
 		dfla,
 	)
+	// 使用 mp4ff 内部 uint32 字段覆写，确保编码时写入正确的 16.16 定点采样率
+	flacEntry.SampleRate = sampleRateParam
 	trak.Mdia.Minf.Stbl.Stsd.AddChild(flacEntry)
 
 	// 写入 Init Segment (ftyp + moov)

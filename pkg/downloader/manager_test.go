@@ -280,6 +280,7 @@ func TestDeleteTaskAndFile(t *testing.T) {
 
 	// 1. 测试仅清除记录 (deleteFile = false)
 	_ = mgr.DeleteTask("test_delete_file_1", false)
+	time.Sleep(700 * time.Millisecond) // 等待异步清理协程完成
 
 	if _, err := os.Stat(outPath); os.IsNotExist(err) {
 		t.Fatal("deleteFile=false 时不应删除本地视频文件")
@@ -299,6 +300,7 @@ func TestDeleteTaskAndFile(t *testing.T) {
 	mgr.mu.Unlock()
 
 	_ = mgr.DeleteTask("test_delete_file_2", true)
+	time.Sleep(700 * time.Millisecond) // 等待异步清理协程完成
 
 	if _, err := os.Stat(outPath); !os.IsNotExist(err) {
 		t.Fatal("deleteFile=true 时未能成功删除本地视频文件")
