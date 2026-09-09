@@ -159,7 +159,7 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 			collFolder = fmt.Sprintf("%s [%s]", sanitizedTitle, ep.BVID)
 		}
 		outDir = filepath.Join(cfg.DownloadDir, collFolder)
-		partName := cleanPartTitle(req.Title, ep.Title, ep.Index)
+		partName := formatFileNameByTemplate(cfg.FileNameTemplate, req.Title, ep.Title, ep.BVID, ep.Index)
 		fallbackPart := fmt.Sprintf("P%02d", ep.Index)
 		if ep.Index <= 0 {
 			fallbackPart = "video"
@@ -172,7 +172,8 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 	} else {
 		// 单视频：直接保存在下载主目录
 		outDir = cfg.DownloadDir
-		baseFileName = sanitizedTitle
+		partName := formatFileNameByTemplate(cfg.FileNameTemplate, req.Title, ep.Title, ep.BVID, ep.Index)
+		baseFileName = utils.SanitizeFilename(partName, sanitizedTitle)
 		_ = os.MkdirAll(outDir, 0755)
 	}
 
@@ -322,13 +323,12 @@ func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 	m.mu.Unlock()
 
 	if target != nil {
-		// 异步延迟清理临时文件，等待 Worker 协程释放文件句柄后再删除 (修复 Windows EACCES)
+		// 异步安全清理临时文件，带指数退避重试确保 Windows 句柄释放后成功清理 (杜绝 EACCES 权限泄漏)
 		go func(vTmp, aTmp, outPath string, delFile bool) {
-			time.Sleep(500 * time.Millisecond)
-			_ = os.Remove(vTmp)
-			_ = os.Remove(aTmp)
+			safeRemoveWithRetry(vTmp)
+			safeRemoveWithRetry(aTmp)
 			if delFile && outPath != "" {
-				_ = os.Remove(outPath)
+				safeRemoveWithRetry(outPath)
 				// 如果所在目录是合集子目录且已经为空，顺便清理空文件夹 (严格排除主下载目录)
 				dir := filepath.Dir(outPath)
 				rootDir := filepath.Clean(m.cfgMgr.Get().DownloadDir)
@@ -415,14 +415,14 @@ func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) {
 		dirsToCheck := make(map[string]bool)
 		for _, t := range removed {
 			if t.OutputPath != "" {
-				_ = os.Remove(t.OutputPath)
+				safeRemoveWithRetry(t.OutputPath)
 				dir := filepath.Dir(t.OutputPath)
 				if dir != "" && dir != "." {
 					dirsToCheck[dir] = true
 				}
 			}
-			_ = os.Remove(t.VideoTmpPath)
-			_ = os.Remove(t.AudioTmpPath)
+			safeRemoveWithRetry(t.VideoTmpPath)
+			safeRemoveWithRetry(t.AudioTmpPath)
 		}
 		// 顺便清理可能残留的空合集目录 (严格排除主下载目录)
 		rootDir := filepath.Clean(m.cfgMgr.Get().DownloadDir)
@@ -564,7 +564,18 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	task.QualityID = sel.QualityID
 	task.QualityLabel = sel.QualityLabel
 	task.Codec = sel.Codec
+
+	// 提前计算并固化包含画质标签的 OutputPath，彻底消除下载期与合成期路径前后不一致
+	qTag := getQualityTag(sel.QualityID, sel.QualityLabel)
+	if qTag != "" {
+		dir := filepath.Dir(task.OutputPath)
+		base := strings.TrimSuffix(filepath.Base(task.OutputPath), ".mp4")
+		if !strings.Contains(base, qTag) {
+			task.OutputPath = filepath.Join(dir, fmt.Sprintf("%s %s.mp4", base, qTag))
+		}
+	}
 	m.mu.Unlock()
+	m.SaveTasks()
 
 	// 2. 准备视频与音频下载器 (支持候选 CDN 自动故障转移)
 	vDownloader := NewStreamDownloader(sel.VideoURLs, task.VideoTmpPath)
@@ -711,27 +722,12 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	// 6. 合成音视频
 	m.setTaskStatus(task, StatusMerging, "")
 
-	// 为最终输出文件名附加 [清晰度] 标识（如 [1080P]、[4K]）
+	// 为最终输出文件确认路径
 	m.mu.RLock()
-	qID := task.QualityID
-	qLbl := task.QualityLabel
-	outP := task.OutputPath
+	finalOutPath := task.OutputPath
 	vTmpP := task.VideoTmpPath
 	aTmpP := task.AudioTmpPath
 	m.mu.RUnlock()
-
-	qTag := getQualityTag(qID, qLbl)
-	finalOutPath := outP
-	if qTag != "" {
-		dir := filepath.Dir(outP)
-		base := strings.TrimSuffix(filepath.Base(outP), ".mp4")
-		if !strings.Contains(base, qTag) {
-			finalOutPath = filepath.Join(dir, fmt.Sprintf("%s %s.mp4", base, qTag))
-			m.mu.Lock()
-			task.OutputPath = finalOutPath
-			m.mu.Unlock()
-		}
-	}
 
 	// 6. 原生纯 Go 极速无损音视频复用合成 (0 依赖，毫秒级完成)
 	err = MergeAudioVideo(vTmpP, aTmpP, finalOutPath, cfg.DeleteTempFiles)
@@ -822,6 +818,74 @@ func cleanPartTitle(mainTitle, partTitle string, index int) string {
 	}
 
 	return cleanPart
+}
+
+// formatFileNameByTemplate 根据用户自定义模板格式化生成文件名
+func formatFileNameByTemplate(tmpl, mainTitle, partTitle, bvid string, index int) string {
+	cleanMain := strings.TrimSpace(mainTitle)
+	cleanPart := strings.TrimSpace(partTitle)
+
+	if strings.HasPrefix(cleanPart, cleanMain) {
+		cleanPart = strings.TrimPrefix(cleanPart, cleanMain)
+		cleanPart = strings.TrimLeft(cleanPart, " -_—|:")
+	}
+
+	// 1. 如果是单视频，part 与 main 相同或为空，直接返回主标题（或自定义模板）
+	if cleanPart == "" || cleanPart == cleanMain {
+		tmplTrim := strings.TrimSpace(tmpl)
+		if tmplTrim == "" || tmplTrim == "{title} - {part}" {
+			return cleanMain
+		}
+		res := strings.ReplaceAll(tmplTrim, "{title} - {part}", "{title}")
+		res = strings.ReplaceAll(res, "{part} - {title}", "{title}")
+		res = strings.ReplaceAll(res, "{part}", cleanMain)
+		res = strings.ReplaceAll(res, "{title}", cleanMain)
+		res = strings.ReplaceAll(res, "{bvid}", bvid)
+		res = strings.ReplaceAll(res, "{index}", "")
+		res = strings.Trim(strings.TrimSpace(res), " ._-")
+		if res == "" {
+			return cleanMain
+		}
+		return res
+	}
+
+	// 2. 如果是多集视频且为默认模板 "{title} - {part}"（或空）：使用标准的规范序号命名 (如 P01. 分P标题)
+	tmplTrim := strings.TrimSpace(tmpl)
+	if tmplTrim == "" || tmplTrim == "{title} - {part}" {
+		return cleanPartTitle(cleanMain, cleanPart, index)
+	}
+
+	// 3. 用户显式自定义了模板：严格按自定义占位符替换
+	idxStr := ""
+	if index > 0 {
+		idxStr = fmt.Sprintf("P%02d", index)
+	}
+
+	res := tmplTrim
+	res = strings.ReplaceAll(res, "{title}", cleanMain)
+	res = strings.ReplaceAll(res, "{part}", cleanPart)
+	res = strings.ReplaceAll(res, "{index}", idxStr)
+	res = strings.ReplaceAll(res, "{bvid}", bvid)
+
+	res = strings.Trim(strings.TrimSpace(res), " ._-")
+	if res == "" {
+		return cleanPart
+	}
+	return res
+}
+
+// safeRemoveWithRetry 带指数退避重试的文件安全删除函数 (专为 Windows 句柄延迟释放防御设计)
+func safeRemoveWithRetry(filePath string) {
+	if filePath == "" {
+		return
+	}
+	for i := 0; i < 5; i++ {
+		err := os.Remove(filePath)
+		if err == nil || os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(time.Duration(100*(1<<i)) * time.Millisecond)
+	}
 }
 
 func formatFriendlyError(err error) string {

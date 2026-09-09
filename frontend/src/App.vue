@@ -244,9 +244,10 @@ async function handleQuickDownloadSingle(
   codec: string
 ) {
   try {
-    const req: downloader.DownloadRequest = {
+    const req: any = {
       bvid: ep.bvid || detail.bvid,
       aid: ep.aid || detail.aid,
+      epid: ep.epid || 0,
       title: detail.title,
       cover: ep.cover || detail.cover,
       isBangumi: detail.type === 'bangumi',
@@ -270,9 +271,11 @@ async function handleEpisodeBatchSubmit(selectedCids: number[], quality: string,
 
   try {
     const detail = activeEpisodeDetail.value
-    const req: downloader.DownloadRequest = {
+    const firstEpWithEpid = detail.episodes?.find((e: any) => e.epid > 0)
+    const req: any = {
       bvid: detail.bvid,
       aid: detail.aid,
+      epid: firstEpWithEpid?.epid || 0,
       title: detail.title,
       cover: detail.cover,
       isBangumi: detail.type === 'bangumi',

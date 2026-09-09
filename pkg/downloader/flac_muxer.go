@@ -175,6 +175,7 @@ func PackageRawFlacToFMP4(rawFlacPath, outFmp4Path string) error {
 	// 4. 流式逐帧封装 FLAC 音频帧至 Fragment (moof + mdat)
 	seqNr := uint32(1)
 	currentDecodeTime := uint64(0)
+	totalFrames := 0
 
 	// 每 ~50 帧打包为一个 Fragment 提升流式效率
 	const framesPerFragment = 50
@@ -226,6 +227,7 @@ func PackageRawFlacToFMP4(rawFlacPath, outFmp4Path string) error {
 
 			currentDecodeTime += uint64(blockSize)
 			framesInFrag++
+			totalFrames++
 		}
 
 		if frag != nil {
@@ -237,6 +239,12 @@ func PackageRawFlacToFMP4(rawFlacPath, outFmp4Path string) error {
 		if framesInFrag == 0 {
 			break
 		}
+	}
+
+	if totalFrames == 0 {
+		_ = outFh.Close()
+		_ = os.Remove(outFmp4Path)
+		return fmt.Errorf("FLAC 音频流不完整或损坏: 未解析到任何有效音频帧")
 	}
 
 	_ = outFh.Sync()

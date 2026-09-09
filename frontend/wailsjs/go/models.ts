@@ -227,6 +227,8 @@ export namespace downloader {
 	export class DownloadRequest {
 	    bvid: string;
 	    aid: number;
+	    epid?: number;
+	    ssid?: number;
 	    title: string;
 	    cover: string;
 	    isBangumi: boolean;
@@ -242,6 +244,8 @@ export namespace downloader {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.bvid = source["bvid"];
 	        this.aid = source["aid"];
+	        this.epid = source["epid"];
+	        this.ssid = source["ssid"];
 	        this.title = source["title"];
 	        this.cover = source["cover"];
 	        this.isBangumi = source["isBangumi"];

@@ -89,13 +89,22 @@ func (a *App) GetAvailableQualities(bvid string, aid, cid, epid int64, isBangumi
 func (a *App) AddDownloadTasks(req downloader.DownloadRequest) ([]*downloader.DownloadTask, error) {
 	// 先获取视频完整信息以匹配选中的 CID
 	var targetType bilibili.TargetType = bilibili.TargetNormal
+	var epidStr, ssidStr string
 	if req.IsBangumi {
 		targetType = bilibili.TargetBangumi
+		if req.EPID > 0 {
+			epidStr = fmt.Sprintf("%d", req.EPID)
+		}
+		if req.SSID > 0 {
+			ssidStr = fmt.Sprintf("%d", req.SSID)
+		}
 	}
 	detail, err := a.biliClient.FetchVideoDetail(a.ctx, &bilibili.ParsedTarget{
 		Type: targetType,
 		BVID: req.BVID,
 		AID:  fmt.Sprintf("%d", req.AID),
+		EPID: epidStr,
+		SSID: ssidStr,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("无法获取集数元数据: %w", err)

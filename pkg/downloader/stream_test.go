@@ -245,3 +245,56 @@ func TestStreamDownloader_MultiCDNFailover(t *testing.T) {
 		t.Fatalf("故障转移下载文件大小不匹配: 期望 %d, 实际 %d", dataSize, len(finalData))
 	}
 }
+
+// TestStreamDownloader_416WithZeroTotalSizeRecovery 红绿灯测试：totalSize <= 0 时遇 416 状态码，旧逻辑无法触发文件清理并耗尽重试报错，新逻辑应能主动清理脏文件自愈完成下载
+func TestStreamDownloader_416WithZeroTotalSizeRecovery(t *testing.T) {
+	dataSize := 100 * 1024
+	srcData := make([]byte, dataSize)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		rangeHdr := req.Header.Get("Range")
+		// 模拟某些 CDN 探测 bytes=0-0 时不支持 Range，返回 400 或不带 Content-Range
+		if rangeHdr == "bytes=0-0" {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		if strings.HasPrefix(rangeHdr, "bytes=") {
+			rangeSpec := strings.TrimPrefix(rangeHdr, "bytes=")
+			parts := strings.Split(rangeSpec, "-")
+			start, _ := strconv.ParseInt(parts[0], 10, 64)
+			// 本地存在脏数据 (200KB > 100KB)，此时请求超出范围返回 416
+			if start >= int64(dataSize) {
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", dataSize))
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
+		}
+
+		// 从 0 开始请求时正常返回 200 OK
+		w.Header().Set("Content-Length", strconv.Itoa(dataSize))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(srcData)
+	}))
+	defer ts.Close()
+
+	tmpDir, _ := os.MkdirTemp("", "zero_totalsize_416_*")
+	defer os.RemoveAll(tmpDir)
+
+	targetFile := filepath.Join(tmpDir, "dirty.downloading")
+	// 预置超长脏数据
+	_ = os.WriteFile(targetFile, make([]byte, 200*1024), 0644)
+
+	dl := NewStreamDownloader([]string{ts.URL}, targetFile)
+	// 此时 dl.totalSize 未知 (0)
+	err := dl.DownloadSingleStream(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("红灯触发：totalSize 未知时遇 416 失败: %v", err)
+	}
+
+	finalData, _ := os.ReadFile(targetFile)
+	if len(finalData) != dataSize {
+		t.Fatalf("自愈后文件大小不匹配: 期望 %d, 实际 %d", dataSize, len(finalData))
+	}
+	t.Logf("绿灯：totalSize 未知时遇 416 成功自愈下载")
+}

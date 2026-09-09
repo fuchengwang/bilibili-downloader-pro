@@ -213,3 +213,38 @@ func TestCorruptAndInvalidAudioCases(t *testing.T) {
 		t.Logf("✓ 空音频直通单视频流测试通过，大小: %.2f KB", float64(fi.Size())/1024)
 	}
 }
+
+// TestPackageRawFlac_ValidStreamInfoButNoFrames 红绿灯测试：STREAMINFO 完全合法但后续无任何有效音频帧时，旧逻辑静默返回 nil 导致生成损坏空文件，新逻辑必须返回明确 error
+func TestPackageRawFlac_ValidStreamInfoButNoFrames(t *testing.T) {
+	flacModDir := findGoModuleDir("github.com/mewkiz/flac")
+	if flacModDir == "" {
+		flacModDir = "/Users/fucheng/Tools/go/pkg/mod/github.com/mewkiz/flac@v1.0.14"
+	}
+	flacDir := filepath.Join(flacModDir, "testdata")
+	flacFiles, err := filepath.Glob(filepath.Join(flacDir, "*.flac"))
+	if err != nil || len(flacFiles) == 0 {
+		t.Skip("FLAC testdata directory not found, skipping")
+	}
+
+	// 读取真实合法 FLAC 文件的前 42 字节 (4 字节 fLaC + 4 字节 STREAMINFO 块头 + 34 字节合法 STREAMINFO)
+	data, err := os.ReadFile(flacFiles[0])
+	if err != nil || len(data) < 42 {
+		t.Skip("Cannot read sample flac, skipping")
+	}
+
+	// 截取前 42 字节，并确保块头的 isLast 标志位置为 1 (0x80)
+	sampleHeader := make([]byte, 42)
+	copy(sampleHeader, data[:42])
+	sampleHeader[4] |= 0x80 // 标记 STREAMINFO 为最后一个元数据块
+
+	tmpDir := t.TempDir()
+	flacPath := filepath.Join(tmpDir, "header_only.flac")
+	outFmp4 := filepath.Join(tmpDir, "out.m4s")
+	_ = os.WriteFile(flacPath, sampleHeader, 0644)
+
+	err = PackageRawFlacToFMP4(flacPath, outFmp4)
+	if err == nil {
+		t.Fatalf("红灯触发：无任何有效音频帧的 FLAC 文件不应返回 nil，当前代码静默返回了 nil 并生成了空 fMP4")
+	}
+	t.Logf("绿灯：成功拦截无有效音频帧的 FLAC 文件，返回错误: %v", err)
+}

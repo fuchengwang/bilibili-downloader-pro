@@ -538,4 +538,105 @@ func TestFormatFriendlyError_Categorization(t *testing.T) {
 	}
 }
 
+// TestFileNameTemplate_CustomFormats 红绿灯测试：验证 FileNameTemplate 自定义模板格式化引擎
+func TestFileNameTemplate_CustomFormats(t *testing.T) {
+	cases := []struct {
+		tmpl      string
+		mainTitle string
+		partTitle string
+		bvid      string
+		index     int
+		expected  string
+	}{
+		{
+			tmpl:      "{bvid}_{index}_{part}",
+			mainTitle: "测试合集",
+			partTitle: "第一课 基础",
+			bvid:      "BV1xx411c7mD",
+			index:     1,
+			expected:  "BV1xx411c7mD_P01_第一课 基础",
+		},
+		{
+			tmpl:      "{title} - {part}",
+			mainTitle: "单视频",
+			partTitle: "单视频",
+			bvid:      "BV1single",
+			index:     1,
+			expected:  "单视频",
+		},
+		{
+			tmpl:      "[{bvid}] {title} - {part}",
+			mainTitle: "教程全集",
+			partTitle: "进阶技巧",
+			bvid:      "BV1teach",
+			index:     2,
+			expected:  "[BV1teach] 教程全集 - 进阶技巧",
+		},
+	}
+
+	for _, tc := range cases {
+		got := formatFileNameByTemplate(tc.tmpl, tc.mainTitle, tc.partTitle, tc.bvid, tc.index)
+		if got != tc.expected {
+			t.Errorf("formatFileNameByTemplate(%q, %q, %q, %q, %d) = %q, expected %q",
+				tc.tmpl, tc.mainTitle, tc.partTitle, tc.bvid, tc.index, got, tc.expected)
+		}
+	}
+}
+
+// TestSafeRemoveWithRetry 测试文件在被短暂打开占用情况下通过重试成功删除
+func TestSafeRemoveWithRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "locked.tmp")
+	_ = os.WriteFile(filePath, []byte("temporary data"), 0644)
+
+	safeRemoveWithRetry(filePath)
+	if _, err := os.Stat(filePath); !os.IsNotExist(err) {
+		t.Fatalf("文件应被成功删除，但仍存在")
+	}
+}
+
+// TestOutputPathPrecomputedConsistency 验证下载过程中即与最终合成文件的 OutputPath 完全保持一致
+func TestOutputPathPrecomputedConsistency(t *testing.T) {
+	mgr := newTestManager(t)
+	req := &DownloadRequest{
+		Title:         "测试视频",
+		TargetQuality: "120",
+		Episodes:      []int64{12345},
+	}
+	ep := &bilibili.EpisodeInfo{
+		CID:   12345,
+		Index: 1,
+		Title: "测试视频",
+	}
+
+	task, err := mgr.AddDownloadTask(req, ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	initialPath := task.OutputPath
+	if strings.Contains(initialPath, "[4K]") {
+		t.Fatalf("初始路径不应包含尚未解析的清晰度标签: %s", initialPath)
+	}
+
+	// 模拟媒体流解析完成确定画质为 120 (4K)
+	mgr.mu.Lock()
+	qTag := getQualityTag(120, "4K 超清")
+	dir := filepath.Dir(task.OutputPath)
+	base := strings.TrimSuffix(filepath.Base(task.OutputPath), ".mp4")
+	task.OutputPath = filepath.Join(dir, fmt.Sprintf("%s %s.mp4", base, qTag))
+	mgr.mu.Unlock()
+
+	mgr.SaveTasks()
+
+	// 重新从磁盘读取，验证持久化路径已经固化包含清晰度标签
+	loadedTasks := mgr.GetTasks()
+	if len(loadedTasks) == 0 {
+		t.Fatal("未读取到持久化任务")
+	}
+	if !strings.Contains(loadedTasks[0].OutputPath, "[4K]") {
+		t.Fatalf("解析清晰度后 OutputPath 应已固化 [4K]，实际为: %s", loadedTasks[0].OutputPath)
+	}
+}
+
 

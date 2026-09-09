@@ -50,6 +50,8 @@ type DownloadTask struct {
 type DownloadRequest struct {
 	BVID          string  `json:"bvid"`
 	AID           int64   `json:"aid"`
+	EPID          int64   `json:"epid,omitempty"`
+	SSID          int64   `json:"ssid,omitempty"`
 	Title         string  `json:"title"`
 	Cover         string  `json:"cover"`
 	IsBangumi     bool    `json:"isBangumi"`

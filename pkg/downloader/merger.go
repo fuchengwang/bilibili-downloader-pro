@@ -246,18 +246,6 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 		}
 	}()
 
-	// 写入 ftyp
-	if vFtyp != nil {
-		if err := vFtyp.Encode(outFh); err != nil {
-			return fmt.Errorf("写入 ftyp 失败: %w", err)
-		}
-	}
-
-	// 写入合并后的 moov
-	if err := vMoov.Encode(outFh); err != nil {
-		return fmt.Errorf("写入 moov 失败: %w", err)
-	}
-
 	// 4. 提取视频与音频的 timescale 并收集音视频分片 (moof + mdat)
 	var vTimescale uint32 = 1000
 	if len(vMoov.Traks) > 0 && vMoov.Traks[0].Mdia != nil && vMoov.Traks[0].Mdia.Mdhd != nil {
@@ -270,6 +258,57 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 
 	vFrags := extractFragments(vBoxes, vF, false, vTimescale)
 	aFrags := extractFragments(aBoxes, aF, true, aTimescale)
+
+	// 若为传统非分片 MP4 (无 moof 盒)，在写入 moov 前对 stco / co64 的 Chunk Offset 进行绝对偏移校准
+	if len(vFrags) == 0 && len(aFrags) == 0 {
+		var vOrigMdatOffset int64 = 0
+		var vMdatTotalSize int64 = 0
+		for _, b := range vBoxes {
+			if b.Type == "mdat" {
+				if vOrigMdatOffset == 0 {
+					vOrigMdatOffset = b.Offset
+				}
+				vMdatTotalSize += int64(b.Size)
+			}
+		}
+
+		var aOrigMdatOffset int64 = 0
+		for _, b := range aBoxes {
+			if b.Type == "mdat" {
+				if aOrigMdatOffset == 0 {
+					aOrigMdatOffset = b.Offset
+				}
+			}
+		}
+
+		newHeaderSize := int64(0)
+		if vFtyp != nil {
+			newHeaderSize += int64(vFtyp.Size())
+		}
+		newHeaderSize += int64(vMoov.Size())
+
+		vDelta := newHeaderSize - vOrigMdatOffset
+		for _, trak := range vMoov.Traks {
+			if trak.Tkhd != nil && trak.Tkhd.TrackID != audioTrackID {
+				adjustSampleTableOffsets(trak, vDelta)
+			}
+		}
+
+		aDelta := (newHeaderSize + vMdatTotalSize) - aOrigMdatOffset
+		adjustSampleTableOffsets(aTrak, aDelta)
+	}
+
+	// 写入 ftyp
+	if vFtyp != nil {
+		if err := vFtyp.Encode(outFh); err != nil {
+			return fmt.Errorf("写入 ftyp 失败: %w", err)
+		}
+	}
+
+	// 写入合并并校准后的 moov
+	if err := vMoov.Encode(outFh); err != nil {
+		return fmt.Errorf("写入 moov 失败: %w", err)
+	}
 
 	streamBuf := make([]byte, 1024*1024) // 1MB 流式传输缓冲，恒定微小内存占用
 
@@ -483,3 +522,21 @@ func adjustMoofBox(moof *mp4.MoofBox, targetTrackID uint32, mdatHeaderLen int64)
 
 	return nil
 }
+
+// adjustSampleTableOffsets 校准传统非分片 MP4 中 stco / co64 的 chunk 绝对文件偏移
+func adjustSampleTableOffsets(trak *mp4.TrakBox, delta int64) {
+	if trak == nil || trak.Mdia == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil || delta == 0 {
+		return
+	}
+	stbl := trak.Mdia.Minf.Stbl
+	if stbl.Stco != nil {
+		for i := range stbl.Stco.ChunkOffset {
+			stbl.Stco.ChunkOffset[i] = uint32(int64(stbl.Stco.ChunkOffset[i]) + delta)
+		}
+	} else if stbl.Co64 != nil {
+		for i := range stbl.Co64.ChunkOffset {
+			stbl.Co64.ChunkOffset[i] = uint64(int64(stbl.Co64.ChunkOffset[i]) + delta)
+		}
+	}
+}
+

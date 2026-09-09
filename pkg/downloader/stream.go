@@ -239,13 +239,25 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 
 		// 处理 416 边界情况 (已在文件末尾或 Range 超限)
 		if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			cr := resp.Header.Get("Content-Range")
 			resp.Body.Close()
+
+			// 1. 尝试从 416 响应头提取服务端宣告的真实总大小
+			if cr != "" {
+				_, _, rTotal, pErr := parseContentRange(cr)
+				if pErr == nil && rTotal > 0 && s.totalSize <= 0 {
+					s.totalSize = rTotal
+				}
+			}
+
+			// 2. 若本地文件大小严格等于预期大小，说明已完整下载
 			if info, err := os.Stat(s.targetPath); err == nil && s.totalSize > 0 && info.Size() == s.totalSize {
 				return nil
 			}
-			// 若本地文件确实超出预期大小，说明有脏数据，清理并扣减进度；否则轮换 CDN 节点重试，避免立刻全量误删
+
+			// 3. 本地分块超长或在未知大小下触发 416（证明现有分块已超出服务端范围或已损坏）：主动清理脏数据并重置从头下载
 			if fi, err := os.Stat(s.targetPath); err == nil {
-				if s.totalSize > 0 && fi.Size() > s.totalSize {
+				if fi.Size() > 0 {
 					removedBytes := fi.Size()
 					_ = os.Remove(s.targetPath)
 					if progressFn != nil && removedBytes > 0 {
@@ -254,7 +266,7 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 				}
 			}
 			s.rotateURL()
-			time.Sleep(300 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 			continue
 		}
 
