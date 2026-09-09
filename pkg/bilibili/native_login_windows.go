@@ -247,13 +247,15 @@ func (c *Client) OpenNativeBrowserLogin(appCtx context.Context) error {
 	})();
 	`
 
-	// 5. Inject script at Document Start and Navigate to Bilibili
+	// 5. Inject script at Document Start and Navigate to Bilibili (异步派发，彻底消除等待全页加载完成的阻塞风险)
 	err = chromedp.Run(ctx,
 		chromedp.ActionFunc(func(c context.Context) error {
-			_, err := page.AddScriptToEvaluateOnNewDocument(clickScript).Do(c)
+			if _, err := page.AddScriptToEvaluateOnNewDocument(clickScript).Do(c); err != nil {
+				return err
+			}
+			_, _, _, _, err := page.Navigate("https://www.bilibili.com/").Do(c)
 			return err
 		}),
-		chromedp.Navigate("https://www.bilibili.com/"),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to launch browser: %v", err)

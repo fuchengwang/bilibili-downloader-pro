@@ -571,7 +571,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		dir := filepath.Dir(task.OutputPath)
 		base := strings.TrimSuffix(filepath.Base(task.OutputPath), ".mp4")
 		if !strings.Contains(base, qTag) {
-			task.OutputPath = filepath.Join(dir, fmt.Sprintf("%s %s.mp4", base, qTag))
+			task.OutputPath = utils.EnsureSafePathLength(dir, fmt.Sprintf("%s %s", base, qTag), ".mp4")
 		}
 	}
 	m.mu.Unlock()
@@ -874,18 +874,9 @@ func formatFileNameByTemplate(tmpl, mainTitle, partTitle, bvid string, index int
 	return res
 }
 
-// safeRemoveWithRetry 带指数退避重试的文件安全删除函数 (专为 Windows 句柄延迟释放防御设计)
+// safeRemoveWithRetry 带指数退避重试的文件安全删除函数 (转调 utils.SafeRemoveWithRetry)
 func safeRemoveWithRetry(filePath string) {
-	if filePath == "" {
-		return
-	}
-	for i := 0; i < 5; i++ {
-		err := os.Remove(filePath)
-		if err == nil || os.IsNotExist(err) {
-			return
-		}
-		time.Sleep(time.Duration(100*(1<<i)) * time.Millisecond)
-	}
+	utils.SafeRemoveWithRetry(filePath)
 }
 
 func formatFriendlyError(err error) string {

@@ -224,7 +224,7 @@ func TestAtomicMergeFailureSafety(t *testing.T) {
 	// 校验临时 .merging.tmp 文件是否被彻底清理
 	files, _ := os.ReadDir(tmpDir)
 	for _, f := range files {
-		if strings.Contains(f.Name(), ".merging.") && strings.HasSuffix(f.Name(), ".tmp") {
+		if (strings.Contains(f.Name(), ".merging.") || strings.HasPrefix(f.Name(), ".tmp_mrg_")) && strings.HasSuffix(f.Name(), ".tmp") {
 			t.Fatalf("临时合成文件未被清理: %s", f.Name())
 		}
 	}

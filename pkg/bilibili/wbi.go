@@ -116,7 +116,7 @@ func (c *Client) SignWbiParams(ctx context.Context, params map[string]string) (s
 			}
 			return r
 		}, v)
-		queryParts = append(queryParts, url.QueryEscape(k)+"="+url.QueryEscape(cleaned))
+		queryParts = append(queryParts, encodeWbiComponent(k)+"="+encodeWbiComponent(cleaned))
 	}
 
 	queryString := strings.Join(queryParts, "&")
@@ -126,4 +126,9 @@ func (c *Client) SignWbiParams(ctx context.Context, params map[string]string) (s
 	wRid := hex.EncodeToString(sum[:])
 
 	return queryString + "&w_rid=" + wRid, nil
+}
+
+// encodeWbiComponent 严格遵循 B站 WBI 规范 (RFC 3986)，将空格转义为 %20 而非 +
+func encodeWbiComponent(s string) string {
+	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }

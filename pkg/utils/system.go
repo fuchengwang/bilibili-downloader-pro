@@ -165,6 +165,20 @@ func OpenFile(path string) error {
 	return openFileOS(path)
 }
 
+// SafeRemoveWithRetry 带指数退避重试的文件安全删除函数 (专为 Windows 句柄延迟释放防御设计)
+func SafeRemoveWithRetry(filePath string) {
+	if filePath == "" {
+		return
+	}
+	for i := 0; i < 5; i++ {
+		err := os.Remove(filePath)
+		if err == nil || os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(time.Duration(100*(1<<i)) * time.Millisecond)
+	}
+}
+
 // AtomicWriteFile 跨平台高可靠原子文件写入 (完美防御 Windows os.Rename 权限拒绝与冲突)
 func AtomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(filePath)
@@ -172,7 +186,7 @@ func AtomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
 		return err
 	}
 
-	tmpPath := fmt.Sprintf("%s.tmp.%d.%d", filePath, os.Getpid(), time.Now().UnixNano())
+	tmpPath := filepath.Join(dir, fmt.Sprintf(".tmp_%d_%x", os.Getpid(), time.Now().UnixNano()))
 	if err := os.WriteFile(tmpPath, data, perm); err != nil {
 		return err
 	}
@@ -204,9 +218,9 @@ func AtomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
 	return fDst.Sync()
 }
 
-// EnsureSafePathLength 确保在 Windows MAX_PATH (260字符) 限制下，全路径保持在 220 字符安全阈值内
+// EnsureSafePathLength 确保在 Windows MAX_PATH (260字符) 限制下，全路径保持在 210 字符安全阈值内，为后续临时文件或画质标签预留充分空间
 func EnsureSafePathLength(dir, filename, ext string) string {
-	const maxChars = 220
+	const maxChars = 210
 	dirRunes := len([]rune(dir))
 	extRunes := len([]rune(ext))
 
@@ -225,3 +239,4 @@ func EnsureSafePathLength(dir, filename, ext string) string {
 	}
 	return filepath.Join(dir, filename+ext)
 }
+

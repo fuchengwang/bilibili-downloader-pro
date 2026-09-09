@@ -110,3 +110,43 @@ func TestSignWbiParams_ConcurrentExecution(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestSignWbiParams_RFC3986SpaceEncoding(t *testing.T) {
+	client := GetDefaultClient()
+	client.mu.Lock()
+	client.wbiMixin = "ea1ac281041241e79e777623e666a13f"
+	client.wbiCached = time.Now()
+	client.mu.Unlock()
+
+	params := map[string]string{
+		"keyword": "hello world test",
+		"wts":     "1700000000",
+	}
+
+	signed, err := client.SignWbiParams(context.Background(), params)
+	if err != nil {
+		t.Fatalf("SignWbiParams failed: %v", err)
+	}
+
+	// 核心断言：RFC 3986 标准规范要求空格必须编码为 %20，不得为 +
+	if strings.Contains(signed, "keyword=hello+world+test") {
+		t.Errorf("Signed query incorrectly encoded spaces with '+' instead of '%%20': %s", signed)
+	}
+	if !strings.Contains(signed, "keyword=hello%20world%20test") {
+		t.Errorf("Signed query missing 'keyword=hello%%20world%%20test': %s", signed)
+	}
+
+	// 校验 MD5 签名是基于 RFC 3986 query 计算的
+	expectedQuery := "keyword=hello%20world%20test&wts=1700000000"
+	expectedSum := md5.Sum([]byte(expectedQuery + "ea1ac281041241e79e777623e666a13f"))
+	expectedWRid := hex.EncodeToString(expectedSum[:])
+
+	values, err := url.ParseQuery(signed)
+	if err != nil {
+		t.Fatalf("ParseQuery failed: %v", err)
+	}
+	if values.Get("w_rid") != expectedWRid {
+		t.Errorf("w_rid mismatch: got %s, expected %s", values.Get("w_rid"), expectedWRid)
+	}
+}
+

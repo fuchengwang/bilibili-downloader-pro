@@ -265,6 +265,18 @@ func (c *Client) fetchNormalDetail(ctx context.Context, target *ParsedTarget) (*
 	return detail, nil
 }
 
+// parseBangumiDuration 将 B站 PGC 番剧接口返回的毫秒时长正确转换为秒
+func parseBangumiDuration(durationMs int) int {
+	if durationMs <= 0 {
+		return 0
+	}
+	// PGC 接口 duration 字段单位为毫秒 (如 1440000 毫秒 = 24 分钟)
+	if durationMs >= 1000 {
+		return (durationMs + 500) / 1000
+	}
+	return durationMs
+}
+
 func (c *Client) fetchBangumiDetail(ctx context.Context, target *ParsedTarget) (*VideoDetail, error) {
 	var apiURL string
 	if target.EPID != "" {
@@ -323,6 +335,7 @@ func (c *Client) fetchBangumiDetail(ctx context.Context, target *ParsedTarget) (
 		if cover == "" {
 			cover = res.Cover
 		}
+		durSec := parseBangumiDuration(ep.Duration)
 		episodes = append(episodes, EpisodeInfo{
 			Index:       idx,
 			CID:         ep.Cid,
@@ -331,8 +344,8 @@ func (c *Client) fetchBangumiDetail(ctx context.Context, target *ParsedTarget) (
 			EPID:        ep.ID,
 			Title:       title,
 			LongTitle:   ep.LongTitle,
-			Duration:    ep.Duration,
-			DurationStr: utils.FormatDuration(ep.Duration),
+			Duration:    durSec,
+			DurationStr: utils.FormatDuration(durSec),
 			Cover:       cover,
 			Badge:       ep.Badge,
 		})
@@ -353,6 +366,7 @@ func (c *Client) fetchBangumiDetail(ctx context.Context, target *ParsedTarget) (
 			if cover == "" {
 				cover = res.Cover
 			}
+			durSec := parseBangumiDuration(ep.Duration)
 			episodes = append(episodes, EpisodeInfo{
 				Index:       idx,
 				CID:         ep.Cid,
@@ -361,8 +375,8 @@ func (c *Client) fetchBangumiDetail(ctx context.Context, target *ParsedTarget) (
 				EPID:        ep.ID,
 				Title:       title,
 				LongTitle:   ep.LongTitle,
-				Duration:    ep.Duration,
-				DurationStr: utils.FormatDuration(ep.Duration),
+				Duration:    durSec,
+				DurationStr: utils.FormatDuration(durSec),
 				Cover:       cover,
 				Badge:       ep.Badge,
 			})
@@ -374,7 +388,7 @@ func (c *Client) fetchBangumiDetail(ctx context.Context, target *ParsedTarget) (
 		detail.BVID = episodes[0].BVID
 		detail.AID = episodes[0].AID
 		detail.Duration = episodes[0].Duration
-		detail.DurationStr = utils.FormatDuration(episodes[0].Duration)
+		detail.DurationStr = episodes[0].DurationStr
 	}
 
 	// 若匹配特定 epid，设定 defaultPage

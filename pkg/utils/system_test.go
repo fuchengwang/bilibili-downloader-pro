@@ -228,14 +228,25 @@ func TestEnsureSafePathLength(t *testing.T) {
 		t.Errorf("期望后缀为 %s, 实际: %s", ext, safeShort)
 	}
 
-	// 超长文件名应当被安全截断至 <= 220 字符 (Windows MAX_PATH 安全阈值)
+	// 超长文件名应当被安全截断至 <= 210 字符 (为画质后缀预留充分空间)
 	superLongName := strings.Repeat("这是一个超长分P视频标题测试内容", 20)
 	safeLong := EnsureSafePathLength(dir, superLongName, ext)
-	if len([]rune(safeLong)) > 220 {
-		t.Errorf("截断后路径字符数仍超过 220 字符: %d", len([]rune(safeLong)))
+	if len([]rune(safeLong)) > 210 {
+		t.Errorf("截断后路径字符数仍超过 210 字符: %d", len([]rune(safeLong)))
 	}
 	if !strings.HasSuffix(safeLong, ext) {
 		t.Errorf("截断后丢失后缀: %s", safeLong)
+	}
+
+	// 模拟追加 [1080P60 高清] 画质标签后再次通过 EnsureSafePathLength
+	qTag := "[1080P60 高帧率]"
+	base := strings.TrimSuffix(filepath.Base(safeLong), ext)
+	safeWithTag := EnsureSafePathLength(dir, base+" "+qTag, ext)
+	if len([]rune(safeWithTag)) > 210 {
+		t.Errorf("追加画质标签后字符数仍超过 210: %d", len([]rune(safeWithTag)))
+	}
+	if !strings.HasSuffix(safeWithTag, ext) {
+		t.Errorf("追加画质标签截断后丢失后缀: %s", safeWithTag)
 	}
 }
 

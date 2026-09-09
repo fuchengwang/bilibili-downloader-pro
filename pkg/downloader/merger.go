@@ -9,6 +9,8 @@ import (
 	"sort"
 	"time"
 
+	"bilibili_downloader/pkg/utils"
+
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
@@ -93,7 +95,7 @@ func MergeAudioVideo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 
 	// 检测是否为原生裸 FLAC 音频流 (以 "fLaC" 签名开头)
 	if IsRawFlac(audioPath) {
-		tmpFmp4 = filepath.Join(filepath.Dir(outputPath), fmt.Sprintf(".flac.%d.%d.m4s", os.Getpid(), time.Now().UnixNano()))
+		tmpFmp4 = filepath.Join(filepath.Dir(outputPath), fmt.Sprintf(".tmp_flac_%d_%x.m4s", os.Getpid(), time.Now().UnixNano()))
 		_ = os.Remove(tmpFmp4)
 		if err := PackageRawFlacToFMP4(audioPath, tmpFmp4); err != nil {
 			_ = os.Remove(tmpFmp4)
@@ -231,8 +233,8 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 	vMoov.AddChild(aTrak)
 	vMoov.Mvhd.NextTrackID = audioTrackID + 1
 
-	// 3. 创建同目录下的事务性临时输出文件，防止中断时破坏已有文件
-	tmpOutputPath := outputPath + fmt.Sprintf(".merging.%d.%d.tmp", os.Getpid(), time.Now().UnixNano())
+	// 3. 创建同目录下的事务性临时输出文件，防止中断时破坏已有文件 (采用短文件名，彻底避免 Windows MAX_PATH 260 截断错误)
+	tmpOutputPath := filepath.Join(filepath.Dir(outputPath), fmt.Sprintf(".tmp_mrg_%d_%x.tmp", os.Getpid(), time.Now().UnixNano()))
 	outFh, err := os.OpenFile(tmpOutputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("创建最终合成临时文件失败: %w", err)
@@ -335,7 +337,7 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 
 			if moof, ok := box.(*mp4.MoofBox); ok {
 				// 核心协议合规性修复：强制设置 default-base-is-moof，并校准 trun DataOffset
-				_ = adjustMoofBox(moof, targetTrackID, frag.Mdat.HeaderLen)
+				_ = adjustMoofBox(moof, targetTrackID, getMdatHeaderLen(frag.Mdat))
 				if err := moof.Encode(outFh); err != nil {
 					return fmt.Errorf("写入 moof 失败: %w", err)
 				}
@@ -395,11 +397,11 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 	_ = os.Remove(tmpOutputPath)
 	success = true
 
-	// 6. 清理临时分块文件 (在合成完全成功后安全移除)
+	// 6. 清理临时分块文件 (在合成完全成功后安全移除，采用指数退避重试防御 Windows 句柄锁)
 	if deleteTemp {
-		_ = os.Remove(videoPath)
+		utils.SafeRemoveWithRetry(videoPath)
 		if audioPath != "" {
-			_ = os.Remove(audioPath)
+			utils.SafeRemoveWithRetry(audioPath)
 		}
 	}
 
@@ -443,10 +445,20 @@ func extractFragments(boxes []BoxInfo, f *os.File, isAudio bool, timescale uint3
 	return fragments
 }
 
+// getMdatHeaderLen 准确计算重写后的 mdat Box 头长度 (8 或 16 字节)，与 writeMdatBox 严格一致
+func getMdatHeaderLen(b BoxInfo) int64 {
+	payloadLen := int64(b.Size) - b.HeaderLen
+	if payloadLen+8 < 1<<32 {
+		return 8
+	}
+	return 16
+}
+
 func writeMdatBox(f *os.File, b BoxInfo, outFh io.Writer, streamBuf []byte) error {
-	if b.Size < 1<<32 {
+	payloadLen := int64(b.Size) - b.HeaderLen
+	if payloadLen+8 < 1<<32 {
 		hdr := make([]byte, 8)
-		binary.BigEndian.PutUint32(hdr[0:4], uint32(b.Size))
+		binary.BigEndian.PutUint32(hdr[0:4], uint32(payloadLen+8))
 		copy(hdr[4:8], "mdat")
 		if _, err := outFh.Write(hdr); err != nil {
 			return err
@@ -455,13 +467,12 @@ func writeMdatBox(f *os.File, b BoxInfo, outFh io.Writer, streamBuf []byte) erro
 		hdr := make([]byte, 16)
 		binary.BigEndian.PutUint32(hdr[0:4], 1)
 		copy(hdr[4:8], "mdat")
-		binary.BigEndian.PutUint64(hdr[8:16], b.Size)
+		binary.BigEndian.PutUint64(hdr[8:16], uint64(payloadLen+16))
 		if _, err := outFh.Write(hdr); err != nil {
 			return err
 		}
 	}
 
-	payloadLen := int64(b.Size) - b.HeaderLen
 	_, _ = f.Seek(b.Offset+b.HeaderLen, io.SeekStart)
 	_, err := io.CopyBuffer(outFh, io.LimitReader(f, payloadLen), streamBuf)
 	return err
@@ -511,9 +522,9 @@ func adjustMoofBox(moof *mp4.MoofBox, targetTrackID uint32, mdatHeaderLen int64)
 	}
 
 	moofSize := moof.Size()
+	currentOffset := int32(moofSize + uint64(mdatHeaderLen))
 
 	for _, traf := range moof.Trafs {
-		currentOffset := int32(moofSize + uint64(mdatHeaderLen))
 		for _, trun := range traf.Truns {
 			trun.DataOffset = currentOffset
 			currentOffset += int32(trun.SizeOfData())
