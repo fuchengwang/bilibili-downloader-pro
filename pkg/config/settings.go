@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"bilibili_downloader/pkg/utils"
 )
 
 // Settings 存储用户全局偏好设置
@@ -130,11 +132,7 @@ func (m *ConfigManager) Save(s Settings) error {
 		return err
 	}
 	filePath := filepath.Join(m.dir, "settings.json")
-	tmpPath := filePath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, filePath)
+	return utils.AtomicWriteFile(filePath, data, 0644)
 }
 
 func (m *ConfigManager) Get() Settings {

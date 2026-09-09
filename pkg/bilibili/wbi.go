@@ -94,7 +94,8 @@ func (c *Client) SignWbiParams(ctx context.Context, params map[string]string) (s
 		clonedParams[k] = v
 	}
 	if _, ok := clonedParams["wts"]; !ok {
-		clonedParams["wts"] = strconv.FormatInt(time.Now().Unix(), 10)
+		nowTimestamp := time.Now().Unix() + c.GetClockOffset()
+		clonedParams["wts"] = strconv.FormatInt(nowTimestamp, 10)
 	}
 
 	// 1. 字典序排列 key

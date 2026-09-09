@@ -77,10 +77,9 @@ func (m *DownloadManager) notifyChange(t *DownloadTask) {
 	}
 	m.mu.RLock()
 	cb := m.callback
+	tCopy := *t // 在锁保护内安全深/浅拷贝，彻底消除数据竞争
 	m.mu.RUnlock()
 	if cb != nil {
-		// 传递浅拷贝避免外部读写冲突
-		tCopy := *t
 		cb(&tCopy)
 	}
 }
@@ -105,7 +104,7 @@ func (m *DownloadManager) loadTasks() {
 	}
 }
 
-// SaveTasks 持久化任务列表 (原子写入避免崩溃产生损坏文件)
+// SaveTasks 持久化任务列表 (原子写入避免崩溃产生损坏文件，杜绝 Windows 权限冲突)
 func (m *DownloadManager) SaveTasks() {
 	m.mu.RLock()
 	tasksCopy := make([]*DownloadTask, len(m.tasks))
@@ -120,10 +119,7 @@ func (m *DownloadManager) SaveTasks() {
 	if err != nil {
 		return
 	}
-	tmpPath := tasksPath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err == nil {
-		_ = os.Rename(tmpPath, tasksPath)
-	}
+	_ = utils.AtomicWriteFile(tasksPath, data, 0644)
 }
 
 func newUUID() string {
@@ -157,8 +153,12 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 	isMulti := len(req.Episodes) > 1 || req.IsBangumi || strings.Contains(ep.Badge, "合集") || ep.Index > 1 || (ep.Title != "" && ep.Title != req.Title)
 
 	if isMulti {
-		// 合集/多P：保存在以合集标题命名的独立子文件夹内
-		outDir = filepath.Join(cfg.DownloadDir, sanitizedTitle)
+		// 合集/多P：保存在以合集标题 + [BVID] 命名的独立子文件夹内，彻底防止不同UP主同名合集相互覆盖
+		collFolder := sanitizedTitle
+		if ep.BVID != "" && !strings.Contains(collFolder, ep.BVID) {
+			collFolder = fmt.Sprintf("%s [%s]", sanitizedTitle, ep.BVID)
+		}
+		outDir = filepath.Join(cfg.DownloadDir, collFolder)
 		partName := cleanPartTitle(req.Title, ep.Title, ep.Index)
 		fallbackPart := fmt.Sprintf("P%02d", ep.Index)
 		if ep.Index <= 0 {
@@ -176,7 +176,8 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 		_ = os.MkdirAll(outDir, 0755)
 	}
 
-	outPath := filepath.Join(outDir, baseFileName+".mp4")
+	// 确保在 Windows 260 字符限制下，完整输出路径保持在安全阈值内 (<= 240 字符)
+	outPath := utils.EnsureSafePathLength(outDir, baseFileName, ".mp4")
 
 	taskID := newUUID()
 	shortID := taskID

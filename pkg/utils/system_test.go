@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -186,4 +188,55 @@ func TestFormatDuration(t *testing.T) {
 		}
 	}
 }
+
+// TestAtomicWriteFile 测试原子写入与覆盖更新
+func TestAtomicWriteFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "atomic_test.txt")
+
+	data1 := []byte("Initial Data Content 1")
+	if err := AtomicWriteFile(targetPath, data1, 0644); err != nil {
+		t.Fatalf("第一次写入失败: %v", err)
+	}
+
+	readBack1, err := os.ReadFile(targetPath)
+	if err != nil || string(readBack1) != string(data1) {
+		t.Fatalf("读取内容不符: %v, 内容: %s", err, string(readBack1))
+	}
+
+	// 模拟覆盖已有文件
+	data2 := []byte("Overwritten Data Content 2 with new length")
+	if err := AtomicWriteFile(targetPath, data2, 0644); err != nil {
+		t.Fatalf("覆盖写入失败: %v", err)
+	}
+
+	readBack2, err := os.ReadFile(targetPath)
+	if err != nil || string(readBack2) != string(data2) {
+		t.Fatalf("覆盖后内容不符: %v, 内容: %s", err, string(readBack2))
+	}
+}
+
+// TestEnsureSafePathLength 测试 Windows 240 字符超长路径安全截断
+func TestEnsureSafePathLength(t *testing.T) {
+	dir := "/Users/test/Downloads/Bilibili/very_long_collection_directory_name_that_takes_up_space"
+	ext := ".mp4"
+
+	// 短文件名不需要截断
+	shortName := "P01_intro"
+	safeShort := EnsureSafePathLength(dir, shortName, ext)
+	if !strings.HasSuffix(safeShort, ext) {
+		t.Errorf("期望后缀为 %s, 实际: %s", ext, safeShort)
+	}
+
+	// 超长文件名应当被安全截断至 <= 220 字符 (Windows MAX_PATH 安全阈值)
+	superLongName := strings.Repeat("这是一个超长分P视频标题测试内容", 20)
+	safeLong := EnsureSafePathLength(dir, superLongName, ext)
+	if len([]rune(safeLong)) > 220 {
+		t.Errorf("截断后路径字符数仍超过 220 字符: %d", len([]rune(safeLong)))
+	}
+	if !strings.HasSuffix(safeLong, ext) {
+		t.Errorf("截断后丢失后缀: %s", safeLong)
+	}
+}
+
 

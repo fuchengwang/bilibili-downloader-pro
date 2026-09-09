@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"bilibili_downloader/pkg/bilibili"
 	"bilibili_downloader/pkg/config"
@@ -45,6 +46,15 @@ func (a *App) startup(ctx context.Context) {
 			wailsRuntime.EventsEmit(a.ctx, "task:error", t)
 		}
 	})
+
+	// 核心安全防护：启动 4 秒兜底定时器，若系统因 WebView2 初始化缓慢或环境异常未触发 domReady，
+	// 强制展现窗口，彻底杜绝 Windows / macOS 下软件常驻后台但窗口永远隐形的假死现象
+	go func() {
+		time.Sleep(4 * time.Second)
+		if a.ctx != nil {
+			wailsRuntime.WindowShow(a.ctx)
+		}
+	}()
 }
 
 // domReady is called after front-end resources are completely loaded
@@ -101,7 +111,9 @@ func (a *App) AddDownloadTasks(req downloader.DownloadRequest) ([]*downloader.Do
 		if cidMap[ep.CID] {
 			t, err := a.downMgr.AddDownloadTask(&req, &ep)
 			if err == nil && t != nil {
-				added = append(added, t)
+				// 返回浅拷贝快照，彻底隔绝 Wails RPC 序列化协程与后台下载 worker 的并发读写竞态
+				tCopy := *t
+				added = append(added, &tCopy)
 			}
 		}
 	}

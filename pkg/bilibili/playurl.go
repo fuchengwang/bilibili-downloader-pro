@@ -320,15 +320,7 @@ func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid
 		return nil, fmt.Errorf("该视频为哔哩哔哩大会员专享内容，当前账号未开通大会员或未登录，无法下载。请登录大会员账号后再试。")
 	}
 
-	// 2. 普通视频：优先尝试标准 playurl 官方 API (轻量极速，免风控阻断)
-	stdURL := fmt.Sprintf("https://api.bilibili.com/x/player/playurl?bvid=%s&avid=%d&cid=%d&qn=127&fnval=4048&fnver=0&fourk=1&otype=json",
-		url.QueryEscape(bvid), aid, cid)
-	var stdResp playurlAPIResp
-	if err := c.GetJSON(ctx, stdURL, &stdResp); err == nil && stdResp.Code == 0 && stdResp.getDash() != nil {
-		return &stdResp, nil
-	}
-
-	// 3. 次级降级：尝试 WBI 签名请求
+	// 2. 普通视频：优先尝试官方 WBI 签名 playurl API (确保 1080P/4K/8K/杜比/Hi-Res 高清完整流)
 	paramMap := map[string]string{
 		"avid":                strconv.FormatInt(aid, 10),
 		"bvid":                bvid,
@@ -350,6 +342,14 @@ func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid
 		if err := c.GetJSON(ctx, wbiURL, &wbiResp); err == nil && wbiResp.Code == 0 && wbiResp.getDash() != nil {
 			return &wbiResp, nil
 		}
+	}
+
+	// 3. 次级降级：若 WBI 签名受限或接口超时，回退至未签名标准 playurl API 作为保底
+	stdURL := fmt.Sprintf("https://api.bilibili.com/x/player/playurl?bvid=%s&avid=%d&cid=%d&qn=127&fnval=4048&fnver=0&fourk=1&otype=json",
+		url.QueryEscape(bvid), aid, cid)
+	var stdResp playurlAPIResp
+	if err := c.GetJSON(ctx, stdURL, &stdResp); err == nil && stdResp.Code == 0 && stdResp.getDash() != nil {
+		return &stdResp, nil
 	}
 
 	// 4. 三级降级：从 HTML 页面提取 window.__playinfo__
@@ -572,12 +572,12 @@ func collectSortedCDNs(baseURL string, backupURLs []string) []string {
 	result = append(result, tier1Backbone...)
 	result = append(result, tier2Regular...)
 
-	// 如果没有原生骨干网，构造一个注入腾讯云骨干 CDN 的高优先级候选
+	// 如果没有原生骨干网，构造腾讯云骨干 CDN 备用节点作为候选追加在后，绝不覆盖置顶原生有效节点
 	if len(tier1Backbone) == 0 && len(candidates) > 0 {
 		boosted := ReplaceCDNServer(candidates[0], "upos-sz-mirrorcos.bilivideo.com")
 		if !seen[boosted] {
 			seen[boosted] = true
-			result = append([]string{boosted}, result...)
+			result = append(result, boosted)
 		}
 	}
 

@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"bilibili_downloader/pkg/config"
@@ -32,11 +33,12 @@ type CookieData struct {
 
 // Client 封装与 B 站所有交互的 HTTP 客户端
 type Client struct {
-	mu         sync.RWMutex
-	httpClient *http.Client
-	cookieData *CookieData
-	wbiMixin   string
-	wbiCached  time.Time
+	mu          sync.RWMutex
+	httpClient  *http.Client
+	cookieData  *CookieData
+	wbiMixin    string
+	wbiCached   time.Time
+	clockOffset atomic.Int64 // 服务端与本地系统时钟差值 (秒)，彻底消除本地时间不准导致的 WBI 签名失效
 }
 
 var (
@@ -178,11 +180,40 @@ func (c *Client) GetBytes(ctx context.Context, reqURL string, extraHeaders map[s
 	}
 	defer resp.Body.Close()
 
+	c.UpdateClockOffset(resp.Header.Get("Date"))
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("HTTP error: %s", resp.Status)
 	}
 
 	return io.ReadAll(resp.Body)
+}
+
+// UpdateClockOffset 根据 HTTP 响应头中的 Date 字段动态校准本地与 B 站服务器时钟偏差
+func (c *Client) UpdateClockOffset(serverDateStr string) {
+	if serverDateStr == "" {
+		return
+	}
+	if t, err := http.ParseTime(serverDateStr); err == nil {
+		diff := t.Unix() - time.Now().Unix()
+		c.clockOffset.Store(diff)
+		return
+	}
+	if t, err := time.Parse(time.RFC1123, serverDateStr); err == nil {
+		diff := t.Unix() - time.Now().Unix()
+		c.clockOffset.Store(diff)
+		return
+	}
+	if t, err := time.Parse(time.RFC1123Z, serverDateStr); err == nil {
+		diff := t.Unix() - time.Now().Unix()
+		c.clockOffset.Store(diff)
+		return
+	}
+}
+
+// GetClockOffset 获取当前服务器时钟与本地时钟差值 (秒)
+func (c *Client) GetClockOffset() int64 {
+	return c.clockOffset.Load()
 }
 
 // GetJSON 请求并将响应反序列化为目标结构体
@@ -215,6 +246,8 @@ func (c *Client) PostForm(ctx context.Context, reqURL string, data url.Values) (
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	c.UpdateClockOffset(resp.Header.Get("Date"))
 
 	return io.ReadAll(resp.Body)
 }

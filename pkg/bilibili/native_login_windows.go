@@ -286,7 +286,7 @@ func (c *Client) OpenNativeBrowserLogin(appCtx context.Context) error {
 			var sessData, biliJct, dedeUid, buvid3 string
 			for _, cookie := range cookies {
 				// Only match cookies for bilibili.com
-				if cookie.Domain != "" {
+				if strings.Contains(cookie.Domain, "bilibili.com") {
 					if cookie.Name == "SESSDATA" {
 						sessData = cookie.Value
 					}

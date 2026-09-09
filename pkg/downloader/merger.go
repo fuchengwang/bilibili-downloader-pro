@@ -273,39 +273,33 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 		})
 
 		for _, frag := range allFrags {
-			if !frag.IsAudio {
-				// 写入视频分片
-				_, _ = vF.Seek(frag.Moof.Offset, io.SeekStart)
-				box, err := mp4.DecodeBox(uint64(frag.Moof.Offset), vF)
-				if err != nil {
-					return fmt.Errorf("解析视频 moof 失败: %w", err)
-				}
-				if err := box.Encode(outFh); err != nil {
-					return fmt.Errorf("写入视频 moof 失败: %w", err)
-				}
-				if err := writeMdatBox(vF, frag.Mdat, outFh, streamBuf); err != nil {
-					return fmt.Errorf("写入视频 mdat 失败: %w", err)
+			srcFile := vF
+			var targetTrackID uint32 = 0
+			if frag.IsAudio {
+				srcFile = aF
+				targetTrackID = audioTrackID
+			}
+
+			_, _ = srcFile.Seek(frag.Moof.Offset, io.SeekStart)
+			box, err := mp4.DecodeBox(uint64(frag.Moof.Offset), srcFile)
+			if err != nil {
+				return fmt.Errorf("解析 moof 失败 (isAudio=%v): %w", frag.IsAudio, err)
+			}
+
+			if moof, ok := box.(*mp4.MoofBox); ok {
+				// 核心协议合规性修复：强制设置 default-base-is-moof，并校准 trun DataOffset
+				_ = adjustMoofBox(moof, targetTrackID, frag.Mdat.HeaderLen)
+				if err := moof.Encode(outFh); err != nil {
+					return fmt.Errorf("写入 moof 失败: %w", err)
 				}
 			} else {
-				// 写入音频分片，调整音频 TrackID 为 2
-				_, _ = aF.Seek(frag.Moof.Offset, io.SeekStart)
-				box, err := mp4.DecodeBox(uint64(frag.Moof.Offset), aF)
-				if err != nil {
-					return fmt.Errorf("解析音频 moof 失败: %w", err)
+				if err := box.Encode(outFh); err != nil {
+					return fmt.Errorf("写入非标准 moof 盒失败: %w", err)
 				}
-				if moof, ok := box.(*mp4.MoofBox); ok {
-					for _, traf := range moof.Trafs {
-						if traf.Tfhd != nil {
-							traf.Tfhd.TrackID = audioTrackID
-						}
-					}
-					if err := moof.Encode(outFh); err != nil {
-						return fmt.Errorf("写入音频 moof 失败: %w", err)
-					}
-				}
-				if err := writeMdatBox(aF, frag.Mdat, outFh, streamBuf); err != nil {
-					return fmt.Errorf("写入音频 mdat 失败: %w", err)
-				}
+			}
+
+			if err := writeMdatBox(srcFile, frag.Mdat, outFh, streamBuf); err != nil {
+				return fmt.Errorf("写入 mdat 失败: %w", err)
 			}
 		}
 	} else {
@@ -451,4 +445,33 @@ func copyOrRename(src, dst string) error {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// adjustMoofBox 核心合规性修正：确保每个 traf 的 tfhd 显式声明 default-base-is-moof，并校准 trun 的 DataOffset
+func adjustMoofBox(moof *mp4.MoofBox, targetTrackID uint32, mdatHeaderLen int64) error {
+	for _, traf := range moof.Trafs {
+		if traf.Tfhd != nil {
+			if targetTrackID > 0 {
+				traf.Tfhd.TrackID = targetTrackID
+			}
+			// 启用 default-base-is-moof (0x020000)，清除 base-data-offset-present (0x000001)
+			traf.Tfhd.Flags = (traf.Tfhd.Flags &^ 0x000001) | 0x020000
+			traf.Tfhd.BaseDataOffset = 0
+		}
+		for _, trun := range traf.Truns {
+			trun.Flags |= 0x000001 // 声明 data-offset-present
+		}
+	}
+
+	moofSize := moof.Size()
+
+	for _, traf := range moof.Trafs {
+		currentOffset := int32(moofSize + uint64(mdatHeaderLen))
+		for _, trun := range traf.Truns {
+			trun.DataOffset = currentOffset
+			currentOffset += int32(trun.SizeOfData())
+		}
+	}
+
+	return nil
 }

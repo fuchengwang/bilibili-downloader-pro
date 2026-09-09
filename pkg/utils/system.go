@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // illegalChars 匹配 Windows / macOS / Linux 文件系统非法字符及 ASCII 控制字符
@@ -164,5 +165,63 @@ func OpenFile(path string) error {
 	return openFileOS(path)
 }
 
+// AtomicWriteFile 跨平台高可靠原子文件写入 (完美防御 Windows os.Rename 权限拒绝与冲突)
+func AtomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
 
+	tmpPath := fmt.Sprintf("%s.tmp.%d.%d", filePath, os.Getpid(), time.Now().UnixNano())
+	if err := os.WriteFile(tmpPath, data, perm); err != nil {
+		return err
+	}
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
 
+	// 1. 优先尝试直接原子重命名
+	if err := os.Rename(tmpPath, filePath); err == nil {
+		return nil
+	}
+
+	// 2. Windows 平台降级：先尝试删除已存在的目标文件再重命名
+	_ = os.Remove(filePath)
+	if err := os.Rename(tmpPath, filePath); err == nil {
+		return nil
+	}
+
+	// 3. 终极降级：直接通过文件内容流式复制覆盖
+	fDst, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return fmt.Errorf("atomic write fallback failed: %w", err)
+	}
+	defer fDst.Close()
+
+	if _, err := fDst.Write(data); err != nil {
+		return err
+	}
+	return fDst.Sync()
+}
+
+// EnsureSafePathLength 确保在 Windows MAX_PATH (260字符) 限制下，全路径保持在 220 字符安全阈值内
+func EnsureSafePathLength(dir, filename, ext string) string {
+	const maxChars = 220
+	dirRunes := len([]rune(dir))
+	extRunes := len([]rune(ext))
+
+	maxNameRunes := maxChars - dirRunes - 1 - extRunes
+	if maxNameRunes < 10 {
+		maxNameRunes = 10
+	}
+
+	runes := []rune(filename)
+	if len(runes) > maxNameRunes {
+		runes = runes[:maxNameRunes]
+		filename = strings.Trim(string(runes), " ._-")
+		if filename == "" {
+			filename = "video"
+		}
+	}
+	return filepath.Join(dir, filename+ext)
+}

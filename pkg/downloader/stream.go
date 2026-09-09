@@ -243,14 +243,15 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 			if info, err := os.Stat(s.targetPath); err == nil && s.totalSize > 0 && info.Size() == s.totalSize {
 				return nil
 			}
-			// 否则说明服务端拒绝当前 Range 或本地大小异常，清理本地文件并扣减进度后轮换 CDN 重试
-			var removedBytes int64 = 0
+			// 若本地文件确实超出预期大小，说明有脏数据，清理并扣减进度；否则轮换 CDN 节点重试，避免立刻全量误删
 			if fi, err := os.Stat(s.targetPath); err == nil {
-				removedBytes = fi.Size()
-			}
-			_ = os.Remove(s.targetPath)
-			if progressFn != nil && removedBytes > 0 {
-				progressFn(-removedBytes)
+				if s.totalSize > 0 && fi.Size() > s.totalSize {
+					removedBytes := fi.Size()
+					_ = os.Remove(s.targetPath)
+					if progressFn != nil && removedBytes > 0 {
+						progressFn(-removedBytes)
+					}
+				}
 			}
 			s.rotateURL()
 			time.Sleep(300 * time.Millisecond)
@@ -393,6 +394,8 @@ func (s *StreamDownloader) streamToFile(ctx context.Context, body io.Reader, isA
 	}()
 
 	const readIdleTimeout = 8 * time.Second
+	idleTimer := time.NewTimer(readIdleTimeout)
+	defer idleTimer.Stop()
 
 	for {
 		select {
@@ -413,7 +416,15 @@ func (s *StreamDownloader) streamToFile(ctx context.Context, body io.Reader, isA
 				}
 				return res.err
 			}
-		case <-time.After(readIdleTimeout):
+			// 成功读取到有效数据，复用并重置空闲超时定时器
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
+			idleTimer.Reset(readIdleTimeout)
+		case <-idleTimer.C:
 			return fmt.Errorf("CDN数据流读取停滞(超过8秒无数据)，自动重连加速")
 		}
 	}
