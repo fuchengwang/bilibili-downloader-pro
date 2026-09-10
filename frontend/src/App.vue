@@ -34,6 +34,7 @@ import { EventsOn } from '../wailsjs/runtime/runtime'
 // State
 const activeTab = ref<'parse' | 'queue' | 'history' | 'settings'>('parse')
 const tasks = ref<downloader.DownloadTask[]>([])
+const unreadCompletedCount = ref(0)
 const userInfo = ref<bilibili.UserInfo | null>(null)
 const settings = ref<config.Settings>({
   downloadDir: '',
@@ -138,6 +139,9 @@ onMounted(async () => {
     if (idx !== -1) {
       tasks.value[idx] = completedTask
     }
+    if (activeTab.value !== 'history') {
+      unreadCompletedCount.value++
+    }
     showToast(`下载完成: ${completedTask.title}`, 'success')
     triggerConfetti()
   })
@@ -194,6 +198,9 @@ function closeToast(id: string) {
 // Tab 切换
 function handleTabChange(tab: string) {
   activeTab.value = tab as any
+  if (tab === 'history') {
+    unreadCompletedCount.value = 0
+  }
 }
 
 // 计算活跃任务数与总速度
@@ -396,7 +403,7 @@ function handleLogoutSuccess() {
       :active-tab="activeTab"
       :user-info="userInfo"
       :active-task-count="activeTasks.length"
-      :completed-task-count="completedTasks.length"
+      :completed-task-count="unreadCompletedCount"
       @change-tab="handleTabChange"
       @open-login="showLoginModal = true"
     />
