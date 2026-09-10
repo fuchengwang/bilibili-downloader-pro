@@ -103,6 +103,18 @@ type playurlAPIResp struct {
 			DisplayDesc    string   `json:"display_desc"`
 			Codecs         []string `json:"codecs"`
 		} `json:"support_formats"`
+		VideoInfo *struct {
+			Dash              *DashData `json:"dash"`
+			AcceptDescription []string  `json:"accept_description"`
+			AcceptQuality     []int     `json:"accept_quality"`
+			SupportFormats    []struct {
+				Quality        int      `json:"quality"`
+				Format         string   `json:"format"`
+				NewDescription string   `json:"new_description"`
+				DisplayDesc    string   `json:"display_desc"`
+				Codecs         []string `json:"codecs"`
+			} `json:"support_formats"`
+		} `json:"video_info"`
 	} `json:"result"`
 }
 
@@ -110,8 +122,13 @@ func (r *playurlAPIResp) getDash() *DashData {
 	if r.Data != nil && r.Data.Dash != nil {
 		return r.Data.Dash
 	}
-	if r.Result != nil && r.Result.Dash != nil {
-		return r.Result.Dash
+	if r.Result != nil {
+		if r.Result.Dash != nil {
+			return r.Result.Dash
+		}
+		if r.Result.VideoInfo != nil && r.Result.VideoInfo.Dash != nil {
+			return r.Result.VideoInfo.Dash
+		}
 	}
 	return nil
 }
@@ -120,8 +137,13 @@ func (r *playurlAPIResp) getAcceptQualities() ([]int, []string) {
 	if r.Data != nil && len(r.Data.AcceptQuality) > 0 {
 		return r.Data.AcceptQuality, r.Data.AcceptDescription
 	}
-	if r.Result != nil && len(r.Result.AcceptQuality) > 0 {
-		return r.Result.AcceptQuality, r.Result.AcceptDescription
+	if r.Result != nil {
+		if len(r.Result.AcceptQuality) > 0 {
+			return r.Result.AcceptQuality, r.Result.AcceptDescription
+		}
+		if r.Result.VideoInfo != nil && len(r.Result.VideoInfo.AcceptQuality) > 0 {
+			return r.Result.VideoInfo.AcceptQuality, r.Result.VideoInfo.AcceptDescription
+		}
 	}
 	return nil, nil
 }
@@ -312,7 +334,7 @@ func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid
 		if resp.Code == 0 && resp.getDash() != nil {
 			return &resp, nil
 		}
-		if resp.Result != nil && (resp.Result.Dash != nil || len(resp.Result.AcceptQuality) > 0) {
+		if resp.Result != nil && (resp.Result.Dash != nil || len(resp.Result.AcceptQuality) > 0 || resp.Result.VideoInfo != nil) {
 			return &resp, nil
 		}
 		if resp.Message != "" {
