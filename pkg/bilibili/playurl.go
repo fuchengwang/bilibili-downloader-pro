@@ -304,9 +304,6 @@ func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid
 		params.Set("otype", "json")
 		params.Set("module", "bangumi")
 		params.Set("wts", ts)
-		if !c.IsLoggedIn() {
-			params.Set("try_look", "1")
-		}
 		reqURL := "https://api.bilibili.com/pgc/player/web/v2/playurl?" + params.Encode()
 		var resp playurlAPIResp
 		if err := c.GetJSON(ctx, reqURL, &resp); err != nil {
@@ -336,9 +333,6 @@ func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid
 		"otype":               "json",
 		"qn":                  "127",
 		"support_multi_audio": "true",
-	}
-	if !c.IsLoggedIn() {
-		paramMap["try_look"] = "1"
 	}
 	if signedQuery, err := c.SignWbiParams(ctx, paramMap); err == nil {
 		wbiURL := "https://api.bilibili.com/x/player/wbi/playurl?" + signedQuery

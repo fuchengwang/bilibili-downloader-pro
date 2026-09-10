@@ -65,7 +65,8 @@ async function handleBrowseDir() {
     const path = await SelectDirectory()
     if (path) {
       form.value.downloadDir = path
-      emit('show-toast', '已选择下载目录', 'success')
+      emit('show-toast', '已成功更改下载目录', 'success')
+      emit('settings-saved', form.value)
     }
   } catch (err: any) {
     emit('show-toast', '选择目录失败: ' + err.message, 'error')

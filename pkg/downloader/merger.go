@@ -22,14 +22,19 @@ type BoxInfo struct {
 	HeaderLen int64
 }
 
-// scanBoxes 扫描 MP4 顶层 Box 结构，完美兼容 Size 0 (EOF 盒) 与 Size 1 (64位大文件盒)
+// scanBoxes 扫描 MP4 顶层 Box 结构，完美兼容 Size 0 (EOF 盒) 与 Size 1 (64位大文件盒)，具备严格的整数溢出与死循环安全防御
 func scanBoxes(f *os.File, fileSize int64) ([]BoxInfo, error) {
 	var boxes []BoxInfo
 	var offset int64 = 0
 	buf := make([]byte, 16)
 
 	for offset < fileSize {
-		_, _ = f.Seek(offset, io.SeekStart)
+		if offset < 0 {
+			break
+		}
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			break
+		}
 		n, err := io.ReadFull(f, buf[:8])
 		if err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
@@ -62,6 +67,15 @@ func scanBoxes(f *os.File, fileSize int64) ([]BoxInfo, error) {
 			break
 		}
 
+		// 核心溢出与边界保护：
+		// 1. int64(size) 不能为负数 (防止 uint64 溢出反转)
+		// 2. size 不能超过文件剩余可用字节数 (fileSize - offset)
+		// 3. offset + int64(size) 不能上溢 (必须严格大于原 offset)
+		int64Size := int64(size)
+		if int64Size < 0 || size > uint64(fileSize-offset) || offset+int64Size <= offset {
+			break
+		}
+
 		boxes = append(boxes, BoxInfo{
 			Type:      boxType,
 			Offset:    offset,
@@ -69,7 +83,7 @@ func scanBoxes(f *os.File, fileSize int64) ([]BoxInfo, error) {
 			HeaderLen: headerLen,
 		})
 
-		offset += int64(size)
+		offset += int64Size
 	}
 
 	return boxes, nil
@@ -223,10 +237,12 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 	aTrak := aMoov.Traks[0]
 	aTrak.Tkhd.TrackID = audioTrackID
 
-	if aMoov.Mvex != nil && len(aMoov.Mvex.Trexs) > 0 {
-		aMoov.Mvex.Trexs[0].TrackID = audioTrackID
-		if vMoov.Mvex != nil {
-			vMoov.Mvex.AddChild(aMoov.Mvex.Trexs[0])
+	if aMoov.Mvex != nil {
+		for _, trex := range aMoov.Mvex.Trexs {
+			trex.TrackID = audioTrackID
+			if vMoov.Mvex != nil {
+				vMoov.Mvex.AddChild(trex)
+			}
 		}
 	}
 
@@ -263,23 +279,29 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 
 	// 若为传统非分片 MP4 (无 moof 盒)，在写入 moov 前对 stco / co64 的 Chunk Offset 进行绝对偏移校准
 	if len(vFrags) == 0 && len(aFrags) == 0 {
-		var vOrigMdatOffset int64 = 0
-		var vMdatTotalSize int64 = 0
+		var vOrigMdatPayloadOffset int64 = 0
+		var vNewMdatTotalSize int64 = 0
+		var firstVideoMdatHeaderLen int64 = 8
+
 		for _, b := range vBoxes {
 			if b.Type == "mdat" {
-				if vOrigMdatOffset == 0 {
-					vOrigMdatOffset = b.Offset
+				if vOrigMdatPayloadOffset == 0 {
+					vOrigMdatPayloadOffset = b.Offset + b.HeaderLen
+					firstVideoMdatHeaderLen = getMdatHeaderLen(b)
 				}
-				vMdatTotalSize += int64(b.Size)
+				vNewMdatTotalSize += getMdatHeaderLen(b) + (int64(b.Size) - b.HeaderLen)
 			}
 		}
 
-		var aOrigMdatOffset int64 = 0
+		var aOrigMdatPayloadOffset int64 = 0
+		var firstAudioMdatHeaderLen int64 = 8
 		for _, b := range aBoxes {
 			if b.Type == "mdat" {
-				if aOrigMdatOffset == 0 {
-					aOrigMdatOffset = b.Offset
+				if aOrigMdatPayloadOffset == 0 {
+					aOrigMdatPayloadOffset = b.Offset + b.HeaderLen
+					firstAudioMdatHeaderLen = getMdatHeaderLen(b)
 				}
+				break
 			}
 		}
 
@@ -289,14 +311,16 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 		}
 		newHeaderSize += int64(vMoov.Size())
 
-		vDelta := newHeaderSize - vOrigMdatOffset
+		vNewMdatPayloadOffset := newHeaderSize + firstVideoMdatHeaderLen
+		vDelta := vNewMdatPayloadOffset - vOrigMdatPayloadOffset
 		for _, trak := range vMoov.Traks {
 			if trak.Tkhd != nil && trak.Tkhd.TrackID != audioTrackID {
 				adjustSampleTableOffsets(trak, vDelta)
 			}
 		}
 
-		aDelta := (newHeaderSize + vMdatTotalSize) - aOrigMdatOffset
+		aNewMdatPayloadOffset := newHeaderSize + vNewMdatTotalSize + firstAudioMdatHeaderLen
+		aDelta := aNewMdatPayloadOffset - aOrigMdatPayloadOffset
 		adjustSampleTableOffsets(aTrak, aDelta)
 	}
 
@@ -321,6 +345,7 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 			return allFrags[i].TimeSec < allFrags[j].TimeSec
 		})
 
+		var seqNum uint32 = 1
 		for _, frag := range allFrags {
 			srcFile := vF
 			var targetTrackID uint32 = 0
@@ -336,8 +361,9 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 			}
 
 			if moof, ok := box.(*mp4.MoofBox); ok {
-				// 核心协议合规性修复：强制设置 default-base-is-moof，并校准 trun DataOffset
-				_ = adjustMoofBox(moof, targetTrackID, getMdatHeaderLen(frag.Mdat))
+				// 核心协议合规性修复：强制设置 default-base-is-moof，并校准 trun DataOffset 以及 Mfhd 序列号
+				_ = adjustMoofBox(moof, targetTrackID, getMdatHeaderLen(frag.Mdat), seqNum)
+				seqNum++
 				if err := moof.Encode(outFh); err != nil {
 					return fmt.Errorf("写入 moof 失败: %w", err)
 				}
@@ -353,11 +379,20 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 		}
 	} else {
 		// 兜底降级：非标准分片流直接顺序写入
+		var seqNum uint32 = 1
 		for _, b := range vBoxes {
 			if b.Type == "moof" {
 				_, _ = vF.Seek(b.Offset, io.SeekStart)
 				if box, err := mp4.DecodeBox(uint64(b.Offset), vF); err == nil {
-					_ = box.Encode(outFh)
+					if moof, ok := box.(*mp4.MoofBox); ok {
+						if moof.Mfhd != nil {
+							moof.Mfhd.SequenceNumber = seqNum
+						}
+						seqNum++
+						_ = moof.Encode(outFh)
+					} else {
+						_ = box.Encode(outFh)
+					}
 				}
 			} else if b.Type == "mdat" {
 				_ = writeMdatBox(vF, b, outFh, streamBuf)
@@ -373,6 +408,10 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 								traf.Tfhd.TrackID = audioTrackID
 							}
 						}
+						if moof.Mfhd != nil {
+							moof.Mfhd.SequenceNumber = seqNum
+						}
+						seqNum++
 						_ = moof.Encode(outFh)
 					}
 				}
@@ -479,19 +518,30 @@ func writeMdatBox(f *os.File, b BoxInfo, outFh io.Writer, streamBuf []byte) erro
 }
 
 func copyOrRename(src, dst string) error {
+	// 1. 优先尝试直接原子重命名
 	if err := os.Rename(src, dst); err == nil {
 		return nil
 	}
+
+	// 2. Windows 平台/目标已存在保护：先尝试删除已存在的目标文件，再次尝试原子重命名 (秒级完成，杜绝大文件全盘复制)
+	_ = os.Remove(dst)
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+
+	// 3. 跨磁盘卷或权限受限时的终极降级：流式复制覆盖
 	s, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
+
 	d, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
 	defer d.Close()
+
 	if _, err = io.Copy(d, s); err != nil {
 		return err
 	}
@@ -506,7 +556,10 @@ func fileExists(path string) bool {
 }
 
 // adjustMoofBox 核心合规性修正：确保每个 traf 的 tfhd 显式声明 default-base-is-moof，并校准 trun 的 DataOffset
-func adjustMoofBox(moof *mp4.MoofBox, targetTrackID uint32, mdatHeaderLen int64) error {
+func adjustMoofBox(moof *mp4.MoofBox, targetTrackID uint32, mdatHeaderLen int64, seqNum uint32) error {
+	if moof.Mfhd != nil && seqNum > 0 {
+		moof.Mfhd.SequenceNumber = seqNum
+	}
 	for _, traf := range moof.Trafs {
 		if traf.Tfhd != nil {
 			if targetTrackID > 0 {

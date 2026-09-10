@@ -35,7 +35,12 @@ func TestPlayURLResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchStreamSelection failed: %v", err)
 	}
-	t.Logf("Stream URL: %s, QN: %d, Label: %s", sel.VideoURL, sel.QualityID, sel.QualityLabel)
+	t.Logf("Stream URL: %s, QN: %d, Label: %s, Duration: %d", sel.VideoURL, sel.QualityID, sel.QualityLabel, sel.Duration)
+
+	// 核心断言：未登录状态下获取的流时长绝不能是 5 秒试看片段！(该视频原长至少数分钟)
+	if sel.Duration <= 10 {
+		t.Fatalf("严重缺陷：获取到的媒体流时长仅为 %d 秒（疑似被 try_look 截断为试看片段）！", sel.Duration)
+	}
 }
 
 func TestPickVideoStream_QualityAndCodecs(t *testing.T) {

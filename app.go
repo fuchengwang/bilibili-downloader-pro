@@ -190,6 +190,9 @@ func (a *App) SaveSettings(s config.Settings) error {
 // SelectDirectory 弹出系统原生文件夹选择对话框
 func (a *App) SelectDirectory() (string, error) {
 	current := a.cfgMgr.Get().DownloadDir
+	if fi, err := os.Stat(current); err != nil || !fi.IsDir() {
+		current = config.DefaultDownloadDir()
+	}
 	res, err := wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
 		DefaultDirectory: current,
 		Title:            "选择下载保存目录",

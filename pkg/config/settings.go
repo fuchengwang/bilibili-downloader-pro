@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"bilibili_downloader/pkg/utils"
@@ -50,10 +51,10 @@ func GetConfigDir() string {
 	return appDir
 }
 
-// DefaultDownloadDir 获取默认下载目录
+// DefaultDownloadDir 获取默认下载目录 (macOS / 系统原生 Downloads 目录)
 func DefaultDownloadDir() string {
 	if home, err := os.UserHomeDir(); err == nil {
-		dir := filepath.Join(home, "Downloads", "Bilibili")
+		dir := filepath.Join(home, "Downloads")
 		_ = os.MkdirAll(dir, 0755)
 		return dir
 	}
@@ -117,6 +118,25 @@ func (m *ConfigManager) load() error {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
+
+	// 核心安全自愈防护：仅针对正式用户配置目录，如果持久化配置中的下载目录为空、
+	// 包含历史测试临时特征、或指向已不存在的临时目录，自动自愈纠偏重置为系统原生 Downloads 目录
+	if m.dir == GetConfigDir() {
+		tempDir := os.TempDir()
+		isInvalidTemp := s.DownloadDir == "" || strings.Contains(s.DownloadDir, "bili_live_test")
+		if !isInvalidTemp && (strings.HasPrefix(s.DownloadDir, "/var/folders/") || (tempDir != "" && strings.HasPrefix(s.DownloadDir, tempDir))) {
+			if fi, err := os.Stat(s.DownloadDir); err != nil || !fi.IsDir() {
+				isInvalidTemp = true
+			}
+		}
+
+		if isInvalidTemp {
+			s.DownloadDir = DefaultDownloadDir()
+			data, _ = json.MarshalIndent(s, "", "  ")
+			_ = utils.AtomicWriteFile(filePath, data, 0644)
+		}
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.settings = s

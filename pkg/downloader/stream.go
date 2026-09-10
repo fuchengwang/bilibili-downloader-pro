@@ -15,6 +15,9 @@ import (
 	"bilibili_downloader/pkg/bilibili"
 )
 
+// URLRefresher 动态刷新直链的回调函数 (当遇到 403 Forbidden 或鉴权过期时自动触发无缝刷新)
+type URLRefresher func(ctx context.Context) ([]string, error)
+
 // StreamDownloader 单个媒体流 (视频或音频) 的高可靠断点续传下载器
 type StreamDownloader struct {
 	client     *http.Client
@@ -22,6 +25,12 @@ type StreamDownloader struct {
 	urlIdx     int
 	targetPath string
 	totalSize  int64
+	refresher  URLRefresher
+}
+
+// SetURLRefresher 配置直链鉴权失效时的动态刷新器
+func (s *StreamDownloader) SetURLRefresher(fn URLRefresher) {
+	s.refresher = fn
 }
 
 // NewStreamDownloader 创建单流下载器 (支持多候选 CDN 节点与长连接 Transport)
@@ -188,6 +197,7 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 
 	const maxRetries = 15
 	var lastErr error
+	var lastProgressOffset int64 = -1
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if ctx.Err() != nil {
@@ -225,6 +235,12 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 		if startOffset > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startOffset))
 		}
+
+		// 只要有任何真实的下载进度推进，就重置尝试次数，避免长时间下载积累的非连续网络闪断耗尽重试次数
+		if startOffset > lastProgressOffset && lastProgressOffset != -1 {
+			attempt = 0
+		}
+		lastProgressOffset = startOffset
 
 		resp, err := s.client.Do(req)
 		if err != nil {
@@ -270,8 +286,34 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 			continue
 		}
 
-		// 处理 403 / 5xx 等需轮换 CDN 的状态码
-		if resp.StatusCode == http.StatusForbidden || resp.StatusCode >= 500 {
+		// 处理 403 Forbidden (直链鉴权过期)
+		if resp.StatusCode == http.StatusForbidden {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("URL auth expired (403)")
+			// 若配置了 URL 动态刷新器，立即无缝拉取最新可用直链并重试断点续传
+			if s.refresher != nil {
+				if newURLs, rErr := s.refresher(ctx); rErr == nil && len(newURLs) > 0 {
+					isSame := len(s.urls) > 0 && newURLs[0] == s.urls[0]
+					s.urls = newURLs
+					s.urlIdx = 0
+					
+					// 只有在新获取的链接真正发生改变时，才重置 attempt，彻底防止陷入真实的 403 重试死循环
+					if !isSame {
+						attempt = 0
+					}
+					
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+			}
+			lastErr = fmt.Errorf("CDN 节点响应异常: %s", resp.Status)
+			s.rotateURL()
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		// 处理 5xx 服务端异常
+		if resp.StatusCode >= 500 {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("CDN 节点响应异常: %s", resp.Status)
 			s.rotateURL()

@@ -577,14 +577,28 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	m.mu.Unlock()
 	m.SaveTasks()
 
-	// 2. 准备视频与音频下载器 (支持候选 CDN 自动故障转移)
+	// 2. 准备视频与音频下载器 (支持候选 CDN 自动故障转移与 403 自动刷新换链)
 	vDownloader := NewStreamDownloader(sel.VideoURLs, task.VideoTmpPath)
+	vDownloader.SetURLRefresher(func(refCtx context.Context) ([]string, error) {
+		newSel, rErr := m.biliClient.FetchStreamSelection(refCtx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, task.TargetQuality, task.TargetCodec)
+		if rErr != nil {
+			return nil, rErr
+		}
+		return newSel.VideoURLs, nil
+	})
 	vSize, _ := vDownloader.GetTotalSize(ctx)
 
 	var aDownloader *StreamDownloader
 	var aSize int64 = 0
 	if len(sel.AudioURLs) > 0 && sel.AudioURLs[0] != "" {
 		aDownloader = NewStreamDownloader(sel.AudioURLs, task.AudioTmpPath)
+		aDownloader.SetURLRefresher(func(refCtx context.Context) ([]string, error) {
+			newSel, rErr := m.biliClient.FetchStreamSelection(refCtx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, task.TargetQuality, task.TargetCodec)
+			if rErr != nil {
+				return nil, rErr
+			}
+			return newSel.AudioURLs, nil
+		})
 		aSize, _ = aDownloader.GetTotalSize(ctx)
 	}
 
