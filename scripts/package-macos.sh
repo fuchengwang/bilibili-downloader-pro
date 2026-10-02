@@ -18,7 +18,7 @@ else
   NOTARY_ARGS=(--apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID")
 fi
 [[ -d "$APP_PATH" ]]
-lipo -verify_arch arm64 x86_64 "$APP_PATH/Contents/MacOS/BBDown Pro"
+lipo "$APP_PATH/Contents/MacOS/BBDown Pro" -verify_arch arm64 x86_64
 xattr -cr "$APP_PATH"
 codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGN_IDENTITY" "$APP_PATH"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
