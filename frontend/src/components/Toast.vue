@@ -76,7 +76,7 @@ const emit = defineEmits<{
   max-width: 420px;
   padding: 12px 14px;
   border-radius: var(--radius-md);
-  background: rgba(22, 27, 39, 0.95);
+  background: var(--bg-toast);
   backdrop-filter: blur(16px);
   border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-lg);
@@ -104,7 +104,7 @@ const emit = defineEmits<{
 
 .toast-clipboard {
   border-color: rgba(251, 114, 153, 0.4);
-  background: rgba(30, 24, 38, 0.96);
+  background: var(--bg-toast-highlight);
 }
 
 .icon-clipboard {

@@ -268,7 +268,7 @@ const filteredTasks = computed(() => {
 }
 
 .tab-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--neutral-05);
   color: var(--text-primary);
 }
 
@@ -311,7 +311,7 @@ const filteredTasks = computed(() => {
 
 .task-card:hover {
   background: var(--bg-card-hover);
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: var(--neutral-12);
 }
 
 .task-cover-box {
@@ -333,7 +333,7 @@ const filteredTasks = computed(() => {
 .task-cover-placeholder {
   width: 100%;
   height: 100%;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--neutral-05);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -394,7 +394,7 @@ const filteredTasks = computed(() => {
 .progress-bar {
   width: 100%;
   height: 5px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--neutral-08);
   border-radius: var(--radius-full);
   overflow: hidden;
 }
@@ -523,7 +523,7 @@ const filteredTasks = computed(() => {
   width: 56px;
   height: 56px;
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--neutral-04);
   display: flex;
   align-items: center;
   justify-content: center;

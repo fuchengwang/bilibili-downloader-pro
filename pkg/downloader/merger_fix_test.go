@@ -157,3 +157,109 @@ func TestAdjustMoofBoxRejectsMalformedChildren(t *testing.T) {
 		t.Fatal("invalid mdat header length should be rejected")
 	}
 }
+
+func TestMergeMissingRequestedAudioPreservesOutput(t *testing.T) {
+	dir := t.TempDir()
+	video, audio, out := filepath.Join(dir, "v.mp4"), filepath.Join(dir, "missing.m4s"), filepath.Join(dir, "out.mp4")
+	if err := os.WriteFile(video, []byte("video"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(out, []byte("existing"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MergeAudioVideo(video, audio, out, true); err == nil {
+		t.Fatal("missing requested audio must fail")
+	}
+	data, err := os.ReadFile(out)
+	if err != nil || string(data) != "existing" {
+		t.Fatalf("existing output destroyed: %q %v", data, err)
+	}
+	if _, err := os.Stat(video); err != nil {
+		t.Fatal("source removed on failure")
+	}
+}
+
+func TestAdjustMoofDefaultSampleSizes(t *testing.T) {
+	moof := &mp4.MoofBox{}
+	traf := &mp4.TrafBox{}
+	tfhd := mp4.CreateTfhd(1)
+	tfhd.Flags |= mp4.TfhdDefaultSampleSizePresentFlag
+	tfhd.DefaultSampleSize = 100
+	_ = traf.AddChild(tfhd)
+	for i := 0; i < 2; i++ {
+		trun := mp4.CreateTrun(1)
+		trun.Flags &^= 0x000200 // sample-size-present
+		trun.AddSample(mp4.Sample{Dur: 1000})
+		_ = traf.AddChild(trun)
+	}
+	_ = moof.AddChild(traf)
+	if err := adjustMoofBox(moof, 0, 8, 1); err != nil {
+		t.Fatal(err)
+	}
+	if traf.Truns[1].DataOffset-traf.Truns[0].DataOffset != 100 {
+		t.Fatalf("default sample sizes lost: offsets %d %d", traf.Truns[0].DataOffset, traf.Truns[1].DataOffset)
+	}
+}
+
+func TestClassicMP4RelocationAcrossMultipleMdatAnd4GB(t *testing.T) {
+	stbl := mp4.NewStblBox()
+	stbl.AddChild(&mp4.StcoBox{ChunkOffset: []uint32{108, 208}})
+	trak := &mp4.TrakBox{Mdia: &mp4.MdiaBox{Minf: &mp4.MinfBox{Stbl: stbl}}}
+	// Metadata between the two source mdats is discarded during merging.
+	boxes := []BoxInfo{{Type: "mdat", Offset: 100, Size: 28, HeaderLen: 8}, {Type: "free", Offset: 128, Size: 72, HeaderLen: 8}, {Type: "mdat", Offset: 200, Size: 28, HeaderLen: 8}}
+	promoteChunkOffsets(trak)
+	if err := relocateChunkOffsets(trak, boxes, 1<<32); err != nil {
+		t.Fatal(err)
+	}
+	if stbl.Stco != nil || stbl.Co64 == nil {
+		t.Fatal("large-file offsets must use co64")
+	}
+	want := []uint64{1<<32 + 8, 1<<32 + 36}
+	var encoded bytes.Buffer
+	if err := stbl.Co64.Encode(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	box, err := mp4.DecodeBox(0, &encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := box.(*mp4.Co64Box).ChunkOffset
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("relocated chunk %d=%d, want %d", i, got[i], want[i])
+		}
+	}
+}
+func TestClassicMP4RejectsChunkOutsideMediaData(t *testing.T) {
+	stbl := mp4.NewStblBox()
+	stbl.AddChild(&mp4.Co64Box{ChunkOffset: []uint64{999}})
+	trak := &mp4.TrakBox{Mdia: &mp4.MdiaBox{Minf: &mp4.MinfBox{Stbl: stbl}}}
+	if err := relocateChunkOffsets(trak, []BoxInfo{{Type: "mdat", Offset: 100, Size: 28, HeaderLen: 8}}, 1000); err == nil {
+		t.Fatal("invalid media offset must fail before writing output")
+	}
+}
+
+func TestAudioFragmentUsesRemappedTrexDefaults(t *testing.T) {
+	mvex := mp4.NewMvexBox()
+	mvex.AddChild(&mp4.TrexBox{TrackID: 1, DefaultSampleSize: 800})
+	mvex.AddChild(&mp4.TrexBox{TrackID: 2, DefaultSampleSize: 120})
+	moof := &mp4.MoofBox{}
+	traf := &mp4.TrafBox{}
+	_ = traf.AddChild(mp4.CreateTfhd(1)) // Separate source files both used Track ID 1.
+	for i := 0; i < 2; i++ {
+		trun := mp4.CreateTrun(1)
+		trun.Flags &^= 0x200
+		trun.AddSample(mp4.Sample{})
+		_ = traf.AddChild(trun)
+	}
+	_ = moof.AddChild(traf)
+	if err := resolveFragmentSampleDefaults(moof, mvex, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := adjustMoofBox(moof, 2, 8, 1); err != nil {
+		t.Fatal(err)
+	}
+	if traf.Truns[1].DataOffset-traf.Truns[0].DataOffset != 120 {
+		t.Fatal("audio offsets used video track defaults")
+	}
+}

@@ -56,4 +56,70 @@
   --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-normal: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-smooth: 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+
+  color-scheme: dark;
+  --bg-header: rgba(12, 14, 20, 0.6);
+  --bg-toast: rgba(22, 27, 39, 0.95);
+  --bg-toast-highlight: rgba(30, 24, 38, 0.96);
+  --neutral-015: rgba(255, 255, 255, 0.015);
+  --neutral-02: rgba(255, 255, 255, 0.02);
+  --neutral-03: rgba(255, 255, 255, 0.03);
+  --neutral-035: rgba(255, 255, 255, 0.035);
+  --neutral-04: rgba(255, 255, 255, 0.04);
+  --neutral-05: rgba(255, 255, 255, 0.05);
+  --neutral-06: rgba(255, 255, 255, 0.06);
+  --neutral-07: rgba(255, 255, 255, 0.07);
+  --neutral-08: rgba(255, 255, 255, 0.08);
+  --neutral-1: rgba(255, 255, 255, 0.1);
+  --neutral-12: rgba(255, 255, 255, 0.12);
+  --neutral-15: rgba(255, 255, 255, 0.15);
+  --neutral-18: rgba(255, 255, 255, 0.18);
+  --neutral-25: rgba(255, 255, 255, 0.25);
+}
+
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bili-pink: #c93668;
+  --bili-pink-hover: #b82d5c;
+  --bili-blue: #087ea8;
+  --bili-blue-hover: #066b90;
+  --vip-gold: #a66408;
+  --success: #087f5b;
+  --warning: #a66408;
+  --danger: #c83232;
+  --bg-app: #f4f6fa;
+  --bg-sidebar: rgba(255, 255, 255, 0.94);
+  --bg-card: rgba(255, 255, 255, 0.94);
+  --bg-card-hover: #f0f3f9;
+  --bg-input: #f6f8fc;
+  --bg-modal: rgba(255, 255, 255, 0.98);
+  --bg-badge: #e9edf5;
+  --bg-header: rgba(244, 246, 250, 0.9);
+  --bg-toast: rgba(255, 255, 255, 0.98);
+  --bg-toast-highlight: #fff3f7;
+  --border-subtle: rgba(33, 48, 75, 0.13);
+  --border-hover: rgba(201, 54, 104, 0.4);
+  --border-focus: #c93668;
+  --text-primary: #1c2940;
+  --text-secondary: #53637b;
+  --text-muted: #65738a;
+  --text-link: #087ea8;
+  --shadow-sm: 0 2px 8px rgba(35, 49, 76, 0.07);
+  --shadow-md: 0 8px 24px -4px rgba(35, 49, 76, 0.12);
+  --shadow-lg: 0 16px 40px -8px rgba(35, 49, 76, 0.18);
+  --neutral-015: rgba(33, 48, 75, 0.015);
+  --neutral-02: rgba(33, 48, 75, 0.02);
+  --neutral-03: rgba(33, 48, 75, 0.03);
+  --neutral-035: rgba(33, 48, 75, 0.035);
+  --neutral-04: rgba(33, 48, 75, 0.04);
+  --neutral-05: rgba(33, 48, 75, 0.05);
+  --neutral-06: rgba(33, 48, 75, 0.06);
+  --neutral-07: rgba(33, 48, 75, 0.07);
+  --neutral-08: rgba(33, 48, 75, 0.08);
+  --neutral-1: rgba(33, 48, 75, 0.1);
+  --neutral-12: rgba(33, 48, 75, 0.12);
+  --neutral-15: rgba(33, 48, 75, 0.15);
+  --neutral-18: rgba(33, 48, 75, 0.18);
+  --neutral-25: rgba(33, 48, 75, 0.25);
 }

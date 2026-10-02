@@ -49,7 +49,7 @@ const emit = defineEmits<{
   justify-content: space-between;
   padding: 0 24px 0 20px;
   border-bottom: 1px solid var(--border-subtle);
-  background: rgba(12, 14, 20, 0.6);
+  background: var(--bg-header);
   backdrop-filter: blur(16px);
   flex-shrink: 0;
 }
@@ -91,7 +91,7 @@ const emit = defineEmits<{
   gap: 4px;
   padding: 4px 8px;
   border-radius: var(--radius-xs);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--neutral-05);
   color: var(--text-muted);
   font-size: 11px;
 }

@@ -80,3 +80,21 @@ func TestSettingsSaveNormalizesEmptyValues(t *testing.T) {
 		t.Fatalf("Save 空设置未恢复字符串默认值: %+v", s)
 	}
 }
+
+func TestThemeNormalizationAndPersistence(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{{"light", "light"}, {"dark", "dark"}, {"system", "system"}, {" LIGHT ", "light"}, {"invalid", "dark"}} {
+		t.Run(tc.input, func(t *testing.T) {
+			dir := t.TempDir()
+			m := NewConfigManager(dir)
+			s := m.Get()
+			s.Theme = tc.input
+			if err := m.Save(s); err != nil {
+				t.Fatal(err)
+			}
+			restored := NewConfigManager(dir).Get()
+			if restored.Theme != tc.want {
+				t.Fatalf("theme after restart=%q want=%q", restored.Theme, tc.want)
+			}
+		})
+	}
+}

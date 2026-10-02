@@ -32,6 +32,7 @@ import {
   ActivateLicense
 } from '../wailsjs/go/main/App'
 import { EventsOn } from '../wailsjs/runtime/runtime'
+import { theme, normalizeTheme } from './theme'
 
 // State
 const activeTab = ref<'parse' | 'queue' | 'history' | 'settings'>('parse')
@@ -115,10 +116,7 @@ async function initializeAuthorizedApp() {
   appInitialized = true
   // 每项初始化独立处理：B站用户信息暂时请求失败时，不能阻止本地任务队列显示。
   try {
-    const s = await GetSettings()
-    if (s) {
-      settings.value = s
-    }
+    await loadSettings()
   } catch (err) {
     console.error('加载偏好设置失败:', err)
   }
@@ -225,7 +223,29 @@ async function activateLicense() {
   }
 }
 
-onMounted(checkLicense)
+async function loadSettings() {
+  const s = await GetSettings()
+  if (s) {
+    settings.value = s
+    theme.value = normalizeTheme(s.theme)
+  }
+}
+
+function handleThemeChanged(value: string) {
+  settings.value.theme = value
+  theme.value = normalizeTheme(value)
+}
+
+function handleSettingsSaved(s: config.Settings) {
+  settings.value = { ...s }
+  theme.value = normalizeTheme(s.theme)
+}
+
+onMounted(async () => {
+  // Theme preferences are available even on the activation screen.
+  try { await loadSettings() } catch (err) { console.error('加载外观设置失败:', err) }
+  await checkLicense()
+})
 
 onUnmounted(() => {
   if (clipboardTimer) clearInterval(clipboardTimer)
@@ -558,7 +578,8 @@ function handleLicenseDeactivated() {
           <SettingsView
             :initial-settings="settings"
             :license-status="licenseStatus"
-            @settings-saved="(s) => settings = s"
+            @settings-saved="handleSettingsSaved"
+            @theme-changed="handleThemeChanged"
             @show-toast="showToast"
             @license-deactivated="handleLicenseDeactivated"
           />
@@ -666,7 +687,7 @@ function handleLicenseDeactivated() {
   overflow: hidden;
   display: grid;
   place-items: center;
-  background: #0c0e14;
+  background: var(--bg-app);
 }
 
 .license-glow {
@@ -688,8 +709,8 @@ function handleLicenseDeactivated() {
   padding: 32px;
   border-radius: 22px;
   border: 1px solid var(--border-subtle);
-  background: rgba(24, 29, 43, 0.82);
-  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.45);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg);
   backdrop-filter: blur(20px);
   text-align: center;
 }
@@ -701,11 +722,11 @@ function handleLicenseDeactivated() {
 .license-field { display: block; text-align: left; }
 .license-field span { display: block; margin-bottom: 7px; color: var(--text-secondary); font-size: 12px; font-weight: 600; }
 .license-field input { width: 100%; height: 43px; padding: 0 13px; text-transform: uppercase; letter-spacing: 0.6px; }
-.license-error { margin: 10px 0 0; color: #f87171; font-size: 12px; line-height: 1.5; text-align: left; }
+.license-error { margin: 10px 0 0; color: var(--danger); font-size: 12px; line-height: 1.5; text-align: left; }
 .license-submit { width: 100%; height: 42px; margin-top: 16px; }
 .license-submit:disabled { opacity: 0.5; cursor: default; }
 .license-help { margin: 15px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.6; }
-.license-loader { width: 24px; height: 24px; margin: 8px auto 0; border: 2px solid rgba(255,255,255,.12); border-top-color: var(--bili-pink); border-radius: 50%; animation: licenseSpin .7s linear infinite; }
+.license-loader { width: 24px; height: 24px; margin: 8px auto 0; border: 2px solid var(--neutral-12); border-top-color: var(--bili-pink); border-radius: 50%; animation: licenseSpin .7s linear infinite; }
 @keyframes licenseSpin { to { transform: rotate(360deg); } }
 
 .app-layout {
@@ -820,7 +841,7 @@ function handleLicenseDeactivated() {
 }
 
 .btn-close:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--neutral-08);
   color: var(--text-primary);
 }
 
@@ -832,7 +853,7 @@ function handleLicenseDeactivated() {
 }
 
 .file-info-card {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--neutral-03);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   padding: 10px 12px;

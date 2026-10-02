@@ -23,7 +23,7 @@ func main() {
 		ServerURL:            "https://47.97.111.181:8090",
 		AppID:                "bbdown-pro",
 		AppName:              "BBDown Pro",
-		ClientVersion:        "1.1.4",
+		ClientVersion:        "1.1.5",
 		Timeout:              10 * time.Second,
 		OfflineGraceDays:     30,
 		AutoVerifyInterval:   24 * time.Hour,
@@ -39,6 +39,15 @@ func main() {
 		app.ShowMainWindow()
 	})
 
+	appearance := mac.NSAppearanceNameDarkAqua
+	background := &options.RGBA{R: 12, G: 14, B: 20, A: 255}
+	switch app.cfgMgr.Get().Theme {
+	case "light":
+		appearance = mac.NSAppearanceNameAqua
+		background = &options.RGBA{R: 244, G: 246, B: 250, A: 255}
+	case "system":
+		appearance = mac.DefaultAppearance
+	}
 	err = wails.Run(&options.App{
 		Title:            "BBDown Pro",
 		Width:            1140,
@@ -46,7 +55,7 @@ func main() {
 		MinWidth:         980,
 		MinHeight:        640,
 		StartHidden:      true,
-		BackgroundColour: &options.RGBA{R: 12, G: 14, B: 20, A: 255}, // 严格匹配深色背景 #0c0e14
+		BackgroundColour: background,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
@@ -57,7 +66,7 @@ func main() {
 		},
 		Mac: &mac.Options{
 			TitleBar:             mac.TitleBarHiddenInset(),
-			Appearance:           mac.NSAppearanceNameDarkAqua,
+			Appearance:           appearance,
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
 			About: &mac.AboutInfo{

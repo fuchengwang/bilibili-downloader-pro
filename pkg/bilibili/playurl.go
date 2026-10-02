@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -65,6 +66,31 @@ type DashStream struct {
 	FrameRate string   `json:"frame_rate"`
 }
 
+// Some HTML and PGC player responses use camelCase stream URL keys.
+func (d *DashStream) UnmarshalJSON(data []byte) error {
+	type stream DashStream
+	var wire struct {
+		stream
+		BaseURLCamel   string   `json:"baseUrl"`
+		BackupURLCamel []string `json:"backupUrl"`
+		FrameRateCamel string   `json:"frameRate"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*d = DashStream(wire.stream)
+	if d.BaseURL == "" {
+		d.BaseURL = wire.BaseURLCamel
+	}
+	if len(d.BackupURL) == 0 {
+		d.BackupURL = wire.BackupURLCamel
+	}
+	if d.FrameRate == "" {
+		d.FrameRate = wire.FrameRateCamel
+	}
+	return nil
+}
+
 type DashData struct {
 	Duration int          `json:"duration"`
 	Video    []DashStream `json:"video"`
@@ -77,45 +103,49 @@ type DashData struct {
 	} `json:"flac"`
 }
 
+// previewFlag accepts both integer and boolean indicators from different player versions.
+type previewFlag bool
+
+func (p *previewFlag) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case "1", "true", "\"1\"":
+		*p = true
+	case "0", "false", "null", "\"0\"":
+		*p = false
+	default:
+		return fmt.Errorf("未知试看标记: %s", data)
+	}
+	return nil
+}
+
+type playurlData struct {
+	Dash              *DashData   `json:"dash"`
+	AcceptDescription []string    `json:"accept_description"`
+	AcceptQuality     []int       `json:"accept_quality"`
+	IsPreview         previewFlag `json:"is_preview"`
+	SupportFormats    []struct {
+		Quality        int      `json:"quality"`
+		Format         string   `json:"format"`
+		NewDescription string   `json:"new_description"`
+		DisplayDesc    string   `json:"display_desc"`
+		Codecs         []string `json:"codecs"`
+	} `json:"support_formats"`
+	VideoInfo *playurlData `json:"video_info"`
+}
 type playurlAPIResp struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-	Data    *struct {
-		Dash              *DashData `json:"dash"`
-		AcceptDescription []string  `json:"accept_description"`
-		AcceptQuality     []int     `json:"accept_quality"`
-		SupportFormats    []struct {
-			Quality        int      `json:"quality"`
-			Format         string   `json:"format"`
-			NewDescription string   `json:"new_description"`
-			DisplayDesc    string   `json:"display_desc"`
-			Codecs         []string `json:"codecs"`
-		} `json:"support_formats"`
-	} `json:"data"`
-	Result *struct {
-		Dash              *DashData `json:"dash"`
-		AcceptDescription []string  `json:"accept_description"`
-		AcceptQuality     []int     `json:"accept_quality"`
-		SupportFormats    []struct {
-			Quality        int      `json:"quality"`
-			Format         string   `json:"format"`
-			NewDescription string   `json:"new_description"`
-			DisplayDesc    string   `json:"display_desc"`
-			Codecs         []string `json:"codecs"`
-		} `json:"support_formats"`
-		VideoInfo *struct {
-			Dash              *DashData `json:"dash"`
-			AcceptDescription []string  `json:"accept_description"`
-			AcceptQuality     []int     `json:"accept_quality"`
-			SupportFormats    []struct {
-				Quality        int      `json:"quality"`
-				Format         string   `json:"format"`
-				NewDescription string   `json:"new_description"`
-				DisplayDesc    string   `json:"display_desc"`
-				Codecs         []string `json:"codecs"`
-			} `json:"support_formats"`
-		} `json:"video_info"`
-	} `json:"result"`
+	Code    int          `json:"code"`
+	Message string       `json:"message"`
+	Data    *playurlData `json:"data"`
+	Result  *playurlData `json:"result"`
+}
+
+func (r *playurlAPIResp) isPreview() bool {
+	for _, d := range []*playurlData{r.Data, r.Result} {
+		if d != nil && (bool(d.IsPreview) || (d.VideoInfo != nil && bool(d.VideoInfo.IsPreview))) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *playurlAPIResp) getDash() *DashData {
@@ -184,8 +214,11 @@ func getDefaultQualityOptions(isBangumi bool) []QualityOption {
 // GetAvailableQualities 获取当前分P在当前登录状态下所有可选的清晰度列表
 func (c *Client) GetAvailableQualities(ctx context.Context, bvid string, aid, cid, epid int64, isBangumi bool) ([]QualityOption, error) {
 	resp, err := c.requestPlayURL(ctx, bvid, aid, cid, epid, isBangumi)
-	if err != nil || resp == nil {
-		return getDefaultQualityOptions(isBangumi), nil
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("B站未返回清晰度信息")
 	}
 
 	qids, qnames := resp.getAcceptQualities()
@@ -199,10 +232,27 @@ func (c *Client) GetAvailableQualities(ctx context.Context, bvid string, aid, ci
 	dashQids := make(map[int]bool)
 	if dash != nil {
 		for _, v := range dash.Video {
-			dashQids[v.ID] = true
+			dashQids[v.ID] = dashQids[v.ID] || hasPlayableStreamURL(v)
 		}
 	}
 
+	// Actual playable streams must stay selectable even when accept_quality is absent.
+	seen := make(map[int]bool)
+	for _, q := range qids {
+		seen[q] = true
+	}
+	var extra []int
+	for q, available := range dashQids {
+		if available && !seen[q] {
+			extra = append(extra, q)
+		}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(extra)))
+	// Preserve description indexes of the original accept_quality list.
+	for len(qnames) < len(qids) {
+		qnames = append(qnames, "")
+	}
+	qids = append(qids, extra...)
 	var options []QualityOption
 	for i, qn := range qids {
 		label := ""
@@ -226,8 +276,8 @@ func (c *Client) GetAvailableQualities(ctx context.Context, bvid string, aid, ci
 		options = append(options, QualityOption{
 			ID:              qn,
 			Label:           label,
-			IsVipRequired:   isVip,
-			IsLoginRequired: isLogin,
+			IsVipRequired:   isVip && !dashQids[qn],
+			IsLoginRequired: isLogin && !dashQids[qn],
 			IsAvailable:     dashQids[qn],
 		})
 	}
@@ -246,10 +296,13 @@ func (c *Client) FetchStreamSelection(ctx context.Context, bvid string, aid, cid
 		return nil, err
 	}
 
+	if resp.isPreview() {
+		return nil, fmt.Errorf("B站仅返回试看内容，请确认账号具有完整视频播放权限")
+	}
 	dash := resp.getDash()
 	if dash == nil || len(dash.Video) == 0 {
 		if isBangumi || epid > 0 {
-			return nil, fmt.Errorf("该视频为哔哩哔哩大会员专享内容，当前账号没有大会员权限，无法下载。请登录大会员账号后再试。")
+			return nil, fmt.Errorf("番剧接口未返回可下载的 DASH 视频流，请检查该集的播放权限、地区限制或稍后重试")
 		}
 		return nil, fmt.Errorf("B站未返回 DASH 媒体流（请确认是否需登录或大会员权限）")
 	}
@@ -258,9 +311,6 @@ func (c *Client) FetchStreamSelection(ctx context.Context, bvid string, aid, cid
 	audio := pickAudioStream(dash)
 
 	if video == nil {
-		if isBangumi || epid > 0 {
-			return nil, fmt.Errorf("未找到可用的视频轨（该视频为大会员专享内容，当前账号无下载权限）")
-		}
 		return nil, fmt.Errorf("未找到满足条件的可用视频轨")
 	}
 
@@ -326,6 +376,7 @@ func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid
 		if epid > 0 {
 			params.Set("ep_id", strconv.FormatInt(epid, 10))
 		}
+		params.Set("qn", "127")
 		params.Set("fnval", "4048")
 		params.Set("fnver", "0")
 		params.Set("fourk", "1")
@@ -337,16 +388,16 @@ func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid
 		if err := c.GetJSON(ctx, reqURL, &resp); err != nil {
 			return nil, fmt.Errorf("请求番剧媒体流失败: %w", err)
 		}
-		if resp.Code == 0 && resp.getDash() != nil {
+		if resp.Code != 0 {
+			return nil, fmt.Errorf("番剧媒体流返回异常 (code=%d): %s", resp.Code, resp.Message)
+		}
+		if resp.isPreview() {
+			return nil, fmt.Errorf("B站仅返回该集的试看内容，无法作为完整视频下载，请确认账号具有该集播放权限")
+		}
+		if resp.getDash() != nil {
 			return &resp, nil
 		}
-		if resp.Result != nil && (resp.Result.Dash != nil || len(resp.Result.AcceptQuality) > 0 || resp.Result.VideoInfo != nil) {
-			return &resp, nil
-		}
-		if resp.Message != "" {
-			return nil, fmt.Errorf("番剧媒体流返回异常 (code=%d): %s (请确认是否需要大会员权限)", resp.Code, resp.Message)
-		}
-		return nil, fmt.Errorf("该视频为哔哩哔哩大会员专享内容，当前账号未开通大会员或未登录，无法下载。请登录大会员账号后再试。")
+		return nil, fmt.Errorf("番剧接口未返回 DASH 媒体流，请检查播放权限、地区限制或稍后重试")
 	}
 
 	// 2. 普通视频：优先尝试官方 WBI 签名 playurl API (确保 1080P/4K/8K/杜比/Hi-Res 高清完整流)

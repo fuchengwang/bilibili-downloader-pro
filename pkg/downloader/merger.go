@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -106,8 +107,13 @@ func MergeAudioVideoContext(ctx context.Context, videoPath, audioPath, outputPat
 		return fmt.Errorf("创建输出目录失败: %w", err)
 	}
 
-	// 如果无音频流或音频文件不存在，直接重命名/拷贝视频流
-	if audioPath == "" || !fileExists(audioPath) {
+	// Only an explicitly absent audio stream may produce a video-only output.
+	if audioPath != "" {
+		if info, err := os.Stat(audioPath); err != nil || info.IsDir() {
+			return fmt.Errorf("音频流文件不可用: %s", audioPath)
+		}
+	}
+	if audioPath == "" {
 		var err error
 		if deleteTemp {
 			err = copyOrRenameContext(ctx, videoPath, outputPath)
@@ -158,7 +164,12 @@ func mergeWithPureGoContext(ctx context.Context, videoPath, audioPath, outputPat
 		return fmt.Errorf("创建输出目录失败: %w", err)
 	}
 
-	if audioPath == "" || !fileExists(audioPath) {
+	if audioPath != "" {
+		if info, err := os.Stat(audioPath); err != nil || info.IsDir() {
+			return fmt.Errorf("音频流文件不可用: %s", audioPath)
+		}
+	}
+	if audioPath == "" {
 		var err error
 		if deleteTemp {
 			err = copyOrRenameContext(ctx, videoPath, outputPath)
@@ -346,52 +357,40 @@ func mergeWithPureGoContext(ctx context.Context, videoPath, audioPath, outputPat
 
 	// 若为传统非分片 MP4 (无 moof 盒)，在写入 moov 前对 stco / co64 的 Chunk Offset 进行绝对偏移校准
 	if len(vFrags) == 0 && len(aFrags) == 0 {
-		var vOrigMdatPayloadOffset int64 = 0
-		var vNewMdatTotalSize int64 = 0
-		var firstVideoMdatHeaderLen int64 = 8
-
-		for _, b := range vBoxes {
-			if b.Type == "mdat" {
-				if vOrigMdatPayloadOffset == 0 {
-					vOrigMdatPayloadOffset = b.Offset + b.HeaderLen
-					firstVideoMdatHeaderLen = getMdatHeaderLen(b)
-				}
-				vNewMdatTotalSize += getMdatHeaderLen(b) + (int64(b.Size) - b.HeaderLen)
-			}
+		// Always use 64-bit offsets for classic MP4 before measuring moov. This avoids
+		// header growth after relocation and prevents audio offsets wrapping past 4 GB.
+		for _, trak := range vMoov.Traks {
+			promoteChunkOffsets(trak)
 		}
-
-		var aOrigMdatPayloadOffset int64 = 0
-		var firstAudioMdatHeaderLen int64 = 8
-		for _, b := range aBoxes {
-			if b.Type == "mdat" {
-				if aOrigMdatPayloadOffset == 0 {
-					aOrigMdatPayloadOffset = b.Offset + b.HeaderLen
-					firstAudioMdatHeaderLen = getMdatHeaderLen(b)
-				}
-				break
-			}
-		}
-		if vOrigMdatPayloadOffset == 0 || aOrigMdatPayloadOffset == 0 {
-			return fmt.Errorf("传统 MP4 缺少有效 mdat 数据")
-		}
-
-		newHeaderSize := int64(0)
+		newHeaderSize := int64(vMoov.Size())
 		if vFtyp != nil {
 			newHeaderSize += int64(vFtyp.Size())
 		}
-		newHeaderSize += int64(vMoov.Size())
-
-		vNewMdatPayloadOffset := newHeaderSize + firstVideoMdatHeaderLen
-		vDelta := vNewMdatPayloadOffset - vOrigMdatPayloadOffset
-		for _, trak := range vMoov.Traks {
-			if trak.Tkhd != nil && trak.Tkhd.TrackID != audioTrackID {
-				adjustSampleTableOffsets(trak, vDelta)
+		var videoMediaSize int64
+		for _, box := range vBoxes {
+			if box.Type == "mdat" {
+				size := getMdatHeaderLen(box) + int64(box.Size) - box.HeaderLen
+				if videoMediaSize > math.MaxInt64-size {
+					return fmt.Errorf("视频数据大小溢出")
+				}
+				videoMediaSize += size
 			}
 		}
+		if videoMediaSize > math.MaxInt64-newHeaderSize {
+			return fmt.Errorf("合并文件偏移溢出")
+		}
+		for _, trak := range vMoov.Traks {
+			if trak.Tkhd.TrackID == audioTrackID {
+				continue
+			}
+			if err := relocateChunkOffsets(trak, vBoxes, newHeaderSize); err != nil {
+				return fmt.Errorf("校准视频偏移失败: %w", err)
+			}
+		}
+		if err := relocateChunkOffsets(aTrak, aBoxes, newHeaderSize+videoMediaSize); err != nil {
+			return fmt.Errorf("校准音频偏移失败: %w", err)
+		}
 
-		aNewMdatPayloadOffset := newHeaderSize + vNewMdatTotalSize + firstAudioMdatHeaderLen
-		aDelta := aNewMdatPayloadOffset - aOrigMdatPayloadOffset
-		adjustSampleTableOffsets(aTrak, aDelta)
 	}
 
 	// 写入 ftyp
@@ -436,6 +435,10 @@ func mergeWithPureGoContext(ctx context.Context, videoPath, audioPath, outputPat
 			}
 
 			if moof, ok := box.(*mp4.MoofBox); ok {
+				// Resolve defaults using the final track ID; source audio/video IDs can both be 1.
+				if err := resolveFragmentSampleDefaults(moof, vMoov.Mvex, targetTrackID); err != nil {
+					return err
+				}
 				// 核心协议合规性修复：强制设置 default-base-is-moof，并校准 trun DataOffset 以及 Mfhd 序列号
 				if err := adjustMoofBox(moof, targetTrackID, getMdatHeaderLen(frag.Mdat), seqNum); err != nil {
 					return fmt.Errorf("校准 moof 失败 (isAudio=%v): %w", frag.IsAudio, err)
@@ -913,6 +916,34 @@ func fileExists(path string) bool {
 }
 
 // adjustMoofBox 核心合规性修正：确保每个 traf 的 tfhd 显式声明 default-base-is-moof，并校准 trun 的 DataOffset
+func resolveFragmentSampleDefaults(moof *mp4.MoofBox, mvex *mp4.MvexBox, targetTrackID uint32) error {
+	for _, traf := range moof.Trafs {
+		if traf == nil || traf.Tfhd == nil {
+			return fmt.Errorf("moof 缺少 tfhd")
+		}
+		trackID := traf.Tfhd.TrackID
+		if targetTrackID != 0 {
+			trackID = targetTrackID
+		}
+		var trex *mp4.TrexBox
+		if mvex != nil {
+			for _, candidate := range mvex.Trexs {
+				if candidate != nil && candidate.TrackID == trackID {
+					trex = candidate
+					break
+				}
+			}
+		}
+		for _, trun := range traf.Truns {
+			if trun == nil {
+				return fmt.Errorf("moof 包含空 trun")
+			}
+			trun.AddSampleDefaultValues(traf.Tfhd, trex)
+		}
+	}
+	return nil
+}
+
 func adjustMoofBox(moof *mp4.MoofBox, targetTrackID uint32, mdatHeaderLen int64, seqNum uint32) error {
 	if moof == nil {
 		return fmt.Errorf("moof 为空")
@@ -938,6 +969,11 @@ func adjustMoofBox(moof *mp4.MoofBox, targetTrackID uint32, mdatHeaderLen int64,
 		for j, trun := range traf.Truns {
 			if trun == nil {
 				return fmt.Errorf("traf %d 的 trun %d 为空", i, j)
+			}
+			if traf.Tfhd != nil && traf.Tfhd.HasDefaultSampleSize() && !trun.HasSampleSize() {
+				for i := range trun.Samples {
+					trun.Samples[i].Size = traf.Tfhd.DefaultSampleSize
+				}
 			}
 			trun.Flags |= 0x000001 // 声明 data-offset-present
 		}
@@ -967,19 +1003,70 @@ func adjustMoofBox(moof *mp4.MoofBox, targetTrackID uint32, mdatHeaderLen int64,
 	return nil
 }
 
-// adjustSampleTableOffsets 校准传统非分片 MP4 中 stco / co64 的 chunk 绝对文件偏移
-func adjustSampleTableOffsets(trak *mp4.TrakBox, delta int64) {
-	if trak == nil || trak.Mdia == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil || delta == 0 {
+// promoteChunkOffsets replaces stco with co64 before the output header is measured.
+func promoteChunkOffsets(trak *mp4.TrakBox) {
+	if trak == nil || trak.Mdia == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil {
 		return
 	}
 	stbl := trak.Mdia.Minf.Stbl
-	if stbl.Stco != nil {
-		for i := range stbl.Stco.ChunkOffset {
-			stbl.Stco.ChunkOffset[i] = uint32(int64(stbl.Stco.ChunkOffset[i]) + delta)
-		}
-	} else if stbl.Co64 != nil {
-		for i := range stbl.Co64.ChunkOffset {
-			stbl.Co64.ChunkOffset[i] = uint64(int64(stbl.Co64.ChunkOffset[i]) + delta)
+	if stbl.Stco == nil {
+		return
+	}
+	old := stbl.Stco
+	co64 := &mp4.Co64Box{Version: old.Version, Flags: old.Flags, ChunkOffset: make([]uint64, len(old.ChunkOffset))}
+	for i, offset := range old.ChunkOffset {
+		co64.ChunkOffset[i] = uint64(offset)
+	}
+	for i, box := range stbl.Children {
+		if box == old {
+			stbl.Children[i] = co64
 		}
 	}
+	stbl.Stco = nil
+	stbl.Co64 = co64
+}
+
+// relocateChunkOffsets maps each source chunk to its own mdat payload. A constant
+// delta cannot handle metadata gaps, multiple mdats, or normalized 64-bit headers.
+func relocateChunkOffsets(trak *mp4.TrakBox, boxes []BoxInfo, newStart int64) error {
+	if newStart < 0 || trak == nil || trak.Mdia == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil {
+		return fmt.Errorf("缺少有效 sample table 或输出偏移")
+	}
+	stbl := trak.Mdia.Minf.Stbl
+	if stbl.Co64 == nil {
+		return fmt.Errorf("缺少 co64 chunk offset")
+	}
+	type span struct{ oldStart, oldEnd, newStart uint64 }
+	var spans []span
+	cursor := newStart
+	for _, box := range boxes {
+		if box.Type != "mdat" {
+			continue
+		}
+		size := getMdatHeaderLen(box) + int64(box.Size) - box.HeaderLen
+		if size < 8 || cursor > math.MaxInt64-size {
+			return fmt.Errorf("mdat 输出偏移溢出")
+		}
+		spans = append(spans, span{uint64(box.Offset + box.HeaderLen), uint64(box.Offset) + box.Size, uint64(cursor + getMdatHeaderLen(box))})
+		cursor += size
+	}
+	if len(spans) == 0 {
+		return fmt.Errorf("缺少 mdat 数据")
+	}
+	offsets := make([]uint64, len(stbl.Co64.ChunkOffset))
+	for i, offset := range stbl.Co64.ChunkOffset {
+		found := false
+		for _, span := range spans {
+			if offset >= span.oldStart && offset < span.oldEnd {
+				offsets[i] = span.newStart + offset - span.oldStart
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("chunk %d 偏移 %d 不在 mdat 数据中", i, offset)
+		}
+	}
+	stbl.Co64.ChunkOffset = offsets
+	return nil
 }

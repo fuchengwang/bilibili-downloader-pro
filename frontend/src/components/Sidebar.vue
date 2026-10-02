@@ -172,7 +172,7 @@ function normalizeImg(url?: string) {
 .brand-title {
   font-size: 15px;
   font-weight: 700;
-  color: #ffffff;
+  color: var(--text-primary);
   letter-spacing: -0.2px;
 }
 
@@ -212,7 +212,7 @@ function normalizeImg(url?: string) {
 }
 
 .nav-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--neutral-05);
   color: var(--text-primary);
 }
 
@@ -255,14 +255,14 @@ function normalizeImg(url?: string) {
   gap: 10px;
   padding: 8px 10px;
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--neutral-03);
   border: 1px solid var(--border-subtle);
   cursor: pointer;
   transition: all var(--transition-fast);
 }
 
 .user-card:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--neutral-07);
   border-color: rgba(251, 114, 153, 0.3);
 }
 
@@ -278,14 +278,14 @@ function normalizeImg(url?: string) {
   height: 100%;
   border-radius: var(--radius-full);
   object-fit: cover;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--neutral-15);
 }
 
 .avatar-placeholder {
   width: 100%;
   height: 100%;
   border-radius: var(--radius-full);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--neutral-08);
   display: flex;
   align-items: center;
   justify-content: center;

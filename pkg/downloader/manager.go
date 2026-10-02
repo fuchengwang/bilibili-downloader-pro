@@ -933,6 +933,10 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	finalOutPath := task.OutputPath
 	vTmpP := task.VideoTmpPath
 	aTmpP := task.AudioTmpPath
+	audioMergePath := aTmpP
+	if aDownloader == nil {
+		audioMergePath = ""
+	}
 	m.mu.RUnlock()
 
 	// 6. 原生纯 Go 极速无损音视频复用合成 (0 依赖，毫秒级完成)
@@ -940,7 +944,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	if mergeFunc == nil {
 		mergeFunc = MergeAudioVideoContext
 	}
-	err = mergeFunc(ctx, vTmpP, aTmpP, finalOutPath, cfg.DeleteTempFiles)
+	err = mergeFunc(ctx, vTmpP, audioMergePath, finalOutPath, cfg.DeleteTempFiles)
 	if err != nil {
 		if ctx.Err() != nil {
 			return

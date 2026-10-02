@@ -10,7 +10,8 @@ import {
   KeyRound,
   Unlink,
   Eye,
-  EyeOff
+  EyeOff,
+  Sun
 } from 'lucide-vue-next'
 import { config, license } from '../../wailsjs/go/models'
 import {
@@ -30,6 +31,7 @@ const emit = defineEmits<{
   (e: 'settings-saved', s: config.Settings): void
   (e: 'show-toast', msg: string, type: 'success' | 'error' | 'info'): void
   (e: 'license-deactivated'): void
+  (e: 'theme-changed', value: string): void
 }>()
 
 const form = ref<config.Settings>({
@@ -46,6 +48,24 @@ const form = ref<config.Settings>({
 })
 
 const isSaving = ref(false)
+const isSavingTheme = ref(false)
+
+async function handleThemeChange() {
+  isSavingTheme.value = true
+  let previous = props.initialSettings.theme || 'dark'
+  try {
+    const saved = await GetSettings()
+    previous = saved.theme
+    // Persist only appearance so changing themes does not save unrelated draft edits.
+    await SaveSettings({ ...saved, theme: form.value.theme })
+    emit('theme-changed', form.value.theme)
+  } catch (err: any) {
+    form.value.theme = previous
+    emit('show-toast', '外观设置保存失败: ' + (err?.message || err), 'error')
+  } finally {
+    isSavingTheme.value = false
+  }
+}
 const showDeactivateConfirm = ref(false)
 const isDeactivating = ref(false)
 const deactivateError = ref('')
@@ -90,7 +110,7 @@ watch(
       form.value = { ...form.value, ...val }
     }
   },
-  { immediate: true, deep: true }
+  { immediate: true }
 )
 
 onMounted(async () => {
@@ -140,6 +160,25 @@ async function handleSave() {
 <template>
   <div class="settings-page">
     <div class="settings-container">
+      <div class="settings-card">
+        <div class="card-header">
+          <div class="card-icon-box"><Sun :size="18" /></div>
+          <div class="header-text">
+            <h3 class="card-title">外观</h3>
+            <p class="card-subtitle">切换后立即生效并自动保存</p>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="form-item">
+            <label class="item-label" for="theme-select">界面模式</label>
+            <select id="theme-select" v-model="form.theme" class="form-select" :disabled="isSavingTheme || isSaving" @change="handleThemeChange">
+              <option value="light">浅色模式</option>
+              <option value="dark">深色模式</option>
+              <option value="system">跟随系统</option>
+            </select>
+          </div>
+        </div>
+      </div>
       <!-- Section 1: 下载目录 -->
       <div class="settings-card">
         <div class="card-header">
@@ -264,7 +303,7 @@ async function handleSave() {
 
       <!-- Bottom Save Action Bar -->
       <div class="save-bar">
-        <button class="btn-primary main-save-btn" :disabled="isSaving" @click="handleSave">
+        <button class="btn-primary main-save-btn" :disabled="isSaving || isSavingTheme" @click="handleSave">
           <Save :size="15" />
           <span>{{ isSaving ? '正在保存...' : '保存全部偏好设置' }}</span>
         </button>
@@ -360,7 +399,7 @@ async function handleSave() {
   gap: 12px;
   padding: 14px 18px;
   border-bottom: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.015);
+  background: var(--neutral-015);
 }
 
 .card-icon-box {
@@ -422,7 +461,7 @@ async function handleSave() {
   height: 34px;
   padding: 0 10px;
   font-size: 12.5px;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .browse-btn, .open-btn {
@@ -495,22 +534,22 @@ async function handleSave() {
 .license-status-badge { margin-left: auto; padding: 4px 10px; border-radius: var(--radius-full); color: var(--success); background: rgba(16, 185, 129, 0.12); font-size: 11px; font-weight: 700; }
 .license-body { gap: 16px; }
 .license-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.license-detail { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 11px 12px; border-radius: var(--radius-sm); background: rgba(255,255,255,.035); color: var(--text-muted); }
+.license-detail { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 11px 12px; border-radius: var(--radius-sm); background: var(--neutral-035); color: var(--text-muted); }
 .license-detail div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .license-detail span { font-size: 10.5px; color: var(--text-muted); }
 .license-detail strong { overflow: hidden; color: var(--text-primary); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
 .license-key-value { flex: 1; min-width: 0; }
 .license-key-toggle { flex-shrink: 0; padding: 5px; color: var(--text-muted); background: transparent; }
-.license-key-toggle:hover { color: var(--text-primary); background: rgba(255,255,255,.08); }
+.license-key-toggle:hover { color: var(--text-primary); background: var(--neutral-08); }
 .license-action-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 2px; }
 .license-action-row p, .deactivate-confirm p { color: var(--text-muted); font-size: 11.5px; line-height: 1.55; }
-.btn-unlink { flex-shrink: 0; padding: 8px 13px; border: 1px solid rgba(239,68,68,.25); background: rgba(239,68,68,.08); color: #f87171; }
+.btn-unlink { flex-shrink: 0; padding: 8px 13px; border: 1px solid rgba(239,68,68,.25); background: rgba(239,68,68,.08); color: var(--danger); }
 .btn-unlink:hover { background: rgba(239,68,68,.15); }
 .btn-unlink.danger { background: #dc2626; border-color: #dc2626; color: #fff; }
 .deactivate-confirm { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border: 1px solid rgba(239,68,68,.2); border-radius: var(--radius-sm); background: rgba(239,68,68,.055); }
 .deactivate-confirm strong { display: block; margin-bottom: 3px; color: var(--text-primary); font-size: 12.5px; }
 .confirm-actions { display: flex; gap: 8px; flex-shrink: 0; }
-.deactivate-error { margin-top: 5px; color: #f87171 !important; }
+.deactivate-error { margin-top: 5px; color: var(--danger) !important; }
 
 @media (max-width: 700px) {
   .license-summary { grid-template-columns: 1fr; }

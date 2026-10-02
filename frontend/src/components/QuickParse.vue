@@ -35,6 +35,10 @@ const parsedDetail = ref<bilibili.VideoDetail | null>(null)
 const availableQualities = ref<bilibili.QualityOption[]>([])
 const selectedQuality = ref(props.defaultQuality || 'highest')
 const isFetchingQualities = ref(false)
+let qualityRequest = 0
+function currentEpisode(detail: bilibili.VideoDetail) {
+  return detail.episodes[Math.max(0, (detail.defaultPage || 1) - 1)] || detail.episodes[0]
+}
 
 // 监听偏好设置变更
 watch(() => props.defaultQuality, (val) => {
@@ -44,7 +48,7 @@ watch(() => props.defaultQuality, (val) => {
 // 监听登录状态变更，自动刷新当前已解析视频的清晰度权限
 watch(() => props.userInfo, () => {
   if (parsedDetail.value && parsedDetail.value.episodes && parsedDetail.value.episodes.length > 0) {
-    fetchQualities(parsedDetail.value, parsedDetail.value.episodes[0])
+    fetchQualities(parsedDetail.value, currentEpisode(parsedDetail.value))
   }
 })
 
@@ -71,6 +75,8 @@ async function handlePaste() {
 }
 
 function handleClear() {
+  qualityRequest++
+  isFetchingQualities.value = false
   inputUrl.value = ''
   parsedDetail.value = null
   availableQualities.value = []
@@ -95,7 +101,7 @@ async function handleParse() {
 
     // 获取可用画质列表
     if (res.episodes && res.episodes.length > 0) {
-      fetchQualities(res, res.episodes[0])
+      fetchQualities(res, currentEpisode(res))
     }
   } catch (err: any) {
     emit('show-toast', err?.message || '解析失败，请检查链接是否正确', 'error')
@@ -106,6 +112,8 @@ async function handleParse() {
 
 // 异步加载可用画质
 async function fetchQualities(detail: bilibili.VideoDetail, ep: bilibili.EpisodeInfo) {
+  const request = ++qualityRequest
+  availableQualities.value = []
   isFetchingQualities.value = true
   try {
     const qList = await GetAvailableQualities(
@@ -115,6 +123,7 @@ async function fetchQualities(detail: bilibili.VideoDetail, ep: bilibili.Episode
       ep.epid || 0,
       detail.type === 'bangumi'
     )
+    if (request !== qualityRequest || parsedDetail.value !== detail) return
     availableQualities.value = qList || []
 
     // 校验当前选中的清晰度是否不可用
@@ -124,10 +133,13 @@ async function fetchQualities(detail: bilibili.VideoDetail, ep: bilibili.Episode
         selectedQuality.value = 'highest'
       }
     }
-  } catch (e) {
-    // 允许默认 highest
+  } catch (err: any) {
+    if (request === qualityRequest) {
+      availableQualities.value = []
+      emit('show-toast', '获取画质失败: ' + (err?.message || err), 'error')
+    }
   } finally {
-    isFetchingQualities.value = false
+    if (request === qualityRequest) isFetchingQualities.value = false
   }
 }
 
@@ -161,7 +173,7 @@ function formatPubDate(ts: number): string {
 
 function refreshQualities() {
   if (parsedDetail.value && parsedDetail.value.episodes && parsedDetail.value.episodes.length > 0) {
-    fetchQualities(parsedDetail.value, parsedDetail.value.episodes[0])
+    fetchQualities(parsedDetail.value, currentEpisode(parsedDetail.value))
   }
 }
 
@@ -384,7 +396,7 @@ defineExpose({
   background: transparent;
   border: none;
   font-size: 13.5px;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .url-input:focus {
@@ -400,7 +412,7 @@ defineExpose({
 }
 
 .clear-btn {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--neutral-05);
 }
 
 .paste-btn {
@@ -492,7 +504,7 @@ defineExpose({
 .video-title {
   font-size: 15.5px;
   font-weight: 700;
-  color: #fff;
+  color: var(--text-primary);
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -596,8 +608,8 @@ defineExpose({
 }
 
 .quality-select option:disabled {
-  color: #555e6d;
-  background: #141720;
+  color: var(--text-muted);
+  background: var(--bg-badge);
 }
 
 .action-btn-wrapper {

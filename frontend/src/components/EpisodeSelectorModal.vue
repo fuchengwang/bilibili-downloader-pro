@@ -286,7 +286,7 @@ function handleSubmit() {
 .title-text {
   font-size: 15px;
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .sub-text {
@@ -303,7 +303,7 @@ function handleSubmit() {
   align-items: center;
   justify-content: space-between;
   padding: 10px 20px;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--neutral-02);
   border-bottom: 1px solid var(--border-subtle);
   flex-wrap: wrap;
   gap: 10px;
@@ -379,8 +379,8 @@ function handleSubmit() {
 }
 
 .opt-select option:disabled {
-  color: #555e6d;
-  background: #141720;
+  color: var(--text-muted);
+  background: var(--bg-badge);
 }
 
 .episode-grid {
@@ -407,7 +407,7 @@ function handleSubmit() {
 
 .ep-card:hover {
   background: var(--bg-card-hover);
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: var(--neutral-15);
 }
 
 .ep-card.selected {
@@ -478,7 +478,7 @@ function handleSubmit() {
   justify-content: space-between;
   padding: 14px 20px;
   border-top: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.015);
+  background: var(--neutral-015);
 }
 
 .footer-stats {

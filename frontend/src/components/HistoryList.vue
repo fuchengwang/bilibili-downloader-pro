@@ -321,7 +321,7 @@ function confirmClearAll() {
   background: transparent;
   border: none;
   font-size: 12px;
-  color: #fff;
+  color: var(--text-primary);
   flex: 1;
 }
 
@@ -368,7 +368,7 @@ function confirmClearAll() {
 
 .history-card:hover {
   background: var(--bg-card-hover);
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: var(--neutral-12);
 }
 
 .cover-box {
@@ -415,7 +415,7 @@ function confirmClearAll() {
 .cover-placeholder {
   width: 100%;
   height: 100%;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--neutral-05);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -524,7 +524,7 @@ function confirmClearAll() {
   width: 56px;
   height: 56px;
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--neutral-04);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -611,8 +611,8 @@ function confirmClearAll() {
 }
 
 .btn-close:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  background: var(--neutral-1);
 }
 
 .modal-body {
@@ -630,7 +630,7 @@ function confirmClearAll() {
 }
 
 .task-preview-box {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--neutral-03);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   padding: 12px;
@@ -664,15 +664,15 @@ function confirmClearAll() {
   gap: 10px;
   cursor: pointer;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--neutral-03);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   transition: all var(--transition-fast);
 }
 
 .checkbox-label:hover {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: rgba(255, 255, 255, 0.15);
+  background: var(--neutral-05);
+  border-color: var(--neutral-15);
 }
 
 .custom-checkbox {

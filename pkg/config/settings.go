@@ -81,7 +81,8 @@ func normalizeSettings(s Settings, fallbackDownloadDir string) Settings {
 	if strings.TrimSpace(s.FileNameTemplate) == "" {
 		s.FileNameTemplate = "{title} - {part}"
 	}
-	if strings.TrimSpace(s.Theme) == "" {
+	s.Theme = strings.ToLower(strings.TrimSpace(s.Theme))
+	if s.Theme != "dark" && s.Theme != "light" && s.Theme != "system" {
 		s.Theme = "dark"
 	}
 	return s
