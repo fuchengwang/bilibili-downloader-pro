@@ -114,16 +114,7 @@ func MergeAudioVideoContext(ctx context.Context, videoPath, audioPath, outputPat
 		}
 	}
 	if audioPath == "" {
-		var err error
-		if deleteTemp {
-			err = copyOrRenameContext(ctx, videoPath, outputPath)
-		} else {
-			err = copyPreservingSourceContext(ctx, videoPath, outputPath)
-		}
-		if err != nil {
-			return err
-		}
-		return nil
+		return copyVideoForPlaybackContext(ctx, videoPath, outputPath, deleteTemp)
 	}
 
 	actualAudioPath := audioPath
@@ -170,16 +161,7 @@ func mergeWithPureGoContext(ctx context.Context, videoPath, audioPath, outputPat
 		}
 	}
 	if audioPath == "" {
-		var err error
-		if deleteTemp {
-			err = copyOrRenameContext(ctx, videoPath, outputPath)
-		} else {
-			err = copyPreservingSourceContext(ctx, videoPath, outputPath)
-		}
-		if err != nil {
-			return err
-		}
-		return nil
+		return copyVideoForPlaybackContext(ctx, videoPath, outputPath, deleteTemp)
 	}
 
 	vF, err := os.Open(videoPath)
@@ -256,6 +238,7 @@ func mergeWithPureGoContext(ctx context.Context, videoPath, audioPath, outputPat
 	if vMoov == nil || len(vMoov.Traks) == 0 {
 		return fmt.Errorf("视频流缺少 moov 元数据")
 	}
+	normalizeHEVCForPlayback(vMoov)
 
 	var aMoov *mp4.MoovBox
 	for _, b := range aBoxes {
@@ -714,7 +697,7 @@ func copyOrRename(src, dst string) error {
 }
 
 // copyPreservingSourceContext writes a durable replacement while keeping src intact.
-// This is used when the caller explicitly asks not to delete temporary inputs.
+// Video passthrough applies metadata compatibility fixes before publishing dst.
 func copyPreservingSourceContext(ctx context.Context, src, dst string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -748,6 +731,9 @@ func copyPreservingSourceContext(ctx context.Context, src, dst string) error {
 		return err
 	}
 	if _, err := copyWithContext(ctx, tmp, s, make([]byte, 1024*1024)); err != nil {
+		return err
+	}
+	if err := normalizeVideoFileForPlayback(ctx, tmp); err != nil {
 		return err
 	}
 	if err := tmp.Sync(); err != nil {

@@ -57,7 +57,7 @@ func TestPickVideoStream_QualityAndCodecs(t *testing.T) {
 		{ID: 32, Codecid: 7, Bandwidth: 500000, BaseURL: "http://480p_avc"},
 	}
 
-	// 1. 测试最高画质 + 智能优选 (默认选最高 ID 最高带宽)
+	// 1. 测试最高画质 + 自动选择 (同画质优先 AVC)
 	best := pickVideoStream(videos, "highest", "auto")
 	if best == nil || best.ID != 120 || best.Codecid != 7 {
 		t.Fatalf("Expected 4K AVC for highest auto, got %+v", best)
@@ -87,6 +87,29 @@ func TestPickVideoStream_QualityAndCodecs(t *testing.T) {
 	}
 	if got := pickVideoStream(videos, " 80 ", " avc "); got == nil || got.ID != 80 || got.Codecid != 7 {
 		t.Fatalf("quality/codec whitespace and case should be normalized, got %+v", got)
+	}
+}
+
+func TestAutoCodecPrefersCompatibilityWithoutReducingQuality(t *testing.T) {
+	for _, auto := range []string{"", "auto", " AUTO "} {
+		videos := []DashStream{
+			{ID: 64, Codecid: 13, Bandwidth: 3000000, BaseURL: "https://av1"},
+			{ID: 64, Codecid: 12, Bandwidth: 2000000, BaseURL: "https://hevc"},
+			{ID: 64, Codecid: 7, Bandwidth: 100000, BaseURL: "https://avc-low"},
+			{ID: 64, Codecid: 7, Bandwidth: 200000, BaseURL: "https://avc-best"},
+			{ID: 120, Codecid: 7, Bandwidth: 4000000}, // inaccessible quality
+		}
+		if got := pickVideoStream(videos, "highest", auto); got == nil || got.BaseURL != "https://avc-best" {
+			t.Fatalf("auto %q selected incompatible codec by bitrate: %+v", auto, got)
+		}
+		videos = videos[:2]
+		if got := pickVideoStream(videos, "64", auto); got == nil || got.Codecid != 12 {
+			t.Fatalf("missing AVC should prefer HEVC over AV1: %+v", got)
+		}
+		videos = append(videos, DashStream{ID: 120, Codecid: 13, BaseURL: "https://4k-av1"})
+		if got := pickVideoStream(videos, "highest", auto); got == nil || got.ID != 120 {
+			t.Fatalf("auto must preserve highest available quality: %+v", got)
+		}
 	}
 }
 

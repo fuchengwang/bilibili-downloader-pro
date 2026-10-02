@@ -549,15 +549,43 @@ func pickVideoStream(videos []DashStream, targetQuality string, targetCodec stri
 		candidates = codecMatches
 	}
 
-	// 4. 排序：ID 最高 (清晰度最高) -> 带宽/码率最高
+	// 4. 先保留最高可用画质。同画质的自动选择优先考虑原生播放器
+	// 兼容性（AVC > HEVC > AV1），最后才比较同编码的码率。
+	autoCodec := targetCodec == "" || strings.EqualFold(targetCodec, "auto")
 	var best *DashStream
 	for i := range candidates {
 		v := &candidates[i]
-		if best == nil || v.ID > best.ID || (v.ID == best.ID && v.Bandwidth > best.Bandwidth) {
+		if best == nil || v.ID > best.ID {
+			best = v
+			continue
+		}
+		if v.ID != best.ID {
+			continue
+		}
+		if autoCodec && playbackCodecPriority(v.Codecid) != playbackCodecPriority(best.Codecid) {
+			if playbackCodecPriority(v.Codecid) > playbackCodecPriority(best.Codecid) {
+				best = v
+			}
+			continue
+		}
+		if v.Bandwidth > best.Bandwidth {
 			best = v
 		}
 	}
 	return best
+}
+
+func playbackCodecPriority(codecid int) int {
+	switch codecid {
+	case 7: // AVC / H.264
+		return 3
+	case 12: // HEVC / H.265
+		return 2
+	case 13: // AV1
+		return 1
+	default:
+		return 0
+	}
 }
 
 func pickAudioStream(dash *DashData) *DashStream {

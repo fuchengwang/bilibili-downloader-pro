@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -8,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/Eyevinn/mp4ff/mp4"
 )
 
 // Independent encoders/decoders validate sample offsets and audio preservation, not just MP4 boxes.
@@ -31,6 +34,7 @@ func TestGeneratedMediaMerge(t *testing.T) {
 		{"AVC_classic_AAC", "libx264", "aac", false},
 		{"AVC_fragmented_AAC", "libx264", "aac", true},
 		{"HEVC_fragmented_AAC", "libx265", "aac", true},
+		{"HEVC_classic_AAC", "libx265", "aac", false},
 		{"AV1_fragmented_AAC", "libaom-av1", "aac", true},
 		{"AVC_fragmented_FLAC", "libx264", "flac", true},
 		{"AVC_fragmented_Dolby", "libx264", "eac3", true},
@@ -50,10 +54,18 @@ func TestGeneratedMediaMerge(t *testing.T) {
 			if tc.encoder == "libaom-av1" {
 				args = append(args, "-cpu-used", "8")
 			}
+			if tc.encoder == "libx265" {
+				// Produce complete out-of-band HEVC configuration, then reproduce
+				// Bilibili's hev1 tag on that hvc1-compatible media.
+				args = append(args, "-tag:v", "hvc1")
+			}
 			if tc.fragmented && tc.encoder != "libaom-av1" {
 				args = append(args, "-movflags", "+frag_keyframe+empty_moov+default_base_moof")
 			}
 			run(ffmpeg, append(args, "-y", v)...)
+			if tc.encoder == "libx265" {
+				retagHEVCFixture(t, v)
+			}
 			if tc.encoder == "libaom-av1" {
 				// Generate the AV1 configuration first; empty_moov while encoding emits
 				// an empty av1C in some FFmpeg versions, which is an invalid source.
@@ -77,11 +89,12 @@ func TestGeneratedMediaMerge(t *testing.T) {
 			if err := MergeAudioVideo(v, a, out, false); err != nil {
 				t.Fatal(err)
 			}
-			data := run(ffprobe, "-v", "error", "-show_entries", "stream=codec_type,codec_name,duration", "-of", "json", out)
+			data := run(ffprobe, "-v", "error", "-show_entries", "stream=codec_type,codec_name,codec_tag_string,duration", "-of", "json", out)
 			var probe struct {
 				Streams []struct {
 					Type     string `json:"codec_type"`
 					Codec    string `json:"codec_name"`
+					Tag      string `json:"codec_tag_string"`
 					Duration string `json:"duration"`
 				} `json:"streams"`
 			}
@@ -92,6 +105,9 @@ func TestGeneratedMediaMerge(t *testing.T) {
 				t.Fatalf("missing tracks: %s", data)
 			}
 			for _, stream := range probe.Streams {
+				if stream.Codec == "hevc" && stream.Tag != "hvc1" {
+					t.Fatalf("HEVC output is incompatible with native Apple players: %+v", stream)
+				}
 				dur, err := strconv.ParseFloat(stream.Duration, 64)
 				if err != nil || dur < 1.9 || dur > 2.2 {
 					t.Fatalf("unexpected track duration: %+v", stream)
@@ -105,4 +121,47 @@ func TestGeneratedMediaMerge(t *testing.T) {
 			t.Logf("two tracks, complete durations, and full independent decode: %s", tc.name)
 		})
 	}
+}
+
+func retagHEVCFixture(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	boxes, err := scanBoxes(f, info.Size())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, box := range boxes {
+		if box.Type != "moov" {
+			continue
+		}
+		if _, err := f.Seek(box.Offset, 0); err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := mp4.DecodeBox(uint64(box.Offset), f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		moov := decoded.(*mp4.MoovBox)
+		moov.Trak.Mdia.Minf.Stbl.Stsd.HvcX.SetType("hev1")
+		var raw bytes.Buffer
+		if err := moov.Encode(&raw); err != nil {
+			t.Fatal(err)
+		}
+		if uint64(raw.Len()) != box.Size {
+			t.Fatal("fixture metadata size changed")
+		}
+		if _, err := f.WriteAt(raw.Bytes(), box.Offset); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	t.Fatal("missing HEVC fixture moov")
 }

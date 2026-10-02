@@ -191,10 +191,10 @@ function handleSubmit() {
           <div class="opt-item">
             <span class="opt-label">编码:</span>
             <select v-model="targetCodec" class="opt-select">
-              <option value="auto">智能优选 (自动推荐)</option>
+              <option value="auto">自动选择 (同画质优先兼容)</option>
               <option value="AVC">AVC / H.264 (兼容性最好)</option>
               <option value="HEVC">HEVC / H.265 (高压缩比)</option>
-              <option value="AV1">AV1 (极速高画质)</option>
+              <option value="AV1">AV1 (高压缩比，需播放器支持)</option>
             </select>
           </div>
         </div>
