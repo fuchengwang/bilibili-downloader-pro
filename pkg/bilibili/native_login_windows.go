@@ -308,7 +308,9 @@ func (c *Client) OpenNativeBrowserLogin(appCtx context.Context) error {
 			if sessData != "" {
 				fmt.Println("BILI_NATIVE_LOGIN_SUCCESS (Windows chromedp)")
 				rawCookieStr := fmt.Sprintf("SESSDATA=%s; bili_jct=%s; DedeUserID=%s; buvid3=%s", sessData, biliJct, dedeUid, buvid3)
-				c.ParseAndSaveRawCookie(rawCookieStr)
+				if err := c.ParseAndSaveRawCookie(rawCookieStr); err != nil {
+					return fmt.Errorf("登录成功但保存 Cookie 失败: %w", err)
+				}
 				_, _ = c.GetUserInfo(context.Background())
 				// Return gracefully, which triggers defer cancelCtx() closing the browser window instantly
 				return nil

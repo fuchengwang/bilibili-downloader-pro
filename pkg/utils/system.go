@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -186,36 +187,78 @@ func AtomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
 		return err
 	}
 
-	tmpPath := filepath.Join(dir, fmt.Sprintf(".tmp_%d_%x", os.Getpid(), time.Now().UnixNano()))
-	if err := os.WriteFile(tmpPath, data, perm); err != nil {
-		return err
-	}
-	defer func() {
-		_ = os.Remove(tmpPath)
-	}()
-
-	// 1. 优先尝试直接原子重命名
-	if err := os.Rename(tmpPath, filePath); err == nil {
-		return nil
-	}
-
-	// 2. Windows 平台降级：先尝试删除已存在的目标文件再重命名
-	_ = os.Remove(filePath)
-	if err := os.Rename(tmpPath, filePath); err == nil {
-		return nil
-	}
-
-	// 3. 终极降级：直接通过文件内容流式复制覆盖
-	fDst, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	tmp, err := os.CreateTemp(dir, ".tmp_atomic-*")
 	if err != nil {
-		return fmt.Errorf("atomic write fallback failed: %w", err)
-	}
-	defer fDst.Close()
-
-	if _, err := fDst.Write(data); err != nil {
 		return err
 	}
-	return fDst.Sync()
+	tmpPath := tmp.Name()
+	cleanupTemp := true
+	defer func() {
+		_ = tmp.Close()
+		if cleanupTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(perm); err != nil {
+		return err
+	}
+	written, err := tmp.Write(data)
+	if err != nil {
+		return err
+	}
+	if written != len(data) {
+		return io.ErrShortWrite
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	// 1. 优先尝试直接原子重命名；同卷 Unix 覆盖和目标不存在时均是原子的。
+	if err := os.Rename(tmpPath, filePath); err == nil {
+		cleanupTemp = false
+		return nil
+	}
+
+	// 2. Windows 目标已存在时不能直接 Rename。先把旧文件移到同目录备份，
+	// 新文件替换失败则立即恢复；旧文件从未在新内容准备好前被删除。
+	info, statErr := os.Stat(filePath)
+	if statErr != nil {
+		return fmt.Errorf("原子替换失败: %w", statErr)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("原子写入目标不是普通文件: %s", filePath)
+	}
+
+	backup, err := os.CreateTemp(dir, ".tmp_atomic-backup-*")
+	if err != nil {
+		return err
+	}
+	backupPath := backup.Name()
+	if err := backup.Close(); err != nil {
+		_ = os.Remove(backupPath)
+		return err
+	}
+	if err := os.Remove(backupPath); err != nil {
+		return err
+	}
+	if err := os.Rename(filePath, backupPath); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		if restoreErr := os.Rename(backupPath, filePath); restoreErr != nil {
+			return fmt.Errorf("原子替换失败: %w；恢复旧文件也失败: %v", err, restoreErr)
+		}
+		return err
+	}
+	cleanupTemp = false
+	if err := os.Remove(backupPath); err != nil {
+		return fmt.Errorf("删除旧配置备份失败: %w", err)
+	}
+	return nil
 }
 
 // EnsureSafePathLength 确保在 Windows MAX_PATH (260字符) 限制下，全路径保持在 210 字符安全阈值内，为后续临时文件或画质标签预留充分空间
@@ -239,4 +282,3 @@ func EnsureSafePathLength(dir, filename, ext string) string {
 	}
 	return filepath.Join(dir, filename+ext)
 }
-

@@ -1,12 +1,14 @@
 package downloader
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"bilibili_downloader/pkg/utils"
@@ -24,26 +26,21 @@ type BoxInfo struct {
 
 // scanBoxes 扫描 MP4 顶层 Box 结构，完美兼容 Size 0 (EOF 盒) 与 Size 1 (64位大文件盒)，具备严格的整数溢出与死循环安全防御
 func scanBoxes(f *os.File, fileSize int64) ([]BoxInfo, error) {
+	if fileSize < 0 {
+		return nil, fmt.Errorf("文件大小无效: %d", fileSize)
+	}
+
 	var boxes []BoxInfo
 	var offset int64 = 0
 	buf := make([]byte, 16)
 
 	for offset < fileSize {
-		if offset < 0 {
-			break
-		}
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {
-			break
+			return boxes, fmt.Errorf("定位 Box %d 失败: %w", offset, err)
 		}
 		n, err := io.ReadFull(f, buf[:8])
 		if err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				break
-			}
-			return nil, err
-		}
-		if n < 8 {
-			break
+			return boxes, fmt.Errorf("读取 Box 头失败 (offset=%d, read=%d/%d): %w", offset, n, len(buf[:8]), err)
 		}
 
 		size := uint64(binary.BigEndian.Uint32(buf[0:4]))
@@ -54,7 +51,7 @@ func scanBoxes(f *os.File, fileSize int64) ([]BoxInfo, error) {
 			// 64-bit large size
 			_, err = io.ReadFull(f, buf[8:16])
 			if err != nil {
-				return nil, err
+				return boxes, fmt.Errorf("读取 Box largesize 失败 (offset=%d): %w", offset, err)
 			}
 			size = binary.BigEndian.Uint64(buf[8:16])
 			headerLen = 16
@@ -64,7 +61,7 @@ func scanBoxes(f *os.File, fileSize int64) ([]BoxInfo, error) {
 		}
 
 		if size < uint64(headerLen) {
-			break
+			return boxes, fmt.Errorf("Box 大小小于头长度 (offset=%d, size=%d, header=%d)", offset, size, headerLen)
 		}
 
 		// 核心溢出与边界保护：
@@ -73,7 +70,7 @@ func scanBoxes(f *os.File, fileSize int64) ([]BoxInfo, error) {
 		// 3. offset + int64(size) 不能上溢 (必须严格大于原 offset)
 		int64Size := int64(size)
 		if int64Size < 0 || size > uint64(fileSize-offset) || offset+int64Size <= offset {
-			break
+			return boxes, fmt.Errorf("Box 超出文件边界或发生整数溢出 (offset=%d, size=%d, fileSize=%d)", offset, size, fileSize)
 		}
 
 		boxes = append(boxes, BoxInfo{
@@ -91,15 +88,34 @@ func scanBoxes(f *os.File, fileSize int64) ([]BoxInfo, error) {
 
 // MergeAudioVideo 纯 Go 原生音视频复用封装器 (零 FFmpeg 外部依赖，原生支持 fMP4 / MP4 / 裸 FLAC)
 func MergeAudioVideo(videoPath, audioPath, outputPath string, deleteTemp bool) error {
-	_ = os.MkdirAll(filepath.Dir(outputPath), 0755)
+	return MergeAudioVideoContext(context.Background(), videoPath, audioPath, outputPath, deleteTemp)
+}
+
+// MergeAudioVideoContext 支持被任务取消/暂停时尽快中止合并，并保证临时输出被清理。
+func MergeAudioVideoContext(ctx context.Context, videoPath, audioPath, outputPath string, deleteTemp bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(outputPath) == "" {
+		return fmt.Errorf("输出文件路径为空")
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return fmt.Errorf("创建输出目录失败: %w", err)
+	}
 
 	// 如果无音频流或音频文件不存在，直接重命名/拷贝视频流
 	if audioPath == "" || !fileExists(audioPath) {
-		if err := copyOrRename(videoPath, outputPath); err != nil {
-			return err
-		}
+		var err error
 		if deleteTemp {
-			_ = os.Remove(videoPath)
+			err = copyOrRenameContext(ctx, videoPath, outputPath)
+		} else {
+			err = copyPreservingSourceContext(ctx, videoPath, outputPath)
+		}
+		if err != nil {
+			return err
 		}
 		return nil
 	}
@@ -111,7 +127,7 @@ func MergeAudioVideo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 	if IsRawFlac(audioPath) {
 		tmpFmp4 = filepath.Join(filepath.Dir(outputPath), fmt.Sprintf(".tmp_flac_%d_%x.m4s", os.Getpid(), time.Now().UnixNano()))
 		_ = os.Remove(tmpFmp4)
-		if err := PackageRawFlacToFMP4(audioPath, tmpFmp4); err != nil {
+		if err := PackageRawFlacToFMP4Context(ctx, audioPath, tmpFmp4); err != nil {
 			_ = os.Remove(tmpFmp4)
 			return fmt.Errorf("裸 FLAC 音频封装为 fMP4 失败: %w", err)
 		}
@@ -119,7 +135,7 @@ func MergeAudioVideo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 	}
 
 	// 直接调用纯 Go 原生复用封装
-	err := mergeWithPureGo(videoPath, actualAudioPath, outputPath, deleteTemp)
+	err := mergeWithPureGoContext(ctx, videoPath, actualAudioPath, outputPath, deleteTemp)
 
 	if tmpFmp4 != "" {
 		_ = os.Remove(tmpFmp4)
@@ -131,16 +147,26 @@ func MergeAudioVideo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 	return err
 }
 
-
-func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) error {
-	_ = os.MkdirAll(filepath.Dir(outputPath), 0755)
+func mergeWithPureGoContext(ctx context.Context, videoPath, audioPath, outputPath string, deleteTemp bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(outputPath) == "" {
+		return fmt.Errorf("输出文件路径为空")
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return fmt.Errorf("创建输出目录失败: %w", err)
+	}
 
 	if audioPath == "" || !fileExists(audioPath) {
-		if err := copyOrRename(videoPath, outputPath); err != nil {
-			return err
-		}
+		var err error
 		if deleteTemp {
-			_ = os.Remove(videoPath)
+			err = copyOrRenameContext(ctx, videoPath, outputPath)
+		} else {
+			err = copyPreservingSourceContext(ctx, videoPath, outputPath)
+		}
+		if err != nil {
+			return err
 		}
 		return nil
 	}
@@ -170,6 +196,9 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 	aFileSize := aFi.Size()
 
 	// 1. 扫描视频与音频的 Box 结构 (支持 Size 0 动态换算)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	vBoxes, err := scanBoxes(vF, vFileSize)
 	if err != nil {
 		return fmt.Errorf("解析视频 FMP4 结构失败: %w", err)
@@ -185,21 +214,31 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 	var vMoov *mp4.MoovBox
 	for _, b := range vBoxes {
 		if b.Type == "ftyp" && vFtyp == nil {
-			_, _ = vF.Seek(b.Offset, io.SeekStart)
-			box, err := mp4.DecodeBox(uint64(b.Offset), vF)
-			if err == nil {
-				if ftyp, ok := box.(*mp4.FtypBox); ok {
-					vFtyp = ftyp
-				}
+			if _, err := vF.Seek(b.Offset, io.SeekStart); err != nil {
+				return fmt.Errorf("定位视频 ftyp 失败: %w", err)
 			}
+			box, err := mp4.DecodeBox(uint64(b.Offset), vF)
+			if err != nil {
+				return fmt.Errorf("解析视频 ftyp 失败: %w", err)
+			}
+			ftyp, ok := box.(*mp4.FtypBox)
+			if !ok {
+				return fmt.Errorf("视频 ftyp Box 类型异常: %T", box)
+			}
+			vFtyp = ftyp
 		} else if b.Type == "moov" && vMoov == nil {
-			_, _ = vF.Seek(b.Offset, io.SeekStart)
-			box, err := mp4.DecodeBox(uint64(b.Offset), vF)
-			if err == nil {
-				if moov, ok := box.(*mp4.MoovBox); ok {
-					vMoov = moov
-				}
+			if _, err := vF.Seek(b.Offset, io.SeekStart); err != nil {
+				return fmt.Errorf("定位视频 moov 失败: %w", err)
 			}
+			box, err := mp4.DecodeBox(uint64(b.Offset), vF)
+			if err != nil {
+				return fmt.Errorf("解析视频 moov 失败: %w", err)
+			}
+			moov, ok := box.(*mp4.MoovBox)
+			if !ok {
+				return fmt.Errorf("视频 moov Box 类型异常: %T", box)
+			}
+			vMoov = moov
 		}
 	}
 
@@ -210,13 +249,18 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 	var aMoov *mp4.MoovBox
 	for _, b := range aBoxes {
 		if b.Type == "moov" && aMoov == nil {
-			_, _ = aF.Seek(b.Offset, io.SeekStart)
-			box, err := mp4.DecodeBox(uint64(b.Offset), aF)
-			if err == nil {
-				if moov, ok := box.(*mp4.MoovBox); ok {
-					aMoov = moov
-				}
+			if _, err := aF.Seek(b.Offset, io.SeekStart); err != nil {
+				return fmt.Errorf("定位音频 moov 失败: %w", err)
 			}
+			box, err := mp4.DecodeBox(uint64(b.Offset), aF)
+			if err != nil {
+				return fmt.Errorf("解析音频 moov 失败: %w", err)
+			}
+			moov, ok := box.(*mp4.MoovBox)
+			if !ok {
+				return fmt.Errorf("音频 moov Box 类型异常: %T", box)
+			}
+			aMoov = moov
 			break
 		}
 	}
@@ -224,21 +268,38 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 	if aMoov == nil || len(aMoov.Traks) == 0 {
 		return fmt.Errorf("音频流缺少 moov 元数据")
 	}
+	if vMoov.Mvhd == nil {
+		return fmt.Errorf("视频流缺少 mvhd 元数据")
+	}
+	for i, trak := range vMoov.Traks {
+		if trak == nil || trak.Tkhd == nil {
+			return fmt.Errorf("视频轨道 %d 缺少 tkhd 元数据", i)
+		}
+	}
+	aTrak := aMoov.Traks[0]
+	if aTrak == nil || aTrak.Tkhd == nil {
+		return fmt.Errorf("音频轨道缺少 tkhd 元数据")
+	}
 
 	// 动态计算音频轨道 Track ID (取视频 moov 中最大 Track ID + 1)，
 	// 避免与包含多条视频/字幕轨的源文件发生 ID 冲突
 	maxTrackID := uint32(0)
 	for _, trak := range vMoov.Traks {
-		if trak.Tkhd != nil && trak.Tkhd.TrackID > maxTrackID {
+		if trak.Tkhd.TrackID > maxTrackID {
 			maxTrackID = trak.Tkhd.TrackID
 		}
 	}
+	if maxTrackID >= ^uint32(0)-1 {
+		return fmt.Errorf("视频 Track ID 无法分配新的音频轨道")
+	}
 	audioTrackID := maxTrackID + 1
-	aTrak := aMoov.Traks[0]
 	aTrak.Tkhd.TrackID = audioTrackID
 
 	if aMoov.Mvex != nil {
 		for _, trex := range aMoov.Mvex.Trexs {
+			if trex == nil {
+				continue
+			}
 			trex.TrackID = audioTrackID
 			if vMoov.Mvex != nil {
 				vMoov.Mvex.AddChild(trex)
@@ -274,8 +335,14 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 		aTimescale = aMoov.Traks[0].Mdia.Mdhd.Timescale
 	}
 
-	vFrags := extractFragments(vBoxes, vF, false, vTimescale)
-	aFrags := extractFragments(aBoxes, aF, true, aTimescale)
+	vFrags, err := extractFragments(vBoxes, vF, false, vTimescale)
+	if err != nil {
+		return fmt.Errorf("解析视频分片失败: %w", err)
+	}
+	aFrags, err := extractFragments(aBoxes, aF, true, aTimescale)
+	if err != nil {
+		return fmt.Errorf("解析音频分片失败: %w", err)
+	}
 
 	// 若为传统非分片 MP4 (无 moof 盒)，在写入 moov 前对 stco / co64 的 Chunk Offset 进行绝对偏移校准
 	if len(vFrags) == 0 && len(aFrags) == 0 {
@@ -303,6 +370,9 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 				}
 				break
 			}
+		}
+		if vOrigMdatPayloadOffset == 0 || aOrigMdatPayloadOffset == 0 {
+			return fmt.Errorf("传统 MP4 缺少有效 mdat 数据")
 		}
 
 		newHeaderSize := int64(0)
@@ -347,6 +417,9 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 
 		var seqNum uint32 = 1
 		for _, frag := range allFrags {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			srcFile := vF
 			var targetTrackID uint32 = 0
 			if frag.IsAudio {
@@ -354,7 +427,9 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 				targetTrackID = audioTrackID
 			}
 
-			_, _ = srcFile.Seek(frag.Moof.Offset, io.SeekStart)
+			if _, err := srcFile.Seek(frag.Moof.Offset, io.SeekStart); err != nil {
+				return fmt.Errorf("定位 moof 失败: %w", err)
+			}
 			box, err := mp4.DecodeBox(uint64(frag.Moof.Offset), srcFile)
 			if err != nil {
 				return fmt.Errorf("解析 moof 失败 (isAudio=%v): %w", frag.IsAudio, err)
@@ -362,7 +437,9 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 
 			if moof, ok := box.(*mp4.MoofBox); ok {
 				// 核心协议合规性修复：强制设置 default-base-is-moof，并校准 trun DataOffset 以及 Mfhd 序列号
-				_ = adjustMoofBox(moof, targetTrackID, getMdatHeaderLen(frag.Mdat), seqNum)
+				if err := adjustMoofBox(moof, targetTrackID, getMdatHeaderLen(frag.Mdat), seqNum); err != nil {
+					return fmt.Errorf("校准 moof 失败 (isAudio=%v): %w", frag.IsAudio, err)
+				}
 				seqNum++
 				if err := moof.Encode(outFh); err != nil {
 					return fmt.Errorf("写入 moof 失败: %w", err)
@@ -373,61 +450,90 @@ func mergeWithPureGo(videoPath, audioPath, outputPath string, deleteTemp bool) e
 				}
 			}
 
-			if err := writeMdatBox(srcFile, frag.Mdat, outFh, streamBuf); err != nil {
+			if err := writeMdatBoxContext(ctx, srcFile, frag.Mdat, outFh, streamBuf); err != nil {
 				return fmt.Errorf("写入 mdat 失败: %w", err)
 			}
 		}
-	} else {
-		// 兜底降级：非标准分片流直接顺序写入
+	} else if len(vFrags) == 0 && len(aFrags) == 0 {
+		// 传统非分片流直接顺序写入；任一侧只有半套分片时必须失败，
+		// 禁止把缺失轨道当作“降级成功”。
 		var seqNum uint32 = 1
 		for _, b := range vBoxes {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if b.Type == "moof" {
-				_, _ = vF.Seek(b.Offset, io.SeekStart)
-				if box, err := mp4.DecodeBox(uint64(b.Offset), vF); err == nil {
-					if moof, ok := box.(*mp4.MoofBox); ok {
-						if moof.Mfhd != nil {
-							moof.Mfhd.SequenceNumber = seqNum
-						}
-						seqNum++
-						_ = moof.Encode(outFh)
-					} else {
-						_ = box.Encode(outFh)
-					}
+				if _, err := vF.Seek(b.Offset, io.SeekStart); err != nil {
+					return fmt.Errorf("定位视频 moof 失败: %w", err)
+				}
+				box, err := mp4.DecodeBox(uint64(b.Offset), vF)
+				if err != nil {
+					return fmt.Errorf("解析视频 moof 失败: %w", err)
+				}
+				moof, ok := box.(*mp4.MoofBox)
+				if !ok {
+					return fmt.Errorf("视频 moof 类型异常: %T", box)
+				}
+				if moof.Mfhd != nil {
+					moof.Mfhd.SequenceNumber = seqNum
+				}
+				seqNum++
+				if err := moof.Encode(outFh); err != nil {
+					return fmt.Errorf("写入视频 moof 失败: %w", err)
 				}
 			} else if b.Type == "mdat" {
-				_ = writeMdatBox(vF, b, outFh, streamBuf)
+				if err := writeMdatBoxContext(ctx, vF, b, outFh, streamBuf); err != nil {
+					return fmt.Errorf("写入视频 mdat 失败: %w", err)
+				}
 			}
 		}
 		for _, b := range aBoxes {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if b.Type == "moof" {
-				_, _ = aF.Seek(b.Offset, io.SeekStart)
-				if box, err := mp4.DecodeBox(uint64(b.Offset), aF); err == nil {
-					if moof, ok := box.(*mp4.MoofBox); ok {
-						for _, traf := range moof.Trafs {
-							if traf.Tfhd != nil {
-								traf.Tfhd.TrackID = audioTrackID
-							}
-						}
-						if moof.Mfhd != nil {
-							moof.Mfhd.SequenceNumber = seqNum
-						}
-						seqNum++
-						_ = moof.Encode(outFh)
+				if _, err := aF.Seek(b.Offset, io.SeekStart); err != nil {
+					return fmt.Errorf("定位音频 moof 失败: %w", err)
+				}
+				box, err := mp4.DecodeBox(uint64(b.Offset), aF)
+				if err != nil {
+					return fmt.Errorf("解析音频 moof 失败: %w", err)
+				}
+				moof, ok := box.(*mp4.MoofBox)
+				if !ok {
+					return fmt.Errorf("音频 moof 类型异常: %T", box)
+				}
+				for _, traf := range moof.Trafs {
+					if traf.Tfhd != nil {
+						traf.Tfhd.TrackID = audioTrackID
 					}
 				}
+				if moof.Mfhd != nil {
+					moof.Mfhd.SequenceNumber = seqNum
+				}
+				seqNum++
+				if err := moof.Encode(outFh); err != nil {
+					return fmt.Errorf("写入音频 moof 失败: %w", err)
+				}
 			} else if b.Type == "mdat" {
-				_ = writeMdatBox(aF, b, outFh, streamBuf)
+				if err := writeMdatBoxContext(ctx, aF, b, outFh, streamBuf); err != nil {
+					return fmt.Errorf("写入音频 mdat 失败: %w", err)
+				}
 			}
 		}
+	} else {
+		return fmt.Errorf("音视频分片结构不完整 (video=%d, audio=%d)", len(vFrags), len(aFrags))
 	}
 
-	_ = outFh.Sync()
-	_ = outFh.Close()
-	_ = vF.Close()
-	_ = aF.Close()
+	if err := outFh.Sync(); err != nil {
+		return fmt.Errorf("同步合成临时文件失败: %w", err)
+	}
+	if err := outFh.Close(); err != nil {
+		return fmt.Errorf("关闭合成临时文件失败: %w", err)
+	}
 
 	// 原子替换至最终目标路径
-	if err := copyOrRename(tmpOutputPath, outputPath); err != nil {
+	if err := copyOrRenameContext(ctx, tmpOutputPath, outputPath); err != nil {
 		_ = os.Remove(tmpOutputPath)
 		return fmt.Errorf("移动最终合成文件失败: %w", err)
 	}
@@ -454,7 +560,7 @@ type fragmentItem struct {
 	TimeSec float64
 }
 
-func extractFragments(boxes []BoxInfo, f *os.File, isAudio bool, timescale uint32) []fragmentItem {
+func extractFragments(boxes []BoxInfo, f *os.File, isAudio bool, timescale uint32) ([]fragmentItem, error) {
 	var fragments []fragmentItem
 	var currentMoof *BoxInfo
 	var currentTimeSec float64 = 0
@@ -462,14 +568,27 @@ func extractFragments(boxes []BoxInfo, f *os.File, isAudio bool, timescale uint3
 	for i := 0; i < len(boxes); i++ {
 		b := boxes[i]
 		if b.Type == "moof" {
+			if currentMoof != nil {
+				return nil, fmt.Errorf("moof 缺少对应的 mdat (offset=%d)", currentMoof.Offset)
+			}
 			currentMoof = &boxes[i]
-			_, _ = f.Seek(b.Offset, io.SeekStart)
-			if box, err := mp4.DecodeBox(uint64(b.Offset), f); err == nil {
-				if moof, ok := box.(*mp4.MoofBox); ok && len(moof.Trafs) > 0 {
-					if moof.Trafs[0].Tfdt != nil && timescale > 0 {
-						currentTimeSec = float64(moof.Trafs[0].Tfdt.BaseMediaDecodeTime()) / float64(timescale)
-					}
-				}
+			if _, err := f.Seek(b.Offset, io.SeekStart); err != nil {
+				return nil, fmt.Errorf("定位 moof 失败: %w", err)
+			}
+			box, err := mp4.DecodeBox(uint64(b.Offset), f)
+			if err != nil {
+				return nil, fmt.Errorf("解码 moof 失败: %w", err)
+			}
+			moof, ok := box.(*mp4.MoofBox)
+			if !ok || len(moof.Trafs) == 0 {
+				return nil, fmt.Errorf("moof 缺少有效 traf (offset=%d)", b.Offset)
+			}
+			if moof.Trafs[0] == nil {
+				return nil, fmt.Errorf("moof 的首个 traf 为空 (offset=%d)", b.Offset)
+			}
+			currentTimeSec = 0
+			if moof.Trafs[0].Tfdt != nil && timescale > 0 {
+				currentTimeSec = float64(moof.Trafs[0].Tfdt.BaseMediaDecodeTime()) / float64(timescale)
 			}
 		} else if b.Type == "mdat" && currentMoof != nil {
 			fragments = append(fragments, fragmentItem{
@@ -481,7 +600,10 @@ func extractFragments(boxes []BoxInfo, f *os.File, isAudio bool, timescale uint3
 			currentMoof = nil
 		}
 	}
-	return fragments
+	if currentMoof != nil {
+		return nil, fmt.Errorf("moof 缺少对应的 mdat (offset=%d)", currentMoof.Offset)
+	}
+	return fragments, nil
 }
 
 // getMdatHeaderLen 准确计算重写后的 mdat Box 头长度 (8 或 16 字节)，与 writeMdatBox 严格一致
@@ -494,12 +616,49 @@ func getMdatHeaderLen(b BoxInfo) int64 {
 }
 
 func writeMdatBox(f *os.File, b BoxInfo, outFh io.Writer, streamBuf []byte) error {
+	return writeMdatBoxContext(context.Background(), f, b, outFh, streamBuf)
+}
+
+func writeMdatBoxContext(ctx context.Context, f *os.File, b BoxInfo, outFh io.Writer, streamBuf []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if b.Type != "mdat" || b.Size < uint64(b.HeaderLen) || b.HeaderLen < 8 {
+		return fmt.Errorf("mdat Box 元数据无效: %+v", b)
+	}
 	payloadLen := int64(b.Size) - b.HeaderLen
+	if payloadLen < 0 {
+		return fmt.Errorf("mdat payload 大小无效: %d", payloadLen)
+	}
+	if len(streamBuf) == 0 {
+		streamBuf = make([]byte, 128*1024)
+	}
+	writeAll := func(data []byte) error {
+		for len(data) > 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			n, err := outFh.Write(data)
+			if n < 0 || n > len(data) {
+				return io.ErrShortWrite
+			}
+			if n > 0 {
+				data = data[n:]
+			}
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				return io.ErrShortWrite
+			}
+		}
+		return nil
+	}
 	if payloadLen+8 < 1<<32 {
 		hdr := make([]byte, 8)
 		binary.BigEndian.PutUint32(hdr[0:4], uint32(payloadLen+8))
 		copy(hdr[4:8], "mdat")
-		if _, err := outFh.Write(hdr); err != nil {
+		if err := writeAll(hdr); err != nil {
 			return err
 		}
 	} else {
@@ -507,47 +666,245 @@ func writeMdatBox(f *os.File, b BoxInfo, outFh io.Writer, streamBuf []byte) erro
 		binary.BigEndian.PutUint32(hdr[0:4], 1)
 		copy(hdr[4:8], "mdat")
 		binary.BigEndian.PutUint64(hdr[8:16], uint64(payloadLen+16))
-		if _, err := outFh.Write(hdr); err != nil {
+		if err := writeAll(hdr); err != nil {
 			return err
 		}
 	}
 
-	_, _ = f.Seek(b.Offset+b.HeaderLen, io.SeekStart)
-	_, err := io.CopyBuffer(outFh, io.LimitReader(f, payloadLen), streamBuf)
-	return err
+	if _, err := f.Seek(b.Offset+b.HeaderLen, io.SeekStart); err != nil {
+		return fmt.Errorf("定位 mdat 数据失败: %w", err)
+	}
+	var written int64
+	for written < payloadLen {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		want := int64(len(streamBuf))
+		if remaining := payloadLen - written; want > remaining {
+			want = remaining
+		}
+		n, err := f.Read(streamBuf[:want])
+		if n > 0 {
+			if writeErr := writeAll(streamBuf[:n]); writeErr != nil {
+				return writeErr
+			}
+			written += int64(n)
+		}
+		if err != nil {
+			if err == io.EOF && written == payloadLen {
+				break
+			}
+			return err
+		}
+		if n == 0 {
+			return io.ErrUnexpectedEOF
+		}
+	}
+	if written != payloadLen {
+		return fmt.Errorf("mdat 数据不完整 (实际 %d / 预期 %d): %w", written, payloadLen, io.ErrUnexpectedEOF)
+	}
+	return nil
 }
 
 func copyOrRename(src, dst string) error {
-	// 1. 优先尝试直接原子重命名
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	}
+	return copyOrRenameContext(context.Background(), src, dst)
+}
 
-	// 2. Windows 平台/目标已存在保护：先尝试删除已存在的目标文件，再次尝试原子重命名 (秒级完成，杜绝大文件全盘复制)
-	_ = os.Remove(dst)
-	if err := os.Rename(src, dst); err == nil {
-		return nil
+// copyPreservingSourceContext writes a durable replacement while keeping src intact.
+// This is used when the caller explicitly asks not to delete temporary inputs.
+func copyPreservingSourceContext(ctx context.Context, src, dst string) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-
-	// 3. 跨磁盘卷或权限受限时的终极降级：流式复制覆盖
 	s, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
-
-	d, err := os.Create(dst)
+	sInfo, err := s.Stat()
 	if err != nil {
 		return err
 	}
-	defer d.Close()
+	if !sInfo.Mode().IsRegular() {
+		return fmt.Errorf("源文件不是普通文件: %s", src)
+	}
 
-	if _, err = io.Copy(d, s); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".bbdown-copy-*")
+	if err != nil {
 		return err
 	}
-	_ = s.Close()
-	_ = os.Remove(src) // Windows 下复制成功后显式删除源临时文件，彻底防止磁盘空间翻倍泄露
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		_ = tmp.Close()
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(sInfo.Mode().Perm()); err != nil {
+		return err
+	}
+	if _, err := copyWithContext(ctx, tmp, s, make([]byte, 1024*1024)); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := copyOrRenameContext(ctx, tmpPath, dst); err != nil {
+		return err
+	}
+	cleanup = false
 	return nil
+}
+
+func copyOrRenameContext(ctx context.Context, src, dst string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// 1. 同卷时优先直接原子重命名。Unix 上这一步也能原子覆盖已有目标，
+	// Windows 上目标被占用或跨卷时则进入下面的事务性复制路径。
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+
+	// 2. 跨卷/Windows 降级：先把源文件完整复制到目标目录的临时文件，
+	// 同步并关闭后才替换目标，整个过程中绝不先删除唯一的旧成品。
+	s, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	sInfo, err := s.Stat()
+	if err != nil {
+		return err
+	}
+	if !sInfo.Mode().IsRegular() {
+		return fmt.Errorf("源文件不是普通文件: %s", src)
+	}
+
+	dir := filepath.Dir(dst)
+	tmp, err := os.CreateTemp(dir, ".bbdown-replace-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanupTemp := true
+	defer func() {
+		_ = tmp.Close()
+		if cleanupTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(sInfo.Mode().Perm()); err != nil {
+		return err
+	}
+
+	if _, err = copyWithContext(ctx, tmp, s, make([]byte, 1024*1024)); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	// 若目标已存在，先移到同目录备份；新文件替换失败时立即恢复。
+	var backupPath string
+	if _, statErr := os.Stat(dst); statErr == nil {
+		backup, err := os.CreateTemp(dir, ".bbdown-backup-*")
+		if err != nil {
+			return err
+		}
+		backupPath = backup.Name()
+		if err := backup.Close(); err != nil {
+			_ = os.Remove(backupPath)
+			return err
+		}
+		if err := os.Remove(backupPath); err != nil {
+			return err
+		}
+		if err := os.Rename(dst, backupPath); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(statErr) {
+		return statErr
+	}
+
+	if err := ctx.Err(); err != nil {
+		if backupPath != "" {
+			if restoreErr := os.Rename(backupPath, dst); restoreErr != nil {
+				return fmt.Errorf("取消替换时恢复旧文件失败: %v", restoreErr)
+			}
+		}
+		return err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		if backupPath != "" {
+			if restoreErr := os.Rename(backupPath, dst); restoreErr != nil {
+				return fmt.Errorf("替换目标失败: %w；恢复旧文件也失败: %v", err, restoreErr)
+			}
+		}
+		return err
+	}
+	cleanupTemp = false
+
+	if backupPath != "" {
+		if err := os.Remove(backupPath); err != nil {
+			return fmt.Errorf("删除旧成品备份失败: %w", err)
+		}
+	}
+	if err := os.Remove(src); err != nil {
+		return fmt.Errorf("删除源临时文件失败: %w", err)
+	}
+	return nil
+}
+
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader, buf []byte) (int64, error) {
+	if len(buf) == 0 {
+		buf = make([]byte, 128*1024)
+	}
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			written := 0
+			for written < n {
+				if err := ctx.Err(); err != nil {
+					return total, err
+				}
+				count, writeErr := dst.Write(buf[written:n])
+				if count < 0 || count > n-written {
+					return total, io.ErrShortWrite
+				}
+				if count > 0 {
+					written += count
+					total += int64(count)
+				}
+				if writeErr != nil {
+					return total, writeErr
+				}
+				if count == 0 {
+					return total, io.ErrShortWrite
+				}
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return total, nil
+			}
+			return total, readErr
+		}
+		if n == 0 {
+			return total, io.ErrNoProgress
+		}
+	}
 }
 
 func fileExists(path string) bool {
@@ -557,10 +914,19 @@ func fileExists(path string) bool {
 
 // adjustMoofBox 核心合规性修正：确保每个 traf 的 tfhd 显式声明 default-base-is-moof，并校准 trun 的 DataOffset
 func adjustMoofBox(moof *mp4.MoofBox, targetTrackID uint32, mdatHeaderLen int64, seqNum uint32) error {
+	if moof == nil {
+		return fmt.Errorf("moof 为空")
+	}
+	if mdatHeaderLen < 8 {
+		return fmt.Errorf("mdat 头长度无效: %d", mdatHeaderLen)
+	}
 	if moof.Mfhd != nil && seqNum > 0 {
 		moof.Mfhd.SequenceNumber = seqNum
 	}
-	for _, traf := range moof.Trafs {
+	for i, traf := range moof.Trafs {
+		if traf == nil {
+			return fmt.Errorf("traf %d 为空", i)
+		}
 		if traf.Tfhd != nil {
 			if targetTrackID > 0 {
 				traf.Tfhd.TrackID = targetTrackID
@@ -569,18 +935,32 @@ func adjustMoofBox(moof *mp4.MoofBox, targetTrackID uint32, mdatHeaderLen int64,
 			traf.Tfhd.Flags = (traf.Tfhd.Flags &^ 0x000001) | 0x020000
 			traf.Tfhd.BaseDataOffset = 0
 		}
-		for _, trun := range traf.Truns {
+		for j, trun := range traf.Truns {
+			if trun == nil {
+				return fmt.Errorf("traf %d 的 trun %d 为空", i, j)
+			}
 			trun.Flags |= 0x000001 // 声明 data-offset-present
 		}
 	}
 
 	moofSize := moof.Size()
-	currentOffset := int32(moofSize + uint64(mdatHeaderLen))
+	const maxInt32 = int64(1<<31 - 1)
+	if moofSize > uint64(maxInt32) || mdatHeaderLen > maxInt32-int64(moofSize) {
+		return fmt.Errorf("moof 数据偏移超出 int32 范围")
+	}
+	currentOffset := int64(moofSize) + mdatHeaderLen
 
 	for _, traf := range moof.Trafs {
 		for _, trun := range traf.Truns {
-			trun.DataOffset = currentOffset
-			currentOffset += int32(trun.SizeOfData())
+			if currentOffset > maxInt32 {
+				return fmt.Errorf("trun 数据偏移超出 int32 范围")
+			}
+			trun.DataOffset = int32(currentOffset)
+			dataSize := trun.SizeOfData()
+			if dataSize > uint64(maxInt32) || currentOffset > maxInt32-int64(dataSize) {
+				return fmt.Errorf("trun 数据长度超出 int32 范围")
+			}
+			currentOffset += int64(dataSize)
 		}
 	}
 
@@ -603,4 +983,3 @@ func adjustSampleTableOffsets(trak *mp4.TrakBox, delta int64) {
 		}
 	}
 }
-

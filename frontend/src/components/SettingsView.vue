@@ -6,23 +6,30 @@ import {
   Cpu,
   Save,
   ClipboardCheck,
-  Check
+  ShieldCheck,
+  KeyRound,
+  Unlink,
+  Eye,
+  EyeOff
 } from 'lucide-vue-next'
-import { config } from '../../wailsjs/go/models'
+import { config, license } from '../../wailsjs/go/models'
 import {
   GetSettings,
   SaveSettings,
   SelectDirectory,
-  OpenDirectory
+  OpenDirectory,
+  DeactivateLicense
 } from '../../wailsjs/go/main/App'
 
 const props = defineProps<{
   initialSettings: config.Settings
+  licenseStatus: license.LicenseStatus | null
 }>()
 
 const emit = defineEmits<{
   (e: 'settings-saved', s: config.Settings): void
   (e: 'show-toast', msg: string, type: 'success' | 'error' | 'info'): void
+  (e: 'license-deactivated'): void
 }>()
 
 const form = ref<config.Settings>({
@@ -39,6 +46,41 @@ const form = ref<config.Settings>({
 })
 
 const isSaving = ref(false)
+const showDeactivateConfirm = ref(false)
+const isDeactivating = ref(false)
+const deactivateError = ref('')
+const showLicenseKey = ref(false)
+
+function maskLicenseKey(key?: string) {
+  if (!key) return '—'
+  const parts = key.split('-')
+  if (parts.length > 2) return `${parts[0]}-••••-••••-${parts[parts.length - 1]}`
+  return key.length > 8 ? `${key.slice(0, 4)}••••${key.slice(-4)}` : '••••••••'
+}
+
+async function handleDeactivate() {
+  if (isDeactivating.value) return
+  isDeactivating.value = true
+  deactivateError.value = ''
+  try {
+    const result: any = await DeactivateLicense()
+    if (!result?.success) {
+      const message = result?.message || '解绑失败，请稍后重试'
+      deactivateError.value = /connect|network|timeout|连接|网络/i.test(message)
+        ? '无法连接激活服务器，当前授权仍保留，请检查网络后重试'
+        : message
+      return
+    }
+    emit('license-deactivated')
+  } catch (err: any) {
+    const message = err?.message || String(err)
+    deactivateError.value = /connect|network|timeout|连接|网络/i.test(message)
+      ? '无法连接激活服务器，当前授权仍保留，请检查网络后重试'
+      : message
+  } finally {
+    isDeactivating.value = false
+  }
+}
 
 // 响应父级设置变更
 watch(
@@ -227,6 +269,62 @@ async function handleSave() {
           <span>{{ isSaving ? '正在保存...' : '保存全部偏好设置' }}</span>
         </button>
       </div>
+
+      <!-- Section 4: 专业版授权 -->
+      <div class="settings-card license-settings-card">
+        <div class="card-header">
+          <div class="card-icon-box license-icon-box">
+            <ShieldCheck :size="18" />
+          </div>
+          <div class="header-text">
+            <h3 class="card-title">专业版授权</h3>
+          </div>
+          <span class="license-status-badge">已激活</span>
+        </div>
+
+        <div class="card-body license-body">
+          <div class="license-summary">
+            <div class="license-detail">
+              <KeyRound :size="15" />
+              <div class="license-key-value"><span>激活码</span><strong>{{ showLicenseKey ? (licenseStatus?.license_key || '—') : maskLicenseKey(licenseStatus?.license_key) }}</strong></div>
+              <button
+                class="license-key-toggle"
+                type="button"
+                :aria-label="showLicenseKey ? '隐藏激活码' : '显示激活码'"
+                :title="showLicenseKey ? '隐藏激活码' : '显示激活码'"
+                @click="showLicenseKey = !showLicenseKey"
+              >
+                <EyeOff v-if="showLicenseKey" :size="15" />
+                <Eye v-else :size="15" />
+              </button>
+            </div>
+            <div class="license-detail">
+              <ShieldCheck :size="15" />
+              <div><span>授权类型</span><strong>{{ licenseStatus?.is_permanent ? '永久授权' : `剩余 ${licenseStatus?.days_left ?? 0} 天` }}</strong></div>
+            </div>
+          </div>
+
+          <div class="license-action-row">
+            <p>准备换电脑时，可先释放本机名额，再在新设备使用原激活码。</p>
+            <button v-if="!showDeactivateConfirm" class="btn-unlink" @click="showDeactivateConfirm = true">
+              <Unlink :size="14" />解绑本机
+            </button>
+          </div>
+
+          <div v-if="showDeactivateConfirm" class="deactivate-confirm">
+            <div>
+              <strong>确认解绑当前设备？</strong>
+              <p v-if="deactivateError" class="deactivate-error">{{ deactivateError }}</p>
+            </div>
+            <div class="confirm-actions">
+              <button class="btn-secondary" :disabled="isDeactivating" @click="showDeactivateConfirm = false">取消</button>
+              <button class="btn-unlink danger" :disabled="isDeactivating" @click="handleDeactivate">
+                {{ isDeactivating ? '正在解绑…' : '确认解绑' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -391,5 +489,31 @@ async function handleSave() {
   padding: 0 24px;
   font-size: 13.5px;
   box-shadow: 0 4px 16px rgba(251, 114, 153, 0.35);
+}
+
+.license-icon-box { background: rgba(16, 185, 129, 0.12); color: var(--success); }
+.license-status-badge { margin-left: auto; padding: 4px 10px; border-radius: var(--radius-full); color: var(--success); background: rgba(16, 185, 129, 0.12); font-size: 11px; font-weight: 700; }
+.license-body { gap: 16px; }
+.license-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.license-detail { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 11px 12px; border-radius: var(--radius-sm); background: rgba(255,255,255,.035); color: var(--text-muted); }
+.license-detail div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.license-detail span { font-size: 10.5px; color: var(--text-muted); }
+.license-detail strong { overflow: hidden; color: var(--text-primary); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.license-key-value { flex: 1; min-width: 0; }
+.license-key-toggle { flex-shrink: 0; padding: 5px; color: var(--text-muted); background: transparent; }
+.license-key-toggle:hover { color: var(--text-primary); background: rgba(255,255,255,.08); }
+.license-action-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 2px; }
+.license-action-row p, .deactivate-confirm p { color: var(--text-muted); font-size: 11.5px; line-height: 1.55; }
+.btn-unlink { flex-shrink: 0; padding: 8px 13px; border: 1px solid rgba(239,68,68,.25); background: rgba(239,68,68,.08); color: #f87171; }
+.btn-unlink:hover { background: rgba(239,68,68,.15); }
+.btn-unlink.danger { background: #dc2626; border-color: #dc2626; color: #fff; }
+.deactivate-confirm { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border: 1px solid rgba(239,68,68,.2); border-radius: var(--radius-sm); background: rgba(239,68,68,.055); }
+.deactivate-confirm strong { display: block; margin-bottom: 3px; color: var(--text-primary); font-size: 12.5px; }
+.confirm-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.deactivate-error { margin-top: 5px; color: #f87171 !important; }
+
+@media (max-width: 700px) {
+  .license-summary { grid-template-columns: 1fr; }
+  .license-action-row, .deactivate-confirm { align-items: flex-start; flex-direction: column; }
 }
 </style>

@@ -37,6 +37,13 @@ func TestBangumiDurationConversion(t *testing.T) {
 	}
 }
 
+func TestFetchVideoDetailRejectsNilTarget(t *testing.T) {
+	client := &Client{}
+	if _, err := client.FetchVideoDetail(context.Background(), nil); err == nil {
+		t.Fatal("nil parse target should be rejected before any network request")
+	}
+}
+
 // TestFetchBangumiDetail_DurationEndToEnd 测试解析端到端番剧响应时时长字段转换为秒
 func TestFetchBangumiDetail_DurationEndToEnd(t *testing.T) {
 	mockResp := seasonResponse{
@@ -73,7 +80,7 @@ func TestFetchBangumiDetail_DurationEndToEnd(t *testing.T) {
 	defer server.Close()
 
 	client := GetDefaultClient()
-	
+
 	// 使用自定义 URL 测试
 	var resp seasonResponse
 	err := client.GetJSON(context.Background(), server.URL, &resp)

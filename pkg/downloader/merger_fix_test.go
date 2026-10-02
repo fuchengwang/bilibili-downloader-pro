@@ -145,3 +145,15 @@ func TestAdjustMoofBox_SequenceNumber(t *testing.T) {
 		t.Errorf("Sequence number was not updated correctly on second pass! got %d, expected 6", moof.Mfhd.SequenceNumber)
 	}
 }
+
+func TestAdjustMoofBoxRejectsMalformedChildren(t *testing.T) {
+	if err := adjustMoofBox(nil, 1, 8, 1); err == nil {
+		t.Fatal("nil moof should be rejected")
+	}
+	if err := adjustMoofBox(&mp4.MoofBox{Trafs: []*mp4.TrafBox{nil}}, 1, 8, 1); err == nil {
+		t.Fatal("nil traf should be rejected")
+	}
+	if err := adjustMoofBox(&mp4.MoofBox{}, 1, 4, 1); err == nil {
+		t.Fatal("invalid mdat header length should be rejected")
+	}
+}

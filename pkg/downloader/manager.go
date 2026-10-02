@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,19 +22,22 @@ import (
 type ProgressCallback func(t *DownloadTask)
 
 type workerHandle struct {
-	token  string
-	cancel context.CancelFunc
+	token       string
+	cancel      context.CancelFunc
+	invalidated bool
 }
 
 // DownloadManager 负责整个下载队列、并发调度与状态管理
 type DownloadManager struct {
 	mu           sync.RWMutex
+	saveMu       sync.Mutex
 	tasks        []*DownloadTask
 	workers      map[string]workerHandle
 	callback     ProgressCallback
 	biliClient   *bilibili.Client
 	cfgMgr       *config.ConfigManager
 	workerNotify chan struct{}
+	mergeFunc    func(context.Context, string, string, string, bool) error
 }
 
 var (
@@ -49,6 +53,7 @@ func NewDownloadManager(cfgMgr *config.ConfigManager) *DownloadManager {
 		biliClient:   bilibili.GetDefaultClient(),
 		cfgMgr:       cfgMgr,
 		workerNotify: make(chan struct{}, 50),
+		mergeFunc:    MergeAudioVideoContext,
 	}
 	m.loadTasks()
 	return m
@@ -78,8 +83,15 @@ func (m *DownloadManager) notifyChange(t *DownloadTask) {
 	m.mu.RLock()
 	cb := m.callback
 	tCopy := *t // 在锁保护内安全深/浅拷贝，彻底消除数据竞争
+	present := false
+	for _, existing := range m.tasks {
+		if existing == t {
+			present = true
+			break
+		}
+	}
 	m.mu.RUnlock()
-	if cb != nil {
+	if cb != nil && present {
 		cb(&tCopy)
 	}
 }
@@ -92,34 +104,52 @@ func (m *DownloadManager) loadTasks() {
 	}
 	var loaded []*DownloadTask
 	if err := json.Unmarshal(data, &loaded); err == nil {
+		validTasks := make([]*DownloadTask, 0, len(loaded))
 		for _, t := range loaded {
+			if t == nil {
+				continue
+			}
 			// 将未完成的任务重置为暂停或队列状态
 			if t.Status == StatusDownloading || t.Status == StatusMerging {
 				t.Status = StatusPaused
 				t.Speed = 0
 				t.SpeedStr = "0 KB/s"
 			}
+			validTasks = append(validTasks, t)
 		}
-		m.tasks = loaded
+		m.tasks = validTasks
 	}
 }
 
 // SaveTasks 持久化任务列表 (原子写入避免崩溃产生损坏文件，杜绝 Windows 权限冲突)
-func (m *DownloadManager) SaveTasks() {
+func (m *DownloadManager) SaveTasks() error {
+	// 先串行化“取快照 + 写文件”，避免旧快照在新快照之后完成写入，导致重启后回退到旧状态。
+	m.saveMu.Lock()
+	defer m.saveMu.Unlock()
+
 	m.mu.RLock()
-	tasksCopy := make([]*DownloadTask, len(m.tasks))
-	for i, t := range m.tasks {
+	tasksCopy := make([]*DownloadTask, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		if t == nil {
+			continue
+		}
 		tCopy := *t
-		tasksCopy[i] = &tCopy
+		tasksCopy = append(tasksCopy, &tCopy)
 	}
 	m.mu.RUnlock()
 
 	tasksPath := m.cfgMgr.GetTasksPath()
 	data, err := json.MarshalIndent(tasksCopy, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
-	_ = utils.AtomicWriteFile(tasksPath, data, 0644)
+	return utils.AtomicWriteFile(tasksPath, data, 0644)
+}
+
+func (m *DownloadManager) persistTasks() {
+	if err := m.SaveTasks(); err != nil {
+		log.Printf("保存下载任务列表失败: %v", err)
+	}
 }
 
 func newUUID() string {
@@ -130,11 +160,25 @@ func newUUID() string {
 
 // AddDownloadTask 添加单个下载任务 (具备重复任务去重与隔离临时路径)
 func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.EpisodeInfo) (*DownloadTask, error) {
+	if req == nil || ep == nil {
+		return nil, fmt.Errorf("下载任务参数不能为空")
+	}
 	m.mu.Lock()
 	cfg := m.cfgMgr.Get()
+	if strings.TrimSpace(cfg.DownloadDir) == "" {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("下载目录未设置")
+	}
+	if err := os.MkdirAll(cfg.DownloadDir, 0755); err != nil {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("创建下载目录失败: %w", err)
+	}
 
 	// 检查是否已有相同 CID + 画质 + 编码的活跃任务在排队、下载或合成中
 	for _, existing := range m.tasks {
+		if existing == nil {
+			continue
+		}
 		if existing.CID == ep.CID &&
 			existing.TargetQuality == req.TargetQuality &&
 			existing.TargetCodec == req.TargetCodec &&
@@ -166,15 +210,18 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 		}
 		baseFileName = utils.SanitizeFilename(partName, fallbackPart)
 		if err := os.MkdirAll(outDir, 0755); err != nil {
-			// 如果因为异常路径或权限问题导致子文件夹创建失败，自动降级保存至主下载目录
-			outDir = cfg.DownloadDir
+			m.mu.Unlock()
+			return nil, fmt.Errorf("创建合集下载目录失败: %w", err)
 		}
 	} else {
 		// 单视频：直接保存在下载主目录
 		outDir = cfg.DownloadDir
 		partName := formatFileNameByTemplate(cfg.FileNameTemplate, req.Title, ep.Title, ep.BVID, ep.Index)
 		baseFileName = utils.SanitizeFilename(partName, sanitizedTitle)
-		_ = os.MkdirAll(outDir, 0755)
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("创建下载目录失败: %w", err)
+		}
 	}
 
 	// 确保在 Windows 260 字符限制下，完整输出路径保持在安全阈值内 (<= 240 字符)
@@ -215,10 +262,23 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 	m.tasks = append([]*DownloadTask{task}, m.tasks...)
 	m.mu.Unlock()
 
-	m.SaveTasks()
+	persistErr := m.SaveTasks()
+
+	if persistErr != nil {
+		// Save failure must not leave an in-memory task which the caller was told
+		// was not accepted and which cannot be recovered after restart.
+		m.mu.Lock()
+		for i, existing := range m.tasks {
+			if existing == task {
+				m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
+				break
+			}
+		}
+		m.mu.Unlock()
+		return nil, fmt.Errorf("保存下载任务失败: %w", persistErr)
+	}
 	m.notifyChange(task)
 	m.triggerSchedule()
-
 	return task, nil
 }
 
@@ -226,14 +286,21 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 func (m *DownloadManager) PauseTask(id string) error {
 	m.mu.Lock()
 	if w, ok := m.workers[id]; ok {
-		w.cancel()
+		if w.cancel != nil {
+			w.cancel()
+		}
+		w.invalidated = true
+		m.workers[id] = w
 	}
 
 	var task *DownloadTask
 	for _, t := range m.tasks {
+		if t == nil {
+			continue
+		}
 		if t.ID == id {
 			task = t
-			if t.Status == StatusDownloading || t.Status == StatusQueued {
+			if t.Status == StatusDownloading || t.Status == StatusQueued || t.Status == StatusMerging {
 				t.Status = StatusPaused
 				t.Speed = 0
 				t.SpeedStr = "0 KB/s"
@@ -245,9 +312,10 @@ func (m *DownloadManager) PauseTask(id string) error {
 	m.mu.Unlock()
 
 	if task != nil {
-		m.SaveTasks()
+		persistErr := m.SaveTasks()
 		m.notifyChange(task)
 		m.triggerSchedule()
+		return persistErr
 	}
 	return nil
 }
@@ -257,6 +325,9 @@ func (m *DownloadManager) ResumeTask(id string) error {
 	m.mu.Lock()
 	var task *DownloadTask
 	for _, t := range m.tasks {
+		if t == nil {
+			continue
+		}
 		if t.ID == id {
 			task = t
 			if t.Status == StatusPaused || t.Status == StatusError || t.Status == StatusCancelled {
@@ -269,9 +340,10 @@ func (m *DownloadManager) ResumeTask(id string) error {
 	m.mu.Unlock()
 
 	if task != nil {
-		m.SaveTasks()
+		persistErr := m.SaveTasks()
 		m.notifyChange(task)
 		m.triggerSchedule()
+		return persistErr
 	}
 	return nil
 }
@@ -280,11 +352,18 @@ func (m *DownloadManager) ResumeTask(id string) error {
 func (m *DownloadManager) CancelTask(id string) error {
 	m.mu.Lock()
 	if w, ok := m.workers[id]; ok {
-		w.cancel()
+		if w.cancel != nil {
+			w.cancel()
+		}
+		w.invalidated = true
+		m.workers[id] = w
 	}
 
 	var task *DownloadTask
 	for _, t := range m.tasks {
+		if t == nil {
+			continue
+		}
 		if t.ID == id {
 			task = t
 			t.Status = StatusCancelled
@@ -296,9 +375,10 @@ func (m *DownloadManager) CancelTask(id string) error {
 	m.mu.Unlock()
 
 	if task != nil {
-		m.SaveTasks()
+		persistErr := m.SaveTasks()
 		m.notifyChange(task)
 		m.triggerSchedule()
+		return persistErr
 	}
 	return nil
 }
@@ -307,14 +387,20 @@ func (m *DownloadManager) CancelTask(id string) error {
 func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 	m.mu.Lock()
 	if w, ok := m.workers[id]; ok {
-		w.cancel()
+		if w.cancel != nil {
+			w.cancel()
+		}
+		w.invalidated = true
+		m.workers[id] = w
 	}
 
 	var newTasks []*DownloadTask
 	var target *DownloadTask
-	for _, t := range m.tasks {
+	targetIndex := -1
+	for i, t := range m.tasks {
 		if t.ID == id {
 			target = t
+			targetIndex = i
 		} else {
 			newTasks = append(newTasks, t)
 		}
@@ -323,6 +409,37 @@ func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 	m.mu.Unlock()
 
 	if target != nil {
+		persistErr := m.SaveTasks()
+		if persistErr != nil {
+			// 持久化失败时恢复内存中的任务，避免前端已经看到错误但当前进程
+			// 却把任务删掉；文件清理也必须延后到持久化成功之后。
+			m.mu.Lock()
+			present := false
+			for _, existing := range m.tasks {
+				if existing != nil && existing.ID == target.ID {
+					present = true
+					break
+				}
+			}
+			if !present {
+				idx := targetIndex
+				if idx < 0 || idx > len(m.tasks) {
+					idx = len(m.tasks)
+				}
+				m.tasks = append(m.tasks, nil)
+				copy(m.tasks[idx+1:], m.tasks[idx:])
+				m.tasks[idx] = target
+			}
+			if target.Status == StatusDownloading || target.Status == StatusMerging {
+				target.Status = StatusPaused
+				target.Speed = 0
+				target.SpeedStr = "0 KB/s"
+				target.ETAStr = "--"
+			}
+			m.mu.Unlock()
+			return persistErr
+		}
+
 		// 异步安全清理临时文件，带指数退避重试确保 Windows 句柄释放后成功清理 (杜绝 EACCES 权限泄漏)
 		go func(vTmp, aTmp, outPath string, delFile bool) {
 			safeRemoveWithRetry(vTmp)
@@ -340,22 +457,31 @@ func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 				}
 			}
 		}(target.VideoTmpPath, target.AudioTmpPath, target.OutputPath, deleteFile)
-		m.SaveTasks()
 		m.triggerSchedule()
+		return persistErr
 	}
 	return nil
 }
 
 // PauseAll 暂停所有正在下载或排队的任务 (无死锁安全实现)
-func (m *DownloadManager) PauseAll() {
+func (m *DownloadManager) PauseAll() error {
 	m.mu.Lock()
 	for _, w := range m.workers {
-		w.cancel()
+		if w.cancel != nil {
+			w.cancel()
+		}
+		w.invalidated = true
+	}
+	for id, w := range m.workers {
+		m.workers[id] = w
 	}
 
 	var modified []*DownloadTask
 	for _, t := range m.tasks {
-		if t.Status == StatusDownloading || t.Status == StatusQueued {
+		if t == nil {
+			continue
+		}
+		if t.Status == StatusDownloading || t.Status == StatusQueued || t.Status == StatusMerging {
 			t.Status = StatusPaused
 			t.Speed = 0
 			t.SpeedStr = "0 KB/s"
@@ -365,17 +491,21 @@ func (m *DownloadManager) PauseAll() {
 	}
 	m.mu.Unlock()
 
-	m.SaveTasks()
+	persistErr := m.SaveTasks()
 	for _, t := range modified {
 		m.notifyChange(t)
 	}
+	return persistErr
 }
 
 // ResumeAll 恢复所有已暂停的任务 (无死锁安全实现)
-func (m *DownloadManager) ResumeAll() {
+func (m *DownloadManager) ResumeAll() error {
 	m.mu.Lock()
 	var modified []*DownloadTask
 	for _, t := range m.tasks {
+		if t == nil {
+			continue
+		}
 		if t.Status == StatusPaused || t.Status == StatusError {
 			t.Status = StatusQueued
 			t.ErrorMsg = ""
@@ -384,15 +514,16 @@ func (m *DownloadManager) ResumeAll() {
 	}
 	m.mu.Unlock()
 
-	m.SaveTasks()
+	persistErr := m.SaveTasks()
 	for _, t := range modified {
 		m.notifyChange(t)
 	}
 	m.triggerSchedule()
+	return persistErr
 }
 
 // ClearCompleted 清理已完成的任务列表记录 (可选择是否同时删除本地文件)
-func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) {
+func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) error {
 	deleteFile := false
 	if len(deleteFiles) > 0 {
 		deleteFile = deleteFiles[0]
@@ -402,16 +533,55 @@ func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) {
 	var remaining []*DownloadTask
 	var removed []*DownloadTask
 	for _, t := range m.tasks {
+		if t == nil {
+			continue
+		}
 		if t.Status != StatusCompleted && t.Status != StatusCancelled {
 			remaining = append(remaining, t)
 		} else {
 			removed = append(removed, t)
+			if w, ok := m.workers[t.ID]; ok {
+				if w.cancel != nil {
+					w.cancel()
+				}
+				w.invalidated = true
+				m.workers[t.ID] = w
+			}
 		}
 	}
 	m.tasks = remaining
 	m.mu.Unlock()
 
+	// 文件删除必须在任务列表成功落盘后进行；否则持久化失败时重启会
+	// 重新加载指向已被删除文件的“已完成”记录，造成不可逆的数据丢失。
+	persistErr := m.SaveTasks()
+	if persistErr != nil {
+		m.mu.Lock()
+		for _, removedTask := range removed {
+			present := false
+			for _, existing := range m.tasks {
+				if existing != nil && existing.ID == removedTask.ID {
+					present = true
+					break
+				}
+			}
+			if present {
+				continue
+			}
+			m.tasks = append([]*DownloadTask{removedTask}, m.tasks...)
+			if removedTask.Status == StatusDownloading || removedTask.Status == StatusMerging {
+				removedTask.Status = StatusPaused
+				removedTask.Speed = 0
+				removedTask.SpeedStr = "0 KB/s"
+				removedTask.ETAStr = "--"
+			}
+		}
+		m.mu.Unlock()
+		return persistErr
+	}
+
 	if deleteFile {
+
 		dirsToCheck := make(map[string]bool)
 		for _, t := range removed {
 			if t.OutputPath != "" {
@@ -436,17 +606,20 @@ func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) {
 		}
 	}
 
-	m.SaveTasks()
+	return nil
 }
 
 // GetTasks 获取当前所有任务的深拷贝快照 (彻底杜绝外部并发读写数据竞争)
 func (m *DownloadManager) GetTasks() []*DownloadTask {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	res := make([]*DownloadTask, len(m.tasks))
-	for i, t := range m.tasks {
+	res := make([]*DownloadTask, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		if t == nil {
+			continue
+		}
 		tCopy := *t
-		res[i] = &tCopy
+		res = append(res, &tCopy)
 	}
 	return res
 }
@@ -487,6 +660,9 @@ func (m *DownloadManager) checkAndSpawnTasks() {
 
 	var nextTask *DownloadTask
 	for _, t := range m.tasks {
+		if t == nil {
+			continue
+		}
 		if t.Status == StatusQueued {
 			// 确保旧 worker 已彻底退出的任务才允许拉起新 worker
 			if _, running := m.workers[t.ID]; !running {
@@ -515,6 +691,12 @@ func (m *DownloadManager) checkAndSpawnTasks() {
 
 func (m *DownloadManager) setTaskStatus(task *DownloadTask, status TaskStatus, errorMsg string) {
 	m.mu.Lock()
+	m.applyTaskStatusLocked(task, status, errorMsg)
+	m.mu.Unlock()
+	m.notifyChange(task)
+}
+
+func (m *DownloadManager) applyTaskStatusLocked(task *DownloadTask, status TaskStatus, errorMsg string) {
 	task.Status = status
 	if errorMsg != "" {
 		task.ErrorMsg = errorMsg
@@ -534,8 +716,19 @@ func (m *DownloadManager) setTaskStatus(task *DownloadTask, status TaskStatus, e
 		task.ETAStr = "处理中"
 		task.Progress = 100
 	}
+}
+
+func (m *DownloadManager) setWorkerTaskStatus(task *DownloadTask, token string, expected, status TaskStatus, errorMsg string) bool {
+	m.mu.Lock()
+	w, owned := m.workers[task.ID]
+	if !owned || w.invalidated || w.token != token || (expected != "" && task.Status != expected) {
+		m.mu.Unlock()
+		return false
+	}
+	m.applyTaskStatusLocked(task, status, errorMsg)
 	m.mu.Unlock()
 	m.notifyChange(task)
+	return true
 }
 
 func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token string) {
@@ -546,7 +739,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 			delete(m.workers, task.ID)
 		}
 		m.mu.Unlock()
-		m.SaveTasks()
+		m.persistTasks()
 		m.triggerSchedule()
 	}()
 
@@ -556,7 +749,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		if ctx.Err() != nil {
 			return
 		}
-		m.setTaskStatus(task, StatusError, fmt.Sprintf("解析媒体流失败: %v", err))
+		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, fmt.Sprintf("解析媒体流失败: %v", err))
 		return
 	}
 
@@ -575,7 +768,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		}
 	}
 	m.mu.Unlock()
-	m.SaveTasks()
+	m.persistTasks()
 
 	// 2. 准备视频与音频下载器 (支持候选 CDN 自动故障转移与 403 自动刷新换链)
 	vDownloader := NewStreamDownloader(sel.VideoURLs, task.VideoTmpPath)
@@ -627,6 +820,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	defer progressTicker.Stop()
 
 	progressDone := make(chan struct{})
+	defer close(progressDone)
 	go func() {
 		for {
 			select {
@@ -704,11 +898,10 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		m.mu.Unlock()
 	})
 	if err != nil {
-		close(progressDone)
 		if ctx.Err() != nil {
 			return
 		}
-		m.setTaskStatus(task, StatusError, formatFriendlyError(err))
+		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, formatFriendlyError(err))
 		return
 	}
 
@@ -723,18 +916,17 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 			m.mu.Unlock()
 		})
 		if err != nil {
-			close(progressDone)
 			if ctx.Err() != nil {
 				return
 			}
-			m.setTaskStatus(task, StatusError, formatFriendlyError(err))
+			m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, formatFriendlyError(err))
 			return
 		}
 	}
-	close(progressDone)
-
 	// 6. 合成音视频
-	m.setTaskStatus(task, StatusMerging, "")
+	if !m.setWorkerTaskStatus(task, token, StatusDownloading, StatusMerging, "") {
+		return
+	}
 
 	// 为最终输出文件确认路径
 	m.mu.RLock()
@@ -744,9 +936,16 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	m.mu.RUnlock()
 
 	// 6. 原生纯 Go 极速无损音视频复用合成 (0 依赖，毫秒级完成)
-	err = MergeAudioVideo(vTmpP, aTmpP, finalOutPath, cfg.DeleteTempFiles)
+	mergeFunc := m.mergeFunc
+	if mergeFunc == nil {
+		mergeFunc = MergeAudioVideoContext
+	}
+	err = mergeFunc(ctx, vTmpP, aTmpP, finalOutPath, cfg.DeleteTempFiles)
 	if err != nil {
-		m.setTaskStatus(task, StatusError, fmt.Sprintf("音视频合成失败: %v", err))
+		if ctx.Err() != nil {
+			return
+		}
+		m.setWorkerTaskStatus(task, token, StatusMerging, StatusError, fmt.Sprintf("音视频合成失败: %v", err))
 		return
 	}
 
@@ -759,7 +958,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	}
 
 	// 7. 标记任务完成
-	m.setTaskStatus(task, StatusCompleted, "")
+	m.setWorkerTaskStatus(task, token, StatusMerging, StatusCompleted, "")
 }
 
 func getQualityTag(qn int, label string) string {

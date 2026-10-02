@@ -119,6 +119,9 @@ type playurlAPIResp struct {
 }
 
 func (r *playurlAPIResp) getDash() *DashData {
+	if r == nil {
+		return nil
+	}
 	if r.Data != nil && r.Data.Dash != nil {
 		return r.Data.Dash
 	}
@@ -134,6 +137,9 @@ func (r *playurlAPIResp) getDash() *DashData {
 }
 
 func (r *playurlAPIResp) getAcceptQualities() ([]int, []string) {
+	if r == nil {
+		return nil, nil
+	}
 	if r.Data != nil && len(r.Data.AcceptQuality) > 0 {
 		return r.Data.AcceptQuality, r.Data.AcceptDescription
 	}
@@ -440,49 +446,59 @@ func pickVideoStream(videos []DashStream, targetQuality string, targetCodec stri
 		return nil
 	}
 
+	targetQuality = strings.TrimSpace(targetQuality)
+	targetCodec = strings.TrimSpace(targetCodec)
 	targetQN := 0
-	if targetQuality != "" && targetQuality != "highest" {
+	if targetQuality != "" && !strings.EqualFold(targetQuality, "highest") {
 		if qn, err := strconv.Atoi(targetQuality); err == nil && qn > 0 {
 			targetQN = qn
 		}
 	}
 
-	// 1. 如果指定了画质限制
+	// 1. 只保留真正有可下载直链的流；有些 API 响应会把直链放在 backup_url，
+	// 不能只看 BaseURL，否则可能选中一个无法下载的最高画质。
 	var candidates []DashStream
-	if targetQN > 0 {
-		for _, v := range videos {
-			if v.ID <= targetQN {
-				candidates = append(candidates, v)
-			}
+	for _, v := range videos {
+		if hasPlayableStreamURL(v) {
+			candidates = append(candidates, v)
 		}
 	}
 	if len(candidates) == 0 {
-		candidates = videos
+		return nil
 	}
 
-	// 2. 编码筛选 (如果用户指定了偏好且候选中有符合编码的)
-	if targetCodec != "" && targetCodec != "auto" {
+	// 2. 如果指定了画质限制，只允许选择不高于用户要求的画质。
+	if targetQN > 0 {
+		var qualityCandidates []DashStream
+		for _, v := range videos {
+			if v.ID <= targetQN && hasPlayableStreamURL(v) {
+				qualityCandidates = append(qualityCandidates, v)
+			}
+		}
+		// 没有可接受的画质时返回 nil，让调用方明确报告“无可用流”，
+		// 不能回退到更高画质造成用户实际下载结果超出设置。
+		if len(qualityCandidates) == 0 {
+			return nil
+		}
+		candidates = qualityCandidates
+	}
+
+	// 3. 显式编码是硬约束。若目标编码在允许的画质中不存在，返回 nil，
+	// 避免用户选择 HEVC/AV1 后实际得到 AVC 等错误结果。
+	if targetCodec != "" && !strings.EqualFold(targetCodec, "auto") {
 		var codecMatches []DashStream
 		for _, v := range candidates {
-			match := false
-			switch strings.ToUpper(targetCodec) {
-			case "AVC", "H.264", "H264":
-				match = (v.Codecid == 7)
-			case "HEVC", "H.265", "H265":
-				match = (v.Codecid == 12)
-			case "AV1":
-				match = (v.Codecid == 13)
-			}
-			if match {
+			if streamMatchesCodec(v, targetCodec) {
 				codecMatches = append(codecMatches, v)
 			}
 		}
-		if len(codecMatches) > 0 {
-			candidates = codecMatches
+		if len(codecMatches) == 0 {
+			return nil
 		}
+		candidates = codecMatches
 	}
 
-	// 3. 排序：ID 最高 (清晰度最高) -> 带宽/码率最高
+	// 4. 排序：ID 最高 (清晰度最高) -> 带宽/码率最高
 	var best *DashStream
 	for i := range candidates {
 		v := &candidates[i]
@@ -494,6 +510,10 @@ func pickVideoStream(videos []DashStream, targetQuality string, targetCodec stri
 }
 
 func pickAudioStream(dash *DashData) *DashStream {
+	if dash == nil {
+		return nil
+	}
+
 	var allAudio []DashStream
 	allAudio = append(allAudio, dash.Audio...)
 	allAudio = append(allAudio, dash.Dolby.Audio...)
@@ -504,7 +524,7 @@ func pickAudioStream(dash *DashData) *DashStream {
 	var best *DashStream
 	for i := range allAudio {
 		a := &allAudio[i]
-		if a.BaseURL == "" {
+		if !hasPlayableStreamURL(*a) {
 			continue
 		}
 		if best == nil || a.Bandwidth > best.Bandwidth {
@@ -512,6 +532,31 @@ func pickAudioStream(dash *DashData) *DashStream {
 		}
 	}
 	return best
+}
+
+func hasPlayableStreamURL(stream DashStream) bool {
+	if strings.TrimSpace(stream.BaseURL) != "" {
+		return true
+	}
+	for _, backupURL := range stream.BackupURL {
+		if strings.TrimSpace(backupURL) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func streamMatchesCodec(stream DashStream, targetCodec string) bool {
+	switch strings.ToUpper(strings.TrimSpace(targetCodec)) {
+	case "AVC", "H.264", "H264":
+		return stream.Codecid == 7
+	case "HEVC", "H.265", "H265":
+		return stream.Codecid == 12
+	case "AV1":
+		return stream.Codecid == 13
+	default:
+		return false
+	}
 }
 
 // ReplaceCDNServer 将 URL 中的 CDN 服务器替换为指定的骨干节点

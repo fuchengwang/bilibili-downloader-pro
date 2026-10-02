@@ -150,6 +150,9 @@ type seasonResponse struct {
 
 // FetchVideoDetail 统一获取视频或合集、番剧的详细元数据
 func (c *Client) FetchVideoDetail(ctx context.Context, target *ParsedTarget) (*VideoDetail, error) {
+	if target == nil {
+		return nil, fmt.Errorf("解析目标不能为空")
+	}
 	if target.Type == TargetBangumi || target.EPID != "" || target.SSID != "" {
 		return c.fetchBangumiDetail(ctx, target)
 	}

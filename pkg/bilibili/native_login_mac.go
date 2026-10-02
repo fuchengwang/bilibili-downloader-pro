@@ -197,7 +197,9 @@ func (c *Client) runNativeLoginCmd(ctx context.Context, cmd *exec.Cmd) error {
 		lines := strings.Split(output, "\n")
 		for _, line := range lines {
 			if strings.HasPrefix(line, "SESSDATA=") {
-				_ = c.ParseAndSaveRawCookie(line)
+				if err := c.ParseAndSaveRawCookie(line); err != nil {
+					return fmt.Errorf("登录成功但保存 Cookie 失败: %w", err)
+				}
 				_, _ = c.GetUserInfo(context.Background())
 				return nil
 			}

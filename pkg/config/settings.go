@@ -36,6 +36,57 @@ var (
 	once     sync.Once
 )
 
+const (
+	defaultMaxConcurrent  = 3
+	defaultThreadsPerTask = 4
+	maxMaxConcurrent      = 10
+	maxThreadsPerTask     = 8
+)
+
+func defaultSettings(downloadDir string) Settings {
+	return Settings{
+		DownloadDir:      downloadDir,
+		DefaultQuality:   "highest",
+		DefaultCodec:     "auto",
+		MaxConcurrent:    defaultMaxConcurrent,
+		ThreadsPerTask:   defaultThreadsPerTask,
+		AutoMerge:        true,
+		DeleteTempFiles:  true,
+		AutoClipboard:    true,
+		FileNameTemplate: "{title} - {part}",
+		Theme:            "dark",
+	}
+}
+
+func normalizeSettings(s Settings, fallbackDownloadDir string) Settings {
+	if strings.TrimSpace(s.DownloadDir) == "" {
+		s.DownloadDir = fallbackDownloadDir
+	}
+	if strings.TrimSpace(s.DefaultQuality) == "" {
+		s.DefaultQuality = "highest"
+	}
+	if strings.TrimSpace(s.DefaultCodec) == "" {
+		s.DefaultCodec = "auto"
+	}
+	if s.MaxConcurrent <= 0 {
+		s.MaxConcurrent = defaultMaxConcurrent
+	} else if s.MaxConcurrent > maxMaxConcurrent {
+		s.MaxConcurrent = maxMaxConcurrent
+	}
+	if s.ThreadsPerTask <= 0 {
+		s.ThreadsPerTask = defaultThreadsPerTask
+	} else if s.ThreadsPerTask > maxThreadsPerTask {
+		s.ThreadsPerTask = maxThreadsPerTask
+	}
+	if strings.TrimSpace(s.FileNameTemplate) == "" {
+		s.FileNameTemplate = "{title} - {part}"
+	}
+	if strings.TrimSpace(s.Theme) == "" {
+		s.Theme = "dark"
+	}
+	return s
+}
+
 // GetConfigDir 获取应用数据存储目录
 func GetConfigDir() string {
 	var baseDir string
@@ -65,19 +116,8 @@ func DefaultDownloadDir() string {
 func NewConfigManager(dir string) *ConfigManager {
 	_ = os.MkdirAll(dir, 0755)
 	mgr := &ConfigManager{
-		dir: dir,
-		settings: Settings{
-			DownloadDir:      filepath.Join(dir, "downloads"),
-			DefaultQuality:   "highest",
-			DefaultCodec:     "auto",
-			MaxConcurrent:    3,
-			ThreadsPerTask:   4,
-			AutoMerge:        true,
-			DeleteTempFiles:  true,
-			AutoClipboard:    true,
-			FileNameTemplate: "{title} - {part}",
-			Theme:            "dark",
-		},
+		dir:      dir,
+		settings: defaultSettings(filepath.Join(dir, "downloads")),
 	}
 	_ = mgr.load()
 	return mgr
@@ -88,19 +128,8 @@ func GetManager() *ConfigManager {
 	once.Do(func() {
 		cfgDir := GetConfigDir()
 		mgr := &ConfigManager{
-			dir: cfgDir,
-			settings: Settings{
-				DownloadDir:      DefaultDownloadDir(),
-				DefaultQuality:   "highest",
-				DefaultCodec:     "auto",
-				MaxConcurrent:    3,
-				ThreadsPerTask:   4,
-				AutoMerge:        true,
-				DeleteTempFiles:  true,
-				AutoClipboard:    true,
-				FileNameTemplate: "{title} - {part}",
-				Theme:            "dark",
-			},
+			dir:      cfgDir,
+			settings: defaultSettings(DefaultDownloadDir()),
 		}
 		_ = mgr.load()
 		instance = mgr
@@ -114,14 +143,22 @@ func (m *ConfigManager) load() error {
 	if err != nil {
 		return err
 	}
-	var s Settings
+	isGlobalConfigDir := filepath.Clean(m.dir) == filepath.Clean(GetConfigDir())
+	fallbackDownloadDir := filepath.Join(m.dir, "downloads")
+	if isGlobalConfigDir {
+		fallbackDownloadDir = DefaultDownloadDir()
+	}
+	// Unmarshal over defaults so fields introduced in a newer version do not
+	// silently become zero values when an older settings file is reopened.
+	s := defaultSettings(fallbackDownloadDir)
 	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
+	s = normalizeSettings(s, fallbackDownloadDir)
 
 	// 核心安全自愈防护：仅针对正式用户配置目录，如果持久化配置中的下载目录为空、
 	// 包含历史测试临时特征、或指向已不存在的临时目录，自动自愈纠偏重置为系统原生 Downloads 目录
-	if m.dir == GetConfigDir() {
+	if isGlobalConfigDir {
 		tempDir := os.TempDir()
 		isInvalidTemp := s.DownloadDir == "" || strings.Contains(s.DownloadDir, "bili_live_test")
 		if !isInvalidTemp && (strings.HasPrefix(s.DownloadDir, "/var/folders/") || (tempDir != "" && strings.HasPrefix(s.DownloadDir, tempDir))) {
@@ -146,6 +183,7 @@ func (m *ConfigManager) load() error {
 func (m *ConfigManager) Save(s Settings) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	s = normalizeSettings(s, m.defaultDownloadDir())
 	m.settings = s
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -153,6 +191,13 @@ func (m *ConfigManager) Save(s Settings) error {
 	}
 	filePath := filepath.Join(m.dir, "settings.json")
 	return utils.AtomicWriteFile(filePath, data, 0644)
+}
+
+func (m *ConfigManager) defaultDownloadDir() string {
+	if filepath.Clean(m.dir) == filepath.Clean(GetConfigDir()) {
+		return DefaultDownloadDir()
+	}
+	return filepath.Join(m.dir, "downloads")
 }
 
 func (m *ConfigManager) Get() Settings {
@@ -175,4 +220,3 @@ func (m *ConfigManager) GetBinDir() string {
 	_ = os.MkdirAll(binDir, 0755)
 	return binDir
 }
-

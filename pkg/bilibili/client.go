@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"bilibili_downloader/pkg/config"
+	"bilibili_downloader/pkg/utils"
 )
 
 const (
@@ -36,6 +37,7 @@ type Client struct {
 	mu          sync.RWMutex
 	httpClient  *http.Client
 	cookieData  *CookieData
+	cookiePath  string
 	wbiMixin    string
 	wbiCached   time.Time
 	clockOffset atomic.Int64 // 服务端与本地系统时钟差值 (秒)，彻底消除本地时间不准导致的 WBI 签名失效
@@ -50,7 +52,7 @@ var (
 func GetDefaultClient() *Client {
 	clientOnce.Do(func() {
 		tr := &http.Transport{
-			Proxy:               http.ProxyFromEnvironment,
+			Proxy: http.ProxyFromEnvironment,
 
 			MaxIdleConns:        100,
 			MaxIdleConnsPerHost: 20,
@@ -73,28 +75,37 @@ func GetDefaultClient() *Client {
 
 // SetCookies 更新并持久化 Cookie
 func (c *Client) SetCookies(data *CookieData) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cookieData = data
-	// 刷新 wbi 缓存
-	c.wbiMixin = ""
-
-	cookiePath := config.GetManager().GetCookiesPath()
-	bytes, err := json.MarshalIndent(data, "", "  ")
+	if data == nil {
+		return fmt.Errorf("cookie data is nil")
+	}
+	copyData := cloneCookieData(data)
+	bytes, err := json.MarshalIndent(copyData, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(cookiePath, bytes, 0600)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cookiePath := c.cookiesPath()
+	if err := utils.AtomicWriteFile(cookiePath, bytes, 0600); err != nil {
+		return err
+	}
+	c.cookieData = copyData
+	// 刷新 wbi 缓存
+	c.wbiMixin = ""
+	return nil
 }
 
 // ClearCookies 清理 Cookie
 func (c *Client) ClearCookies() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	cookiePath := c.cookiesPath()
+	if err := os.Remove(cookiePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	c.cookieData = &CookieData{Cookies: make(map[string]string)}
 	c.wbiMixin = ""
-	cookiePath := config.GetManager().GetCookiesPath()
-	_ = os.Remove(cookiePath)
 	return nil
 }
 
@@ -105,8 +116,7 @@ func (c *Client) GetCookies() *CookieData {
 	if c.cookieData == nil {
 		return nil
 	}
-	cp := *c.cookieData
-	return &cp
+	return cloneCookieData(c.cookieData)
 }
 
 // GetCookieHeader 构造用于请求头的 Cookie 字符串
@@ -137,6 +147,25 @@ func (c *Client) GetCookieHeader() string {
 	return strings.Join(pairs, "; ")
 }
 
+func cloneCookieData(data *CookieData) *CookieData {
+	if data == nil {
+		return nil
+	}
+	copyData := *data
+	copyData.Cookies = make(map[string]string, len(data.Cookies))
+	for key, value := range data.Cookies {
+		copyData.Cookies[key] = value
+	}
+	return &copyData
+}
+
+func (c *Client) cookiesPath() string {
+	if c.cookiePath != "" {
+		return c.cookiePath
+	}
+	return config.GetManager().GetCookiesPath()
+}
+
 // IsLoggedIn 检查当前是否已保存登录凭证
 func (c *Client) IsLoggedIn() bool {
 	c.mu.RLock()
@@ -145,7 +174,7 @@ func (c *Client) IsLoggedIn() bool {
 }
 
 func (c *Client) loadCookies() {
-	cookiePath := config.GetManager().GetCookiesPath()
+	cookiePath := c.cookiesPath()
 	data, err := os.ReadFile(cookiePath)
 	if err != nil {
 		return

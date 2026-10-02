@@ -113,6 +113,51 @@ func TestWorkerTokenIsolation(t *testing.T) {
 	mgr.mu.Unlock()
 }
 
+func TestMergingWorkerCannotCompleteAfterPauseOrCancel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cancel func(*DownloadManager, string)
+		want   TaskStatus
+	}{
+		{
+			name: "pause",
+			cancel: func(mgr *DownloadManager, id string) {
+				_ = mgr.PauseTask(id)
+			},
+			want: StatusPaused,
+		},
+		{
+			name: "cancel",
+			cancel: func(mgr *DownloadManager, id string) {
+				_ = mgr.CancelTask(id)
+			},
+			want: StatusCancelled,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := newTestManager(t)
+			task := &DownloadTask{ID: "merge-state-" + tc.name, Status: StatusDownloading}
+			mgr.mu.Lock()
+			mgr.tasks = append(mgr.tasks, task)
+			mgr.workers[task.ID] = workerHandle{token: "merge-token", cancel: func() {}}
+			mgr.mu.Unlock()
+
+			if !mgr.setWorkerTaskStatus(task, "merge-token", StatusDownloading, StatusMerging, "") {
+				t.Fatal("worker should be able to enter merging from downloading")
+			}
+			tc.cancel(mgr, task.ID)
+
+			if mgr.setWorkerTaskStatus(task, "merge-token", StatusMerging, StatusCompleted, "") {
+				t.Fatal("a stale merging worker must not overwrite a paused/cancelled task as completed")
+			}
+			got := mgr.GetTasks()[0]
+			if got.Status != tc.want {
+				t.Fatalf("task status changed after %s: got %s, want %s", tc.name, got.Status, tc.want)
+			}
+		})
+	}
+}
+
 // TestPauseNoDeadlockOnQueue 验证暂停后 worker 槽位正确释放，后续排队任务可继续拉起
 func TestPauseNoDeadlockOnQueue(t *testing.T) {
 	mgr := newTestManager(t)
@@ -247,6 +292,122 @@ func TestAtomicSaveAndDeepCopy(t *testing.T) {
 
 	// 清理
 	_ = mgr.DeleteTask(task.ID, false)
+}
+
+func TestSaveTasksReturnsPersistenceErrorAndKeepsTarget(t *testing.T) {
+	mgr := newTestManager(t)
+	tasksPath := mgr.cfgMgr.GetTasksPath()
+	if err := os.Mkdir(tasksPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tasksPath)
+
+	if err := mgr.SaveTasks(); err == nil {
+		t.Fatal("任务列表写入目标为目录时应返回持久化错误")
+	}
+	info, err := os.Stat(tasksPath)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("持久化失败后目标目录应保持不变: info=%v err=%v", info, err)
+	}
+}
+
+func TestAddDownloadTaskRollsBackWhenPersistenceFails(t *testing.T) {
+	mgr := newTestManager(t)
+	tasksPath := mgr.cfgMgr.GetTasksPath()
+	if err := os.Mkdir(tasksPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tasksPath)
+
+	task, err := mgr.AddDownloadTask(&DownloadRequest{
+		Title:         "持久化失败回滚",
+		TargetQuality: "80",
+		TargetCodec:   "AVC",
+	}, &bilibili.EpisodeInfo{CID: 123456, BVID: "BVrollback", Title: "持久化失败回滚"})
+	if err == nil || task != nil {
+		t.Fatalf("持久化失败时应返回错误且不暴露任务: task=%v err=%v", task, err)
+	}
+	if got := mgr.GetTasks(); len(got) != 0 {
+		t.Fatalf("持久化失败后内存中不应残留任务: %+v", got)
+	}
+}
+
+func TestDeleteTaskPersistenceFailureRestoresTaskAndFile(t *testing.T) {
+	mgr := newTestManager(t)
+	tasksPath := mgr.cfgMgr.GetTasksPath()
+	if err := os.Mkdir(tasksPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tasksPath)
+
+	outPath := filepath.Join(t.TempDir(), "keep-after-delete-failure.mp4")
+	if err := os.WriteFile(outPath, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	task := &DownloadTask{ID: "delete-persist-failure", Status: StatusCompleted, OutputPath: outPath}
+	mgr.mu.Lock()
+	mgr.tasks = append(mgr.tasks, task)
+	mgr.mu.Unlock()
+
+	if err := mgr.DeleteTask(task.ID, true); err == nil {
+		t.Fatal("持久化失败时删除任务应返回错误")
+	}
+	if got := mgr.GetTasks(); len(got) != 1 || got[0].ID != task.ID {
+		t.Fatalf("持久化失败后任务应恢复到内存列表: %+v", got)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("持久化失败时不应删除本地文件: %v", err)
+	}
+}
+
+func TestClearCompletedPersistenceFailureKeepsTasksAndFiles(t *testing.T) {
+	mgr := newTestManager(t)
+	tasksPath := mgr.cfgMgr.GetTasksPath()
+	if err := os.Mkdir(tasksPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tasksPath)
+
+	outPath := filepath.Join(t.TempDir(), "keep-after-clear-failure.mp4")
+	if err := os.WriteFile(outPath, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	task := &DownloadTask{ID: "clear-persist-failure", Status: StatusCompleted, OutputPath: outPath}
+	mgr.mu.Lock()
+	mgr.tasks = append(mgr.tasks, task)
+	mgr.mu.Unlock()
+
+	if err := mgr.ClearCompleted(true); err == nil {
+		t.Fatal("持久化失败时清空任务应返回错误")
+	}
+	if got := mgr.GetTasks(); len(got) != 1 || got[0].ID != task.ID {
+		t.Fatalf("持久化失败后已完成任务应保留: %+v", got)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("持久化失败时不应删除本地文件: %v", err)
+	}
+}
+
+func TestDeletedWorkerCannotEmitOrCompleteAfterRemoval(t *testing.T) {
+	mgr := newTestManager(t)
+	task := &DownloadTask{ID: "deleted-worker", Status: StatusDownloading}
+	mgr.mu.Lock()
+	mgr.tasks = append(mgr.tasks, task)
+	mgr.workers[task.ID] = workerHandle{token: "deleted-token", cancel: func() {}}
+	mgr.mu.Unlock()
+
+	var callbacks int
+	mgr.SetCallback(func(*DownloadTask) { callbacks++ })
+	if err := mgr.DeleteTask(task.ID, false); err != nil {
+		t.Fatalf("删除任务失败: %v", err)
+	}
+	if mgr.setWorkerTaskStatus(task, "deleted-token", StatusDownloading, StatusCompleted, "") {
+		t.Fatal("已删除任务的旧 worker 不应再改变任务状态")
+	}
+	mgr.notifyChange(task)
+	if callbacks != 0 {
+		t.Fatalf("已删除任务不应再向前端发送事件，回调次数=%d", callbacks)
+	}
 }
 
 // TestDeleteTaskAndFile 测试删除单个任务记录及联动删除本地源文件
@@ -638,5 +799,3 @@ func TestOutputPathPrecomputedConsistency(t *testing.T) {
 		t.Fatalf("解析清晰度后 OutputPath 应已固化 [4K]，实际为: %s", loadedTasks[0].OutputPath)
 	}
 }
-
-

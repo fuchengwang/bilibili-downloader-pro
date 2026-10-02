@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -95,8 +96,8 @@ func TestScanBoxes_ValidPrecedingBoxesWithTrailingCorruptedLargeSize(t *testing.
 	defer f.Close()
 
 	boxes, err := scanBoxes(f, int64(len(raw)))
-	if err != nil {
-		t.Fatalf("scanBoxes 遇到尾部损坏不应发生致命错误: %v", err)
+	if err == nil {
+		t.Fatal("scanBoxes 遇到尾部损坏应返回错误，避免合并器把截断文件当作完整输入")
 	}
 
 	// 必须能够正确解析出第一个合法的 ftyp Box
@@ -162,8 +163,8 @@ func TestScanBoxes_ZeroAndNegativeFileSize(t *testing.T) {
 	}
 
 	boxesNeg, errNeg := scanBoxes(f, -100)
-	if errNeg != nil || len(boxesNeg) != 0 {
-		t.Errorf("负文件大小期望安全返回 (0, nil)，实际得到 len=%d, err=%v", len(boxesNeg), errNeg)
+	if errNeg == nil || len(boxesNeg) != 0 {
+		t.Errorf("负文件大小应安全返回错误，实际得到 len=%d, err=%v", len(boxesNeg), errNeg)
 	}
 }
 
@@ -201,5 +202,107 @@ func TestCopyOrRename_OverwriteExistingDestination(t *testing.T) {
 	}
 	if !bytes.Equal(actualDstContent, srcContent) {
 		t.Errorf("目标文件内容不匹配: 期望 %s, 实际 %s", string(srcContent), string(actualDstContent))
+	}
+}
+
+func TestWriteMdatBoxRejectsTruncatedPayload(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "short.mdat")
+	// 文件实际只有 4 字节 payload，但 BoxInfo 宣称有 12 字节 payload。
+	raw := append([]byte{0, 0, 0, 12, 'm', 'd', 'a', 't'}, []byte("data")...)
+	if err := os.WriteFile(srcPath, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.Open(srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	var out bytes.Buffer
+	err = writeMdatBox(f, BoxInfo{Type: "mdat", Offset: 0, Size: 20, HeaderLen: 8}, &out, make([]byte, 128))
+	if err == nil {
+		t.Fatal("mdat payload 被截断时不应返回成功")
+	}
+}
+
+func TestExtractFragmentsRejectsUndecodableMoof(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "bad.moof")
+	raw := []byte{0, 0, 0, 8, 'm', 'o', 'o', 'f'}
+	if err := os.WriteFile(srcPath, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.Open(srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	boxes, err := scanBoxes(f, int64(len(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := extractFragments(boxes, f, false, 1000); err == nil {
+		t.Fatal("无法解码或缺少 traf 的 moof 不应被静默跳过")
+	}
+}
+
+func TestCopyOrRenameFailurePreservesExistingDestination(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "source-directory")
+	dstPath := filepath.Join(tmpDir, "existing.mp4")
+	if err := os.Mkdir(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("old complete output")
+	if err := os.WriteFile(dstPath, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyOrRename(srcDir, dstPath); err == nil {
+		t.Fatal("目录作为源文件时应返回复制错误")
+	}
+	actual, err := os.ReadFile(dstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(actual, original) {
+		t.Fatalf("复制失败时不应破坏旧成品: got %q, want %q", actual, original)
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".bbdown-") {
+			t.Fatalf("复制失败后不应遗留替换临时文件: %s", entry.Name())
+		}
+	}
+}
+
+func TestMergeAudioVideoWithoutDeleteKeepsVideoSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	videoPath := filepath.Join(tmpDir, "video.m4s")
+	outputPath := filepath.Join(tmpDir, "output.mp4")
+	content := []byte("video input that must remain when deleteTemp is false")
+	if err := os.WriteFile(videoPath, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MergeAudioVideo(videoPath, "", outputPath, false); err != nil {
+		t.Fatalf("无音频直通复制失败: %v", err)
+	}
+	if actual, err := os.ReadFile(videoPath); err != nil {
+		t.Fatalf("deleteTemp=false 时源文件不应被移除: %v", err)
+	} else if !bytes.Equal(actual, content) {
+		t.Fatalf("源文件内容被改变: got %q, want %q", actual, content)
+	}
+	if actual, err := os.ReadFile(outputPath); err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(actual, content) {
+		t.Fatalf("输出内容不一致: got %q, want %q", actual, content)
 	}
 }

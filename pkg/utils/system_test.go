@@ -216,6 +216,31 @@ func TestAtomicWriteFile(t *testing.T) {
 	}
 }
 
+func TestAtomicWriteFileRejectsDirectoryWithoutRemovingIt(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "target-directory")
+	if err := os.Mkdir(targetPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AtomicWriteFile(targetPath, []byte("must not replace directory"), 0644); err == nil {
+		t.Fatal("目录目标不应被原子写入替换成文件")
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("原子写入失败后目录目标应保持不变: info=%v err=%v", info, err)
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".tmp_atomic-") {
+			t.Fatalf("原子写入失败后不应遗留临时文件: %s", entry.Name())
+		}
+	}
+}
+
 // TestEnsureSafePathLength 测试 Windows 240 字符超长路径安全截断
 func TestEnsureSafePathLength(t *testing.T) {
 	dir := "/Users/test/Downloads/Bilibili/very_long_collection_directory_name_that_takes_up_space"
@@ -249,5 +274,3 @@ func TestEnsureSafePathLength(t *testing.T) {
 		t.Errorf("追加画质标签截断后丢失后缀: %s", safeWithTag)
 	}
 }
-
-

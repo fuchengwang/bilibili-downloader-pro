@@ -2,8 +2,11 @@ package main
 
 import (
 	"embed"
+	"log"
+	"time"
 
 	"bilibili_downloader/pkg/instance"
+	"bilibili_downloader/pkg/license"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -16,14 +19,27 @@ import (
 var assets embed.FS
 
 func main() {
-	app := NewApp()
+	licenseClient, err := license.New(license.Config{
+		ServerURL:            "https://47.97.111.181:8090",
+		AppID:                "bbdown-pro",
+		AppName:              "BBDown Pro",
+		ClientVersion:        "1.1.3",
+		Timeout:              10 * time.Second,
+		OfflineGraceDays:     30,
+		AutoVerifyInterval:   24 * time.Hour,
+		RefundProtectionDays: 15,
+	})
+	if err != nil {
+		log.Fatalf("初始化授权服务失败: %v", err)
+	}
+	app := NewApp(licenseClient)
 
 	// Ensure single instance
 	_ = instance.SetupSingleInstance(func() {
 		app.ShowMainWindow()
 	})
 
-	err := wails.Run(&options.App{
+	err = wails.Run(&options.App{
 		Title:            "BBDown Pro",
 		Width:            1140,
 		Height:           760,

@@ -1,112 +1,170 @@
 name: Build & Publish Release
 
 on:
-  release:
-    types: [published]
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and publish
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
-  build-windows:
-    name: Build Windows (x64)
-    runs-on: windows-latest
-
+  validate:
+    runs-on: macos-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
         with:
-          go-version: '1.22'
-          cache: true
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
         with:
-          version: 9
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
         with:
-          node-version: 20
-          cache: 'pnpm'
-          cache-dependency-path: 'frontend/pnpm-lock.yaml'
+          version: 10.34.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm --dir frontend install --frozen-lockfile
+      - run: pnpm --dir frontend run build
+      - name: Test backend
+        run: go test -race -short ./...
 
-      - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
-      - name: Install Frontend Dependencies
-        working-directory: ./frontend
-        run: pnpm install --frozen-lockfile
-
-      - name: Build Windows Application
-        run: wails build -platform windows/amd64
-
-      - name: Package Windows App into Zip
+  build-windows:
+    name: Build Windows (x64 ZIP)
+    needs: validate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
+      - run: pnpm --dir frontend install --frozen-lockfile
+      - run: wails build -platform windows/amd64
+      - name: Package portable ZIP
         shell: pwsh
-        run: |
-          Compress-Archive -Path "build/bin/BBDown Pro.exe" -DestinationPath build/bin/BBDown-Pro-Windows-amd64.zip -Force
-
-      - name: Upload Windows Artifact to Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+        run: Compress-Archive -Path "build/bin/BBDown Pro.exe" -DestinationPath build/bin/BBDown-Pro-Windows-amd64.zip -Force
+      - uses: actions/upload-artifact@v4
         with:
-          files: build/bin/BBDown-Pro-Windows-amd64.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: windows-release
+          path: build/bin/BBDown-Pro-Windows-amd64.zip
+          if-no-files-found: error
 
   build-macos:
-    name: Build macOS (Universal)
+    name: Build macOS (Signed & Notarized Universal DMG)
+    needs: validate
     runs-on: macos-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
         with:
-          go-version: '1.22'
-          cache: true
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 9
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'pnpm'
-          cache-dependency-path: 'frontend/pnpm-lock.yaml'
-
-      - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
-      - name: Install Frontend Dependencies
-        working-directory: ./frontend
-        run: pnpm install --frozen-lockfile
-
-      - name: Build macOS Universal Application
-        run: wails build -platform darwin/universal
-
-
-      - name: Package macOS App into Zip
-        run: |
-          cd build/bin
-          zip -r -y BBDown-Pro-macOS-universal.zip "BBDown Pro.app"
-
-      - name: Upload macOS Artifact to Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
-        with:
-          files: build/bin/BBDown-Pro-macOS-universal.zip
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Require signing and notarization credentials
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for name in CERTIFICATE CERTIFICATE_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing release credential: $name. Unsigned/unnotarized DMGs will not be published."
+              exit 1
+            fi
+          done
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
+      - run: pnpm --dir frontend install --frozen-lockfile
+      - run: wails build -platform darwin/universal
+      - name: Import Developer ID certificate into temporary keychain
+        env:
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 32)
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)
+          test -n "$IDENTITY"
+          echo "APPLE_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          rm "$RUNNER_TEMP/certificate.p12"
+      - name: Sign, notarize, staple, and verify DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/package-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: build/bin/BBDown-Pro-macOS-universal.dmg
+          if-no-files-found: error
+      - name: Clean up signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/release.keychain-db" || true
+          rm -f "$RUNNER_TEMP/certificate.p12"
+
+  publish:
+    name: Publish verified release
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-release'
+          path: release
+          merge-multiple: true
+      - name: Create release with both packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          cd release
+          sha256sum ./*.zip ./*.dmg > SHA256SUMS.txt
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" ./*.zip ./*.dmg SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" ./*.zip ./*.dmg SHA256SUMS.txt --verify-tag --title "BBDown Pro $TAG" --generate-notes
+          fi

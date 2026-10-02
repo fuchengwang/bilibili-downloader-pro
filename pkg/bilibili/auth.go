@@ -167,7 +167,9 @@ func (c *Client) PollQRCode(ctx context.Context, qrcodeKey string) (*QRStatus, e
 				DedeUID:  dedeUID,
 				Cookies:  cookies,
 			}
-			_ = c.SetCookies(cookieData)
+			if err := c.SetCookies(cookieData); err != nil {
+				return nil, fmt.Errorf("登录成功但保存 Cookie 失败: %w", err)
+			}
 			status.IsSuccess = true
 			status.Message = "登录成功！"
 		}
@@ -291,4 +293,3 @@ func (c *Client) fetchFingerprintSpi(ctx context.Context) (string, string, error
 	}
 	return resp.Data.B3, resp.Data.B4, nil
 }
-

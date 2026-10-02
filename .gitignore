@@ -15,6 +15,7 @@ frontend/dist/
 node_modules/
 dist/
 .pnpm-store/
+.local/
 
 # OS & IDE
 .DS_Store

@@ -9,6 +9,9 @@ import (
 )
 
 func TestLiveParseAndStreamResolve(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping live API call in short mode")
+	}
 	client := bilibili.GetDefaultClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

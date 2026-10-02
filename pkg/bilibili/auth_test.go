@@ -2,12 +2,17 @@ package bilibili
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestParseAndSaveRawCookie(t *testing.T) {
-	client := GetDefaultClient()
+	client := &Client{
+		cookiePath: filepath.Join(t.TempDir(), "cookies.json"),
+		cookieData: &CookieData{Cookies: make(map[string]string)},
+	}
 
 	// 1. 测试正常包含必要字段的 Cookie 字符串解析
 	rawValid := "SESSDATA=test_sess_12345; bili_jct=csrf_token_abc; buvid3=buvid_xyz_789; DedeUserID=12345678; other_key=other_value"
@@ -49,8 +54,48 @@ func TestParseAndSaveRawCookie(t *testing.T) {
 		t.Fatal("空 Cookie 应当返回错误，但返回了 nil")
 	}
 
-	// 清理测试用的 Cookie
-	_ = client.ClearCookies()
+}
+
+func TestCookieSnapshotDoesNotExposeMutableMap(t *testing.T) {
+	client := &Client{cookieData: &CookieData{
+		SessData: "session",
+		Cookies:  map[string]string{"custom": "original"},
+	}}
+
+	snapshot := client.GetCookies()
+	if snapshot == nil {
+		t.Fatal("GetCookies returned nil")
+	}
+	snapshot.Cookies["custom"] = "changed outside client"
+	snapshot.Cookies["injected"] = "must not leak"
+
+	if header := client.GetCookieHeader(); header != "SESSDATA=session; custom=original" {
+		t.Fatalf("cookie snapshot exposed internal map: %q", header)
+	}
+}
+
+func TestClearCookiesKeepsMemoryWhenPersistenceRemovalFails(t *testing.T) {
+	blockedPath := filepath.Join(t.TempDir(), "cookies.json")
+	if err := os.Mkdir(blockedPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blockedPath, "keep"), []byte("occupied"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &Client{
+		cookiePath: blockedPath,
+		cookieData: &CookieData{
+			SessData: "must-remain",
+			Cookies:  map[string]string{"custom": "value"},
+		},
+	}
+	if err := client.ClearCookies(); err == nil {
+		t.Fatal("删除被占用的 Cookie 存储路径应返回错误")
+	}
+	if got := client.GetCookies(); got == nil || got.SessData != "must-remain" || got.Cookies["custom"] != "value" {
+		t.Fatalf("Cookie 持久化删除失败时不应清空内存凭证: %+v", got)
+	}
 }
 
 func TestFetchFingerprintSpiLive(t *testing.T) {

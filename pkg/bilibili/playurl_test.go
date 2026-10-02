@@ -8,6 +8,9 @@ import (
 )
 
 func TestPlayURLResolve(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping live API call in short mode")
+	}
 	client := GetDefaultClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -72,15 +75,40 @@ func TestPickVideoStream_QualityAndCodecs(t *testing.T) {
 		t.Fatalf("Expected 1080P AV1, got %+v", v1080Av1)
 	}
 
-	// 4. 测试指定画质 32 (480P) + AV1 (无 480P AV1 时自动平滑回退至可用最高编码)
+	// 4. 测试指定画质 32 (480P) + AV1 (显式编码不可用时不能静默改成 AVC)
 	v480Fallback := pickVideoStream(videos, "32", "AV1")
-	if v480Fallback == nil || v480Fallback.ID != 32 || v480Fallback.Codecid != 7 {
-		t.Fatalf("Expected 480P fallback to AVC, got %+v", v480Fallback)
+	if v480Fallback != nil {
+		t.Fatalf("Expected nil when requested codec is unavailable, got %+v", v480Fallback)
 	}
 
 	// 5. 空列表防御
 	if pickVideoStream(nil, "highest", "auto") != nil {
 		t.Fatalf("Expected nil for empty video list")
+	}
+	if got := pickVideoStream(videos, " 80 ", " avc "); got == nil || got.ID != 80 || got.Codecid != 7 {
+		t.Fatalf("quality/codec whitespace and case should be normalized, got %+v", got)
+	}
+}
+
+func TestPickVideoStreamRespectsQualityAndBackupURL(t *testing.T) {
+	videos := []DashStream{
+		{ID: 120, Codecid: 7, Bandwidth: 5000000, BaseURL: "http://4k"},
+		{ID: 80, Codecid: 7, Bandwidth: 2000000, BaseURL: "http://1080p"},
+		{ID: 64, Codecid: 7, Bandwidth: 1000000, BaseURL: "http://720p"},
+	}
+
+	if got := pickVideoStream(videos, "64", "auto"); got == nil || got.ID != 64 {
+		t.Fatalf("requested quality must not fall back to a higher stream, got %+v", got)
+	}
+	if got := pickVideoStream(videos, "32", "auto"); got != nil {
+		t.Fatalf("no stream at or below requested quality should return nil, got %+v", got)
+	}
+
+	backupOnly := pickVideoStream([]DashStream{
+		{ID: 80, Codecid: 7, BackupURL: []string{"http://backup-1080p"}},
+	}, "80", "auto")
+	if backupOnly == nil {
+		t.Fatal("backup_url-only video stream should remain selectable")
 	}
 }
 
@@ -120,13 +148,27 @@ func TestPickAudioStream_DolbyAndFlac(t *testing.T) {
 	}
 }
 
+func TestPickAudioStream_BackupURLOnly(t *testing.T) {
+	dash := &DashData{
+		Audio: []DashStream{
+			{ID: 30232, Bandwidth: 132000, BaseURL: "http://audio-standard"},
+			{ID: 30280, Bandwidth: 320000, BackupURL: []string{"http://audio-backup"}},
+		},
+	}
+
+	got := pickAudioStream(dash)
+	if got == nil || got.Bandwidth != 320000 || len(got.BackupURL) != 1 {
+		t.Fatalf("backup_url-only audio should be selected, got %+v", got)
+	}
+}
+
 func TestCollectSortedCDNs_BackbonePriorityAndPCDNDemotion(t *testing.T) {
 	baseURL := "https://upos-tf-all-mcdn.bilivideo.com/upgcxcode/test.m4s" // PCDN / 边缘节点
 	backupURLs := []string{
-		"https://112.25.12.3:8443/upgcxcode/test.m4s",                    // 带显式端口的 PCDN
-		"https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/test.m4s",       // 顶级腾讯云骨干 CDN
-		"https://upos-sz-mirrorali.bilivideo.com/upgcxcode/test.m4s",       // 顶级阿里云骨干 CDN
-		"https://cn-gdgz-cmcc.bilivideo.com/upgcxcode/test.m4s",            // 普通 CDN
+		"https://112.25.12.3:8443/upgcxcode/test.m4s",                // 带显式端口的 PCDN
+		"https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/test.m4s", // 顶级腾讯云骨干 CDN
+		"https://upos-sz-mirrorali.bilivideo.com/upgcxcode/test.m4s", // 顶级阿里云骨干 CDN
+		"https://cn-gdgz-cmcc.bilivideo.com/upgcxcode/test.m4s",      // 普通 CDN
 	}
 
 	sorted := collectSortedCDNs(baseURL, backupURLs)

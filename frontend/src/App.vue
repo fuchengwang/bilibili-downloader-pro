@@ -27,7 +27,9 @@ import {
   ClearCompletedTasks,
   OpenDirectory,
   OpenFile,
-  ReadClipboard
+  ReadClipboard,
+  CheckLicense,
+  ActivateLicense
 } from '../wailsjs/go/main/App'
 import { EventsOn } from '../wailsjs/runtime/runtime'
 
@@ -48,6 +50,13 @@ const settings = ref<config.Settings>({
   fileNameTemplate: '{title} - {part}',
   theme: 'dark'
 })
+const licenseChecking = ref(true)
+const isLicensed = ref(false)
+const licenseKey = ref('')
+const licenseMessage = ref('')
+const licenseStatus = ref<any>(null)
+const isActivating = ref(false)
+let appInitialized = false
 
 // Modals
 const showLoginModal = ref(false)
@@ -101,27 +110,35 @@ async function checkAndAutoParseClipboard() {
 // 轮询与事件监听
 let taskTimer: any = null
 
-onMounted(async () => {
+async function initializeAuthorizedApp() {
+  if (appInitialized) return
+  appInitialized = true
+  // 每项初始化独立处理：B站用户信息暂时请求失败时，不能阻止本地任务队列显示。
   try {
-    // 1. 加载偏好设置
     const s = await GetSettings()
-    if (s && s.downloadDir) {
+    if (s) {
       settings.value = s
     }
+  } catch (err) {
+    console.error('加载偏好设置失败:', err)
+  }
 
-    // 2. 加载用户信息
+  try {
     const u = await GetUserInfo()
     if (u) {
       userInfo.value = u
     }
+  } catch (err) {
+    console.error('加载用户信息失败:', err)
+  }
 
-    // 3. 初始拉取任务列表
+  try {
     const tList = await GetTasks()
     if (tList) {
       tasks.value = tList
     }
   } catch (err) {
-    console.error('初始化数据失败:', err)
+    console.error('加载任务列表失败:', err)
   }
 
   // 4. 监听后端事件
@@ -157,7 +174,58 @@ onMounted(async () => {
   // 5. 监听窗口重新聚焦与唤醒事件，用户复制链接切回软件时毫秒级自动感应，杜绝后台无谓轮询触发系统隐私告警
   window.addEventListener('focus', checkAndAutoParseClipboard)
   EventsOn('app:wakeup', checkAndAutoParseClipboard)
-})
+}
+
+function friendlyLicenseMessage(message: string) {
+  if (!message) return '激活失败，请检查激活码后重试'
+  if (message.includes('cannot connect') || message.includes('unreachable') || message.includes('timeout')) {
+    return '暂时无法连接激活服务器，请检查网络后重试'
+  }
+  if (message.includes('invalid license') || message.includes('卡密不存在')) {
+    return '激活码无效，请检查是否输入正确'
+  }
+  return message
+}
+
+async function checkLicense() {
+  licenseChecking.value = true
+  try {
+    const result: any = await CheckLicense(false)
+    isLicensed.value = !!result?.success
+    licenseStatus.value = result?.data || null
+    licenseMessage.value = result?.success ? '' : friendlyLicenseMessage(result?.message || '')
+    if (isLicensed.value) await initializeAuthorizedApp()
+  } catch (err: any) {
+    isLicensed.value = false
+    licenseMessage.value = friendlyLicenseMessage(err?.message || String(err))
+  } finally {
+    licenseChecking.value = false
+  }
+}
+
+async function activateLicense() {
+  const key = licenseKey.value.trim()
+  if (!key || isActivating.value) return
+  isActivating.value = true
+  licenseMessage.value = ''
+  try {
+    const result: any = await ActivateLicense(key)
+    if (!result?.success) {
+      licenseMessage.value = friendlyLicenseMessage(result?.message || '')
+      return
+    }
+    isLicensed.value = true
+    licenseStatus.value = result?.data || null
+    licenseKey.value = ''
+    await initializeAuthorizedApp()
+  } catch (err: any) {
+    licenseMessage.value = friendlyLicenseMessage(err?.message || String(err))
+  } finally {
+    isActivating.value = false
+  }
+}
+
+onMounted(checkLicense)
 
 onUnmounted(() => {
   if (clipboardTimer) clearInterval(clipboardTimer)
@@ -303,15 +371,27 @@ async function handleEpisodeBatchSubmit(selectedCids: number[], quality: string,
 
 // 队列操作
 async function onPauseTask(id: string) {
-  await PauseTask(id)
+  try {
+    await PauseTask(id)
+  } catch (err: any) {
+    showToast('暂停失败: ' + (err?.message || err), 'error')
+  }
 }
 
 async function onResumeTask(id: string) {
-  await ResumeTask(id)
+  try {
+    await ResumeTask(id)
+  } catch (err: any) {
+    showToast('继续失败: ' + (err?.message || err), 'error')
+  }
 }
 
 async function onCancelTask(id: string) {
-  await CancelTask(id)
+  try {
+    await CancelTask(id)
+  } catch (err: any) {
+    showToast('取消失败: ' + (err?.message || err), 'error')
+  }
 }
 
 async function onDeleteTask(id: string, deleteFile: boolean = false) {
@@ -340,11 +420,19 @@ async function confirmMissingFileClean() {
 }
 
 async function onPauseAll() {
-  await PauseAllTasks()
+  try {
+    await PauseAllTasks()
+  } catch (err: any) {
+    showToast('全部暂停失败: ' + (err?.message || err), 'error')
+  }
 }
 
 async function onResumeAll() {
-  await ResumeAllTasks()
+  try {
+    await ResumeAllTasks()
+  } catch (err: any) {
+    showToast('全部继续失败: ' + (err?.message || err), 'error')
+  }
 }
 
 async function onClearCompleted(deleteFiles: boolean = false) {
@@ -394,10 +482,17 @@ function handleLogoutSuccess() {
     quickParseRef.value.refreshQualities()
   }
 }
+
+function handleLicenseDeactivated() {
+  isLicensed.value = false
+  licenseStatus.value = null
+  licenseMessage.value = '本机已解绑，可以输入其他激活码'
+  activeTab.value = 'parse'
+}
 </script>
 
 <template>
-  <div class="app-layout">
+  <div v-if="isLicensed" class="app-layout">
     <!-- Left Navigation Sidebar -->
     <Sidebar
       :active-tab="activeTab"
@@ -462,8 +557,10 @@ function handleLogoutSuccess() {
         <div v-show="activeTab === 'settings'" class="tab-view">
           <SettingsView
             :initial-settings="settings"
+            :license-status="licenseStatus"
             @settings-saved="(s) => settings = s"
             @show-toast="showToast"
+            @license-deactivated="handleLicenseDeactivated"
           />
         </div>
       </main>
@@ -527,9 +624,90 @@ function handleLogoutSuccess() {
       @action-clipboard="handleClipboardAction"
     />
   </div>
+
+  <div v-else class="license-screen">
+    <div class="license-glow license-glow-pink"></div>
+    <div class="license-glow license-glow-blue"></div>
+    <form class="license-card" @submit.prevent="activateLicense">
+      <img src="./assets/images/logo-universal.png" class="license-logo" alt="BBDown Pro" />
+      <div class="license-eyebrow">BBDOWN PRO</div>
+      <h1>{{ licenseChecking ? '正在检查授权' : '激活专业版' }}</h1>
+      <p class="license-copy">
+        {{ licenseChecking ? '正在读取本机授权，请稍候…' : '首次激活需要联网，成功后可在断网环境正常使用。' }}
+      </p>
+      <template v-if="!licenseChecking">
+        <label class="license-field">
+          <span>激活码</span>
+          <input
+            v-model="licenseKey"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="例如：PRO-XXXX-XXXX-XXXX"
+            autofocus
+          />
+        </label>
+        <p v-if="licenseMessage" class="license-error">{{ licenseMessage }}</p>
+        <button class="btn-primary license-submit" type="submit" :disabled="!licenseKey.trim() || isActivating">
+          {{ isActivating ? '正在激活…' : '立即激活' }}
+        </button>
+        <p class="license-help">没有激活码？请联系卖家购买。换机时可由卖家在后台解绑旧设备。</p>
+      </template>
+      <div v-else class="license-loader"></div>
+    </form>
+  </div>
 </template>
 
 <style scoped>
+.license-screen {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: #0c0e14;
+}
+
+.license-glow {
+  position: absolute;
+  width: 360px;
+  height: 360px;
+  border-radius: 50%;
+  filter: blur(100px);
+  opacity: 0.13;
+}
+
+.license-glow-pink { left: -100px; top: -120px; background: var(--bili-pink); }
+.license-glow-blue { right: -100px; bottom: -120px; background: var(--bili-blue); }
+
+.license-card {
+  position: relative;
+  z-index: 1;
+  width: min(410px, calc(100vw - 48px));
+  padding: 32px;
+  border-radius: 22px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(24, 29, 43, 0.82);
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(20px);
+  text-align: center;
+}
+
+.license-logo { width: 68px; height: 68px; object-fit: contain; margin-bottom: 10px; }
+.license-eyebrow { color: var(--bili-pink); font-size: 10px; font-weight: 800; letter-spacing: 2.4px; }
+.license-card h1 { margin: 9px 0 7px; font-size: 24px; color: var(--text-primary); }
+.license-copy { margin: 0 0 22px; color: var(--text-secondary); font-size: 13px; line-height: 1.65; }
+.license-field { display: block; text-align: left; }
+.license-field span { display: block; margin-bottom: 7px; color: var(--text-secondary); font-size: 12px; font-weight: 600; }
+.license-field input { width: 100%; height: 43px; padding: 0 13px; text-transform: uppercase; letter-spacing: 0.6px; }
+.license-error { margin: 10px 0 0; color: #f87171; font-size: 12px; line-height: 1.5; text-align: left; }
+.license-submit { width: 100%; height: 42px; margin-top: 16px; }
+.license-submit:disabled { opacity: 0.5; cursor: default; }
+.license-help { margin: 15px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.6; }
+.license-loader { width: 24px; height: 24px; margin: 8px auto 0; border: 2px solid rgba(255,255,255,.12); border-top-color: var(--bili-pink); border-radius: 50%; animation: licenseSpin .7s linear infinite; }
+@keyframes licenseSpin { to { transform: rotate(360deg); } }
+
 .app-layout {
   display: flex;
   width: 100vw;

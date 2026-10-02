@@ -2,9 +2,12 @@ package downloader
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/Eyevinn/mp4ff/mp4"
 	"github.com/mewkiz/flac/frame"
@@ -50,11 +53,34 @@ func IsRawFlac(filePath string) bool {
 // PackageRawFlacToFMP4 将裸 FLAC 音频流转换为标准的 fMP4 音频流
 // 采用 ISO BMFF fLaC / dfLa 规范，无需外部工具，纯 Go 毫秒级封装
 func PackageRawFlacToFMP4(rawFlacPath, outFmp4Path string) error {
+	return PackageRawFlacToFMP4Context(context.Background(), rawFlacPath, outFmp4Path)
+}
+
+func PackageRawFlacToFMP4Context(ctx context.Context, rawFlacPath, outFmp4Path string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(rawFlacPath) == "" || strings.TrimSpace(outFmp4Path) == "" {
+		return fmt.Errorf("FLAC 输入或输出路径为空")
+	}
+	if filepath.Clean(rawFlacPath) == filepath.Clean(outFmp4Path) {
+		return fmt.Errorf("FLAC 输入与输出路径不能相同")
+	}
+	if err := os.MkdirAll(filepath.Dir(outFmp4Path), 0755); err != nil {
+		return fmt.Errorf("创建输出目录失败: %w", err)
+	}
 	f, err := os.Open(rawFlacPath)
 	if err != nil {
 		return fmt.Errorf("打开裸 FLAC 文件失败: %w", err)
 	}
 	defer f.Close()
+	fileInfo, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("获取裸 FLAC 文件大小失败: %w", err)
+	}
 
 	// 1. 校验并读取 FLAC 头部与 STREAMINFO 元数据 (兼容 ID3v2 标签)
 	var buf [4]byte
@@ -85,6 +111,9 @@ func PackageRawFlacToFMP4(rawFlacPath, outFmp4Path string) error {
 	var streamInfo *meta.StreamInfo
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		var hdr [4]byte
 		if _, err := io.ReadFull(f, hdr[:]); err != nil {
 			return fmt.Errorf("读取 FLAC 元数据块头失败: %w", err)
@@ -121,12 +150,25 @@ func PackageRawFlacToFMP4(rawFlacPath, outFmp4Path string) error {
 		return fmt.Errorf("缺失有效的 STREAMINFO 元数据")
 	}
 
-	// 2. 初始化目标 fMP4 输出文件
-	outFh, err := os.OpenFile(outFmp4Path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// 2. 初始化同目录事务性临时 fMP4 输出文件；只有全部音频帧封装并
+	// 同步成功后才替换最终目标，避免失败时破坏已有成品。
+	outFh, err := os.CreateTemp(filepath.Dir(outFmp4Path), ".bbdown-flac-*")
 	if err != nil {
 		return fmt.Errorf("创建输出 fMP4 文件失败: %w", err)
 	}
-	defer outFh.Close()
+	tmpOutputPath := outFh.Name()
+	if err := outFh.Chmod(0644); err != nil {
+		_ = outFh.Close()
+		_ = os.Remove(tmpOutputPath)
+		return fmt.Errorf("设置输出 fMP4 权限失败: %w", err)
+	}
+	outputComplete := false
+	defer func() {
+		_ = outFh.Close()
+		if !outputComplete {
+			_ = os.Remove(tmpOutputPath)
+		}
+	}()
 
 	timescale := streamInfo.SampleRate
 	const audioTrackID = uint32(1)
@@ -181,18 +223,33 @@ func PackageRawFlacToFMP4(rawFlacPath, outFmp4Path string) error {
 	const framesPerFragment = 50
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// 一些带 ID3 的 FLAC 文件会在音频帧之后追加标准 128 字节 ID3v1 标签；
+		// 它不是 FLAC 帧，必须在 EOF 前识别并正常忽略。
+		if hasTrailingID3v1Tag(f, fileInfo.Size()) {
+			break
+		}
+
 		var frag *mp4.Fragment
 		framesInFrag := 0
 		for framesInFrag < framesPerFragment {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			var frameBuf bytes.Buffer
 			tee := io.TeeReader(f, &frameBuf)
 
 			flacFrame, parseErr := frame.Parse(tee)
 			if parseErr != nil {
-				if parseErr == io.EOF || parseErr == io.ErrUnexpectedEOF {
+				// 只有在下一帧开始前已经干净到达 EOF 才是正常结束；
+				// parser 已经消费过字节却返回 EOF/UnexpectedEOF，说明末帧被截断，
+				// 不能把已有帧封装后报告为成功。
+				if parseErr == io.EOF && frameBuf.Len() == 0 {
 					break
 				}
-				break
+				return fmt.Errorf("解析 FLAC 音频帧失败 (已读取 %d 字节): %w", frameBuf.Len(), parseErr)
 			}
 
 			frameData := frameBuf.Bytes()
@@ -242,11 +299,30 @@ func PackageRawFlacToFMP4(rawFlacPath, outFmp4Path string) error {
 	}
 
 	if totalFrames == 0 {
-		_ = outFh.Close()
-		_ = os.Remove(outFmp4Path)
 		return fmt.Errorf("FLAC 音频流不完整或损坏: 未解析到任何有效音频帧")
 	}
 
-	_ = outFh.Sync()
+	if err := outFh.Sync(); err != nil {
+		return fmt.Errorf("同步输出 fMP4 文件失败: %w", err)
+	}
+	if err := outFh.Close(); err != nil {
+		return fmt.Errorf("关闭输出 fMP4 文件失败: %w", err)
+	}
+	if err := copyOrRenameContext(ctx, tmpOutputPath, outFmp4Path); err != nil {
+		return fmt.Errorf("移动输出 fMP4 文件失败: %w", err)
+	}
+	outputComplete = true
 	return nil
+}
+
+func hasTrailingID3v1Tag(f *os.File, fileSize int64) bool {
+	pos, err := f.Seek(0, io.SeekCurrent)
+	if err != nil || fileSize-pos != 128 {
+		return false
+	}
+	var signature [3]byte
+	if _, err := f.ReadAt(signature[:], pos); err != nil {
+		return false
+	}
+	return string(signature[:]) == "TAG"
 }

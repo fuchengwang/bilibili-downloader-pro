@@ -42,6 +42,9 @@ func TestPureGoMuxerAcrossCodecs(t *testing.T) {
 		t.Run("PureGoMux_"+codec, func(t *testing.T) {
 			sel, err := biliClient.FetchStreamSelection(ctx, ep.BVID, ep.AID, ep.CID, ep.EPID, false, "80", codec)
 			if err != nil {
+				if strings.Contains(err.Error(), "未找到满足条件的可用视频轨") {
+					t.Skipf("[%s] 当前账号/视频未提供该编码，跳过实机封装", codec)
+				}
 				t.Fatalf("[%s] FetchStreamSelection err: %v", codec, err)
 			}
 
@@ -256,5 +259,3 @@ func TestWindowsCopyCleanup(t *testing.T) {
 		t.Fatalf("Windows 复制降级后未能删除源临时文件，存在磁盘泄漏风险: %s", srcFile)
 	}
 }
-
-

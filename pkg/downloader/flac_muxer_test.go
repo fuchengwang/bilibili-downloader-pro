@@ -68,6 +68,11 @@ func TestRawFlacConversionAndMuxingMatrix(t *testing.T) {
 	for _, flacPath := range flacFiles {
 		baseName := filepath.Base(flacPath)
 		t.Run("FLAC_"+baseName, func(t *testing.T) {
+			if baseName == "id3.flac" {
+				// mewkiz/flac 的该 fixture 只用于验证 ID3v2 元数据跳过，
+				// 其音频区本身是截短样本，不能作为完整封装输入。
+				t.Skip("ID3 metadata-only fixture has truncated audio frames")
+			}
 			// 1. 测试 IsRawFlac 判定
 			if !IsRawFlac(flacPath) {
 				t.Fatalf("[%s] IsRawFlac 判定失败，预期为 true", baseName)
@@ -247,4 +252,35 @@ func TestPackageRawFlac_ValidStreamInfoButNoFrames(t *testing.T) {
 		t.Fatalf("红灯触发：无任何有效音频帧的 FLAC 文件不应返回 nil，当前代码静默返回了 nil 并生成了空 fMP4")
 	}
 	t.Logf("绿灯：成功拦截无有效音频帧的 FLAC 文件，返回错误: %v", err)
+}
+
+func TestPackageRawFlac_RejectsTruncatedFrame(t *testing.T) {
+	flacModDir := findGoModuleDir("github.com/mewkiz/flac")
+	if flacModDir == "" {
+		flacModDir = "/Users/fucheng/Tools/go/pkg/mod/github.com/mewkiz/flac@v1.0.14"
+	}
+	samplePath := filepath.Join(flacModDir, "testdata", "love.flac")
+	data, err := os.ReadFile(samplePath)
+	if err != nil || len(data) < 100 {
+		t.Skip("valid FLAC fixture not found, skipping")
+	}
+
+	tmpDir := t.TempDir()
+	truncatedPath := filepath.Join(tmpDir, "truncated.flac")
+	if err := os.WriteFile(truncatedPath, data[:len(data)-1], 0644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(tmpDir, "truncated.m4s")
+	oldOutput := []byte("existing output must survive a failed conversion")
+	if err := os.WriteFile(outPath, oldOutput, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := PackageRawFlacToFMP4(truncatedPath, outPath); err == nil {
+		t.Fatal("截去 FLAC 末尾字节后不应继续生成成功的 fMP4")
+	}
+	if actual, readErr := os.ReadFile(outPath); readErr != nil {
+		t.Fatalf("截断 FLAC 失败后应保留原有输出: %v", readErr)
+	} else if string(actual) != string(oldOutput) {
+		t.Fatalf("截断 FLAC 失败后不应覆盖原有输出: got %q, want %q", actual, oldOutput)
+	}
 }
