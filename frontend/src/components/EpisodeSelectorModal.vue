@@ -41,7 +41,8 @@ onMounted(async () => {
         ep0.aid || props.detail.aid,
         ep0.cid,
         ep0.epid || 0,
-        props.detail.type === 'bangumi'
+        props.detail.type === 'bangumi',
+        props.detail.type === 'cheese'
       )
       if (qList) {
         availableQualities.value = qList
@@ -136,8 +137,8 @@ function handleSubmit() {
         <div class="header-title-box">
           <Layers class="header-icon" :size="20" />
           <div class="title-col">
-            <h2 class="title-text">分集选择与批量下载</h2>
-            <span class="sub-text">{{ detail.title }} (共 {{ detail.totalParts }} 集)</span>
+            <h2 class="title-text">{{ detail.type === 'cheese' ? '课时选择与批量下载' : '分集选择与批量下载' }}</h2>
+            <span class="sub-text">{{ detail.title }} (共 {{ detail.totalParts }} {{ detail.type === 'cheese' ? '课时' : '集' }})</span>
           </div>
         </div>
         <button class="btn-icon close-btn" @click="emit('close')" title="关闭">
@@ -217,7 +218,7 @@ function handleSubmit() {
 
           <div class="ep-content">
             <div class="ep-top">
-              <span class="ep-index">P{{ ep.index }}</span>
+              <span class="ep-index">{{ detail.type === 'cheese' ? '课' : 'P' }}{{ ep.index }}</span>
               <span v-if="ep.badge" class="badge badge-pink ep-badge">{{ ep.badge }}</span>
               <span class="ep-duration">
                 <Clock :size="11" />
@@ -232,7 +233,7 @@ function handleSubmit() {
       <!-- Modal Footer -->
       <div class="modal-footer">
         <div class="footer-stats">
-          已选择 <span class="highlight-num">{{ selectedList.length }}</span> / {{ detail.totalParts }} 集
+          已选择 <span class="highlight-num">{{ selectedList.length }}</span> / {{ detail.totalParts }} {{ detail.type === 'cheese' ? '课时' : '集' }}
         </div>
 
         <div class="footer-actions">
@@ -243,7 +244,7 @@ function handleSubmit() {
             @click="handleSubmit"
           >
             <Download :size="15" />
-            <span>开始下载 (已选 {{ selectedList.length }} 集)</span>
+            <span>开始下载 (已选 {{ selectedList.length }} {{ detail.type === 'cheese' ? '课时' : '集' }})</span>
           </button>
         </div>
       </div>

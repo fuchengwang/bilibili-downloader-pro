@@ -23,7 +23,7 @@ func main() {
 		ServerURL:            "https://47.97.111.181:8090",
 		AppID:                "bbdown-pro",
 		AppName:              "BBDown Pro",
-		ClientVersion:        "1.1.7",
+		ClientVersion:        "1.1.8",
 		Timeout:              10 * time.Second,
 		OfflineGraceDays:     30,
 		AutoVerifyInterval:   24 * time.Hour,

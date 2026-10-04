@@ -21,6 +21,7 @@ type DownloadTask struct {
 	CID             int64      `json:"cid"`             // CID
 	EPID            int64      `json:"epid"`            // 番剧 EPID
 	IsBangumi       bool       `json:"isBangumi"`       // 是否为番剧
+	IsCheese        bool       `json:"isCheese"`        // 是否为课堂课程
 	Title           string     `json:"title"`           // 视频主标题
 	PartTitle       string     `json:"partTitle"`       // 分P/分集标题
 	Cover           string     `json:"cover"`           // 封面图 URL
@@ -55,6 +56,7 @@ type DownloadRequest struct {
 	Title         string  `json:"title"`
 	Cover         string  `json:"cover"`
 	IsBangumi     bool    `json:"isBangumi"`
+	IsCheese      bool    `json:"isCheese"`
 	TargetQuality string  `json:"targetQuality"` // 用户选定的画质 ("highest", "120", "80", etc.)
 	TargetCodec   string  `json:"targetCodec"`   // 用户选定的编码 ("auto", "AVC", "HEVC", "AV1")
 	Episodes      []int64 `json:"episodes"`      // 选中的集数 CID 列表

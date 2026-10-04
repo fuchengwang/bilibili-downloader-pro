@@ -171,11 +171,11 @@ func (a *App) ParseURL(input string) (*bilibili.VideoDetail, error) {
 }
 
 // GetAvailableQualities 获取指定分P在当前登录状态下的全部可用清晰度
-func (a *App) GetAvailableQualities(bvid string, aid, cid, epid int64, isBangumi bool) ([]bilibili.QualityOption, error) {
+func (a *App) GetAvailableQualities(bvid string, aid, cid, epid int64, isBangumi, isCheese bool) ([]bilibili.QualityOption, error) {
 	if err := a.requireLicense(); err != nil {
 		return nil, err
 	}
-	return a.biliClient.GetAvailableQualities(a.ctx, bvid, aid, cid, epid, isBangumi)
+	return a.biliClient.GetAvailableQualities(a.ctx, bvid, aid, cid, epid, isBangumi, isCheese)
 }
 
 // AddDownloadTasks 添加一集或多集下载任务
@@ -187,8 +187,11 @@ func (a *App) AddDownloadTasks(req downloader.DownloadRequest) ([]*downloader.Do
 	// 先获取视频完整信息以匹配选中的 CID
 	var targetType bilibili.TargetType = bilibili.TargetNormal
 	var epidStr, ssidStr string
-	if req.IsBangumi {
+	if req.IsBangumi || req.IsCheese {
 		targetType = bilibili.TargetBangumi
+		if req.IsCheese {
+			targetType = bilibili.TargetCheese
+		}
 		if req.EPID > 0 {
 			epidStr = fmt.Sprintf("%d", req.EPID)
 		}
@@ -205,6 +208,11 @@ func (a *App) AddDownloadTasks(req downloader.DownloadRequest) ([]*downloader.Do
 	})
 	if err != nil {
 		return nil, fmt.Errorf("无法获取集数元数据: %w", err)
+	}
+	req.IsCheese = detail.Type == bilibili.TargetCheese
+	req.IsBangumi = detail.Type == bilibili.TargetBangumi
+	if req.IsCheese {
+		req.SSID = detail.SeasonID
 	}
 
 	cidMap := make(map[int64]bool)

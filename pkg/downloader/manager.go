@@ -182,6 +182,8 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 			continue
 		}
 		if existing.CID == ep.CID &&
+			existing.IsCheese == req.IsCheese &&
+			existing.IsBangumi == req.IsBangumi &&
 			existing.TargetQuality == req.TargetQuality &&
 			existing.TargetCodec == req.TargetCodec {
 			if existing.Status == StatusCompleted {
@@ -235,12 +237,14 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 	var baseFileName string
 
 	// 判断是否为多集/合集/多P视频
-	isMulti := len(req.Episodes) > 1 || req.IsBangumi || strings.Contains(ep.Badge, "合集") || ep.Index > 1 || (ep.Title != "" && ep.Title != req.Title)
+	isMulti := len(req.Episodes) > 1 || req.IsBangumi || req.IsCheese || strings.Contains(ep.Badge, "合集") || ep.Index > 1 || (ep.Title != "" && ep.Title != req.Title)
 
 	if isMulti {
 		// 合集/多P：保存在以合集标题 + [BVID] 命名的独立子文件夹内，彻底防止不同UP主同名合集相互覆盖
 		collFolder := sanitizedTitle
-		if ep.BVID != "" && !strings.Contains(collFolder, ep.BVID) {
+		if req.IsCheese && req.SSID > 0 {
+			collFolder = fmt.Sprintf("%s [ss%d]", sanitizedTitle, req.SSID)
+		} else if ep.BVID != "" && !strings.Contains(collFolder, ep.BVID) {
 			collFolder = fmt.Sprintf("%s [%s]", sanitizedTitle, ep.BVID)
 		}
 		outDir = filepath.Join(cfg.DownloadDir, collFolder)
@@ -279,6 +283,7 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 		CID:           ep.CID,
 		EPID:          ep.EPID,
 		IsBangumi:     req.IsBangumi,
+		IsCheese:      req.IsCheese,
 		Title:         req.Title,
 		PartTitle:     ep.Title,
 		Cover:         ep.Cover,
@@ -796,7 +801,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	}()
 
 	// 1. 获取最新媒体直链
-	sel, err := m.biliClient.FetchStreamSelection(ctx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, task.TargetQuality, task.TargetCodec)
+	sel, err := m.biliClient.FetchStreamSelection(ctx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, task.TargetQuality, task.TargetCodec, task.IsCheese)
 	if err != nil {
 		if ctx.Err() != nil {
 			return
@@ -804,6 +809,18 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, fmt.Sprintf("解析媒体流失败: %v", err))
 		return
 	}
+	courseKeys, err := m.biliClient.ResolveCourseKeys(ctx, sel)
+	if err != nil {
+		if ctx.Err() == nil {
+			m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, fmt.Sprintf("课堂播放授权失败: %v", err))
+		}
+		return
+	}
+	defer func() {
+		for _, key := range courseKeys {
+			clear(key)
+		}
+	}()
 
 	m.mu.Lock()
 	worker, owned := m.workers[task.ID]
@@ -838,7 +855,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	// 2. 准备视频与音频下载器 (支持候选 CDN 自动故障转移与 403 自动刷新换链)
 	vDownloader := NewStreamDownloader(sel.VideoURLs, task.VideoTmpPath)
 	vDownloader.SetURLRefresher(func(refCtx context.Context) ([]string, error) {
-		newSel, rErr := m.biliClient.FetchStreamSelection(refCtx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, task.TargetQuality, task.TargetCodec)
+		newSel, rErr := m.biliClient.FetchStreamSelection(refCtx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, task.TargetQuality, task.TargetCodec, task.IsCheese)
 		if rErr != nil {
 			return nil, rErr
 		}
@@ -851,7 +868,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	if len(sel.AudioURLs) > 0 && sel.AudioURLs[0] != "" {
 		aDownloader = NewStreamDownloader(sel.AudioURLs, task.AudioTmpPath)
 		aDownloader.SetURLRefresher(func(refCtx context.Context) ([]string, error) {
-			newSel, rErr := m.biliClient.FetchStreamSelection(refCtx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, task.TargetQuality, task.TargetCodec)
+			newSel, rErr := m.biliClient.FetchStreamSelection(refCtx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, task.TargetQuality, task.TargetCodec, task.IsCheese)
 			if rErr != nil {
 				return nil, rErr
 			}
@@ -920,6 +937,31 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		audioMergePath = ""
 	}
 	m.mu.RUnlock()
+	if task.IsCheese {
+		clearVideo, processErr := prepareCourseStreamContext(ctx, vTmpP, courseKeys)
+		if processErr == nil {
+			if clearVideo != vTmpP {
+				defer os.Remove(clearVideo)
+			}
+			vTmpP = clearVideo
+			if audioMergePath != "" {
+				clearAudio, audioErr := prepareCourseStreamContext(ctx, audioMergePath, courseKeys)
+				processErr = audioErr
+				if audioErr == nil {
+					if clearAudio != audioMergePath {
+						defer os.Remove(clearAudio)
+					}
+					audioMergePath = clearAudio
+				}
+			}
+		}
+		if processErr != nil {
+			if ctx.Err() == nil {
+				m.setWorkerTaskStatus(task, token, StatusMerging, StatusError, fmt.Sprintf("课堂音视频处理失败: %v", processErr))
+			}
+			return
+		}
+	}
 
 	// 6. 原生纯 Go 极速无损音视频复用合成 (0 依赖，毫秒级完成)
 	mergeFunc := m.mergeFunc
@@ -937,7 +979,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 
 	// 确保临时 downloading 文件在任何平台都被彻底清理干净
 	if cfg.DeleteTempFiles {
-		cleanupStreamArtifacts(vTmpP)
+		cleanupStreamArtifacts(task.VideoTmpPath)
 		cleanupStreamArtifacts(aTmpP)
 	}
 

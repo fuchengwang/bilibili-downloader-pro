@@ -42,8 +42,8 @@ export function GenerateQRCode() {
   return window['go']['main']['App']['GenerateQRCode']();
 }
 
-export function GetAvailableQualities(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['GetAvailableQualities'](arg1, arg2, arg3, arg4, arg5);
+export function GetAvailableQualities(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['GetAvailableQualities'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function GetSettings() {

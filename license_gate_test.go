@@ -34,7 +34,7 @@ func TestCoreDownloadEntryPointsRejectUnlicensedCalls(t *testing.T) {
 	if _, err := app.ParseURL("BV1xx"); err == nil || !strings.Contains(err.Error(), "尚未激活") {
 		t.Fatalf("ParseURL should reject an unlicensed call, got %v", err)
 	}
-	if _, err := app.GetAvailableQualities("BV1xx", 1, 2, 0, false); err == nil {
+	if _, err := app.GetAvailableQualities("BV1xx", 1, 2, 0, false, false); err == nil {
 		t.Fatal("GetAvailableQualities should reject an unlicensed call")
 	}
 	if _, err := app.AddDownloadTasks(downloader.DownloadRequest{}); err == nil {

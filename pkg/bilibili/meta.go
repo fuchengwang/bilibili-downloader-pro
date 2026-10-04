@@ -27,7 +27,8 @@ type EpisodeInfo struct {
 
 // VideoDetail 包含视频主体信息及全部分集列表
 type VideoDetail struct {
-	Type         TargetType    `json:"type"`         // normal / bangumi
+	Type         TargetType    `json:"type"`         // normal / bangumi / cheese
+	SeasonID     int64         `json:"seasonId"`     // 课堂课程 ID
 	BVID         string        `json:"bvid"`         // 稿件 BVID
 	AID          int64         `json:"aid"`          // 稿件 AID
 	Title        string        `json:"title"`        // 主标题
@@ -152,6 +153,9 @@ type seasonResponse struct {
 func (c *Client) FetchVideoDetail(ctx context.Context, target *ParsedTarget) (*VideoDetail, error) {
 	if target == nil {
 		return nil, fmt.Errorf("解析目标不能为空")
+	}
+	if target.Type == TargetCheese {
+		return c.fetchCheeseDetail(ctx, target)
 	}
 	if target.Type == TargetBangumi || target.EPID != "" || target.SSID != "" {
 		return c.fetchBangumiDetail(ctx, target)

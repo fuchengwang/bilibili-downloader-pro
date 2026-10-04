@@ -121,7 +121,8 @@ async function fetchQualities(detail: bilibili.VideoDetail, ep: bilibili.Episode
       ep.aid || detail.aid,
       ep.cid,
       ep.epid || 0,
-      detail.type === 'bangumi'
+      detail.type === 'bangumi',
+      detail.type === 'cheese'
     )
     // ref wraps details in a reactive proxy; compare the underlying objects so
     // the response to the initial parse is not mistaken for a stale request.
@@ -238,7 +239,7 @@ defineExpose({
           <span class="duration-badge">{{ parsedDetail.durationStr }}</span>
           <span v-if="parsedDetail.isCollection" class="collection-badge">
             <Layers :size="11" />
-            <span>合集 · {{ parsedDetail.totalParts }}P</span>
+            <span>{{ parsedDetail.type === 'cheese' ? '课堂' : '合集' }} · {{ parsedDetail.totalParts }}{{ parsedDetail.type === 'cheese' ? '课时' : 'P' }}</span>
           </span>
         </div>
       </div>
@@ -264,7 +265,7 @@ defineExpose({
             </span>
           </div>
 
-          <div class="stats-box">
+          <div v-if="parsedDetail.type !== 'cheese'" class="stats-box">
             <span class="stat-item" title="播放量">
               <Eye :size="12" />
               <span>{{ formatCount(parsedDetail.viewCount) }}</span>
@@ -313,7 +314,7 @@ defineExpose({
               @click="handleOpenEpisodes"
             >
               <Layers :size="15" />
-              <span>选择分集 (共 {{ parsedDetail.totalParts }} 集)</span>
+              <span>{{ parsedDetail.type === 'cheese' ? '选择课时' : '选择分集' }} (共 {{ parsedDetail.totalParts }} {{ parsedDetail.type === 'cheese' ? '课时' : '集' }})</span>
             </button>
 
             <button
@@ -336,7 +337,7 @@ defineExpose({
       </div>
       <h3 class="guide-title">粘贴视频链接即可高速下载</h3>
       <p class="guide-desc">
-        支持普通视频、番剧动漫、多P合集、电影纪录片以及短链接（b23.tv）
+        支持普通视频、番剧动漫、多P合集、课堂课程、电影纪录片以及短链接（b23.tv）
       </p>
       <div class="features-row">
         <div class="feature-item">

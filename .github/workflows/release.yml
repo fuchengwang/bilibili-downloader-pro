@@ -37,7 +37,7 @@ jobs:
           cache-dependency-path: frontend/pnpm-lock.yaml
       - run: pnpm --dir frontend install --frozen-lockfile
       - name: Test frontend quality loading
-        run: pnpm --dir frontend exec node --test tests/quality-loading.test.mjs
+        run: pnpm --dir frontend exec node --test tests/quality-loading.test.mjs tests/clipboard.test.mjs
       - run: pnpm --dir frontend run build
       - name: Test backend
         run: go test -race -short ./...

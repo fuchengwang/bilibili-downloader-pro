@@ -57,6 +57,11 @@ func (c *Client) ParseInput(ctx context.Context, input string) (*ParsedTarget, e
 			input = finalURL
 		}
 	}
+	lower := strings.ToLower(input)
+	episodeType := TargetBangumi
+	if strings.Contains(lower, "/cheese/") || strings.HasPrefix(lower, "cheese/") {
+		episodeType = TargetCheese
+	}
 
 	// 尝试从 URL 查询参数中解析分 P 序号
 	if u, err := url.Parse(input); err == nil {
@@ -67,7 +72,7 @@ func (c *Client) ParseInput(ctx context.Context, input string) (*ParsedTarget, e
 		}
 		if epVal := u.Query().Get("ep_id"); epVal != "" {
 			return &ParsedTarget{
-				Type:     TargetBangumi,
+				Type:     episodeType,
 				RawInput: input,
 				EPID:     epVal,
 				Page:     page,
@@ -75,7 +80,7 @@ func (c *Client) ParseInput(ctx context.Context, input string) (*ParsedTarget, e
 		}
 		if ssVal := u.Query().Get("season_id"); ssVal != "" {
 			return &ParsedTarget{
-				Type:     TargetBangumi,
+				Type:     episodeType,
 				RawInput: input,
 				SSID:     ssVal,
 				Page:     page,
@@ -83,13 +88,11 @@ func (c *Client) ParseInput(ctx context.Context, input string) (*ParsedTarget, e
 		}
 	}
 
-	lower := strings.ToLower(input)
-
-	// 3. 判断是否为番剧/影视链接 (bangumi/play/ep... 或 ss...)
-	if strings.Contains(lower, "bangumi/play") || strings.Contains(lower, "/ep") || strings.Contains(lower, "/ss") {
+	// Course and bangumi IDs occupy different namespaces despite sharing ep/ss.
+	if episodeType == TargetCheese || strings.Contains(lower, "bangumi/play") || strings.Contains(lower, "/ep") || strings.Contains(lower, "/ss") {
 		if m := reEP.FindStringSubmatch(input); len(m) > 1 {
 			return &ParsedTarget{
-				Type:     TargetBangumi,
+				Type:     episodeType,
 				RawInput: input,
 				EPID:     m[1],
 				Page:     page,
@@ -97,11 +100,14 @@ func (c *Client) ParseInput(ctx context.Context, input string) (*ParsedTarget, e
 		}
 		if m := reSS.FindStringSubmatch(input); len(m) > 1 {
 			return &ParsedTarget{
-				Type:     TargetBangumi,
+				Type:     episodeType,
 				RawInput: input,
 				SSID:     m[1],
 				Page:     page,
 			}, nil
+		}
+		if episodeType == TargetCheese {
+			return nil, fmt.Errorf("课堂链接缺少课时 ep 号或课程 ss 号")
 		}
 	}
 

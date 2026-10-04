@@ -120,6 +120,7 @@ export namespace bilibili {
 	}
 	export class VideoDetail {
 	    type: string;
+	    seasonId: number;
 	    bvid: string;
 	    aid: number;
 	    title: string;
@@ -146,6 +147,7 @@ export namespace bilibili {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
+	        this.seasonId = source["seasonId"];
 	        this.bvid = source["bvid"];
 	        this.aid = source["aid"];
 	        this.title = source["title"];
@@ -232,6 +234,7 @@ export namespace downloader {
 	    title: string;
 	    cover: string;
 	    isBangumi: boolean;
+	    isCheese: boolean;
 	    targetQuality: string;
 	    targetCodec: string;
 	    episodes: number[];
@@ -249,6 +252,7 @@ export namespace downloader {
 	        this.title = source["title"];
 	        this.cover = source["cover"];
 	        this.isBangumi = source["isBangumi"];
+	        this.isCheese = source["isCheese"];
 	        this.targetQuality = source["targetQuality"];
 	        this.targetCodec = source["targetCodec"];
 	        this.episodes = source["episodes"];
@@ -261,6 +265,7 @@ export namespace downloader {
 	    cid: number;
 	    epid: number;
 	    isBangumi: boolean;
+	    isCheese: boolean;
 	    title: string;
 	    partTitle: string;
 	    cover: string;
@@ -297,6 +302,7 @@ export namespace downloader {
 	        this.cid = source["cid"];
 	        this.epid = source["epid"];
 	        this.isBangumi = source["isBangumi"];
+	        this.isCheese = source["isCheese"];
 	        this.title = source["title"];
 	        this.partTitle = source["partTitle"];
 	        this.cover = source["cover"];

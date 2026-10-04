@@ -41,7 +41,7 @@ test('collection quality lookup uses the linked episode instead of the first', a
   ] }
   c.parsedDetail.value = raw
   const pending = c.fetchQualities(raw, c.currentEpisode(raw))
-  assert.deepEqual(requests[0].args, ['BVcurrent', 20, 200, 0, false])
+  assert.deepEqual(requests[0].args, ['BVcurrent', 20, 200, 0, false, false])
   requests[0].resolve([{ id: 32, label: '480P', isAvailable: true }])
   await pending
   assert.equal(c.availableQualities.value[0].id, 32)
@@ -57,6 +57,20 @@ test('initial parse accepts quality response after Vue wraps the raw detail', as
   await pending
   assert.deepEqual(toRaw(c.availableQualities.value), qualities)
   assert.equal(c.isFetchingQualities.value, false)
+})
+
+test('classroom quality lookup preserves the purchased lesson and source type', async () => {
+  const { context: c, requests } = harness()
+  const raw = { bvid: '', aid: 0, type: 'cheese', defaultPage: 2, episodes: [
+    { aid: 11, cid: 101, epid: 1001 },
+    { aid: 22, cid: 202, epid: 2002 },
+  ] }
+  c.parsedDetail.value = raw
+  const pending = c.fetchQualities(raw, c.currentEpisode(raw))
+  assert.deepEqual(requests[0].args, ['', 22, 202, 2002, false, true])
+  requests[0].resolve(qualities)
+  await pending
+  assert.deepEqual(toRaw(c.availableQualities.value), qualities)
 })
 
 test('login refresh accepts proxy detail and ignores previous request', async () => {

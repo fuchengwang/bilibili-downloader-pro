@@ -46,10 +46,16 @@ macOS 构建必须配置仓库 Actions Secrets：
 
 下载器会检查番剧播放接口的错误码和试看标记。仅返回试看流时，任务会报告权限不足，不会把试看内容当作完整视频保存。会员登录凭据正常传递给播放接口，实际可下载画质以服务端返回的媒体流为准。
 
+课堂课程支持 `https://www.bilibili.com/cheese/play/ep课时编号` 和 `.../ss课程编号`，也可从剪贴板自动识别。解析会获取完整课时目录，支持单课时或批量下载。免费课和当前账号已购买且未过期的正式课均通过课堂播放接口获取媒体；课程购买权限独立于大会员，付费课须登录购买该课程的账号。试看和权限不足会明确报错。
+
+受保护的课堂媒体按官方播放器的授权流程处理后，再由内置 Go 合并器生成 MP4。播放授权参数只保留在当前任务内存中，不保存到任务记录；暂停或处理失败时保留原始下载缓存，恢复任务后重新确认账号播放权限。
+
 可复现的验证命令：
 
 - `pnpm --dir frontend run build`
 - `go test -race -short ./...`：包括播放接口兼容、权限/试看处理、断点下载、音频缺失与分片偏移回归测试。
+- `pnpm --dir frontend exec node --test tests/quality-loading.test.mjs tests/clipboard.test.mjs`：验证选中课时的画质查询及剪贴板自动解析。
+- `BBDOWN_CHEESE_TEST_EPISODES=课时编号列表 go test ./pkg/downloader -run '^TestLiveCheeseDownload$' -v`：用当前登录账号实际下载选定课堂课时（编号用逗号分隔），缓存和成品与正常下载记录隔离。
 - `BBDOWN_MEDIA_TESTS=1 go test ./pkg/downloader -run TestGeneratedMediaMerge -v`：需要本机 FFmpeg 和 FFprobe，生成 AVC/HEVC/AV1 + AAC/FLAC/E-AC-3 样本，检查合并后的双轨道、时长及完整解码。应用本身的合并流程仍使用纯 Go。
 
 v1.1.5 发布前已在线下载并合并普通视频与《工作细胞》公开第 1 集，完整解码通过；无会员权限的第 2 集被正确识别为试看。没有可用的大会员账号，因此会员完整内容的实际下载尚未实测，已用接口样例验证会话传递与高清流选择。

@@ -52,18 +52,20 @@ type StreamSelection struct {
 	Duration     int      `json:"duration"`
 	VideoSize    int64    `json:"videoSize"`
 	AudioSize    int64    `json:"audioSize"`
+	courseDRM    *courseStreamDRM
 }
 
 type DashStream struct {
-	ID        int      `json:"id"`
-	BaseURL   string   `json:"base_url"`
-	BackupURL []string `json:"backup_url"`
-	Bandwidth int64    `json:"bandwidth"`
-	Codecid   int      `json:"codecid"`
-	Codecs    string   `json:"codecs"`
-	Width     int      `json:"width"`
-	Height    int      `json:"height"`
-	FrameRate string   `json:"frame_rate"`
+	ID         int      `json:"id"`
+	BaseURL    string   `json:"base_url"`
+	BackupURL  []string `json:"backup_url"`
+	Bandwidth  int64    `json:"bandwidth"`
+	Codecid    int      `json:"codecid"`
+	Codecs     string   `json:"codecs"`
+	Width      int      `json:"width"`
+	Height     int      `json:"height"`
+	FrameRate  string   `json:"frame_rate"`
+	BiliDRMURI string   `json:"bilidrm_uri"`
 }
 
 // Some HTML and PGC player responses use camelCase stream URL keys.
@@ -123,6 +125,7 @@ type playurlData struct {
 	AcceptDescription []string    `json:"accept_description"`
 	AcceptQuality     []int       `json:"accept_quality"`
 	IsPreview         previewFlag `json:"is_preview"`
+	IsDRM             previewFlag `json:"is_drm"`
 	SupportFormats    []struct {
 		Quality        int      `json:"quality"`
 		Format         string   `json:"format"`
@@ -212,8 +215,8 @@ func getDefaultQualityOptions(isBangumi bool) []QualityOption {
 }
 
 // GetAvailableQualities 获取当前分P在当前登录状态下所有可选的清晰度列表
-func (c *Client) GetAvailableQualities(ctx context.Context, bvid string, aid, cid, epid int64, isBangumi bool) ([]QualityOption, error) {
-	resp, err := c.requestPlayURL(ctx, bvid, aid, cid, epid, isBangumi)
+func (c *Client) GetAvailableQualities(ctx context.Context, bvid string, aid, cid, epid int64, isBangumi bool, cheese ...bool) ([]QualityOption, error) {
+	resp, err := c.requestPlayURL(ctx, bvid, aid, cid, epid, isBangumi, cheese...)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +271,10 @@ func (c *Client) GetAvailableQualities(ctx context.Context, bvid string, aid, ci
 		}
 
 		isVip := qn >= 112 || qn == 74 || qn == 126 || qn == 125 // 8K, 4K, 1080P60, 1080P+, 720P60, 杜比, HDR 需要大会员
-		if isBangumi && qn >= 80 {
+		if len(cheese) > 0 && cheese[0] {
+			isVip = false // Course purchase rights are independent of VIP membership.
+		}
+		if isBangumi && qn >= 80 && !(len(cheese) > 0 && cheese[0]) {
 			isVip = true
 		}
 		isLogin := qn >= 64 // 1080P, 720P 均需要登录
@@ -290,8 +296,8 @@ func (c *Client) GetAvailableQualities(ctx context.Context, bvid string, aid, ci
 }
 
 // FetchStreamSelection 根据指定清晰度偏好与编码偏好获取视频和音频下载直链
-func (c *Client) FetchStreamSelection(ctx context.Context, bvid string, aid, cid, epid int64, isBangumi bool, targetQuality string, targetCodec string) (*StreamSelection, error) {
-	resp, err := c.requestPlayURL(ctx, bvid, aid, cid, epid, isBangumi)
+func (c *Client) FetchStreamSelection(ctx context.Context, bvid string, aid, cid, epid int64, isBangumi bool, targetQuality string, targetCodec string, cheese ...bool) (*StreamSelection, error) {
+	resp, err := c.requestPlayURL(ctx, bvid, aid, cid, epid, isBangumi, cheese...)
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +350,7 @@ func (c *Client) FetchStreamSelection(ctx context.Context, bvid string, aid, cid
 		codecName = "AVC"
 	}
 
-	return &StreamSelection{
+	selection := &StreamSelection{
 		VideoURL:     videoURL,
 		VideoURLs:    videoURLs,
 		AudioURL:     audioURL,
@@ -355,11 +361,25 @@ func (c *Client) FetchStreamSelection(ctx context.Context, bvid string, aid, cid
 		Width:        video.Width,
 		Height:       video.Height,
 		Duration:     dash.Duration,
-	}, nil
+	}
+	if len(cheese) > 0 && cheese[0] && resp.Data != nil && bool(resp.Data.IsDRM) {
+		var uris []string
+		if video.BiliDRMURI != "" {
+			uris = append(uris, video.BiliDRMURI)
+		}
+		if audio != nil && audio.BiliDRMURI != "" {
+			uris = append(uris, audio.BiliDRMURI)
+		}
+		selection.courseDRM = &courseStreamDRM{uris: uris}
+	}
+	return selection, nil
 }
 
 // requestPlayURL 具备多层降级策略的媒体流请求函数
-func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid int64, isBangumi bool) (*playurlAPIResp, error) {
+func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid int64, isBangumi bool, cheese ...bool) (*playurlAPIResp, error) {
+	if len(cheese) > 0 && cheese[0] {
+		return c.requestCheesePlayURL(ctx, aid, cid, epid)
+	}
 	// 1. 番剧使用 pgc/player API
 	if isBangumi || epid > 0 {
 		ts := strconv.FormatInt(time.Now().Unix(), 10)

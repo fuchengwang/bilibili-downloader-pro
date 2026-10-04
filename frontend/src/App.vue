@@ -91,15 +91,13 @@ async function checkAndAutoParseClipboard() {
     // 判断是否包含 B站 特征
     const isBili = /(bilibili\.com|b23\.tv|BV1[a-zA-Z0-9]{9}|av\d+|ep\d+|ss\d+)/i.test(text)
     if (isBili) {
-      lastParsedClipboardText = text
-      // 切换到解析页面并自动解析
-      showToast(`检测到剪贴板链接，已自动填入解析: ${text.substring(0, 32)}...`, 'info')
       activeTab.value = 'parse'
-      nextTick(() => {
-        if (quickParseRef.value?.setAndParse) {
-          quickParseRef.value.setAndParse(text)
-        }
-      })
+      await nextTick()
+      if (quickParseRef.value?.setAndParse) {
+        lastParsedClipboardText = text
+        quickParseRef.value.setAndParse(text)
+        showToast(`检测到剪贴板链接，已自动填入解析: ${text.substring(0, 32)}...`, 'info')
+      }
     }
   } catch (e) {
     // ignore
@@ -172,6 +170,7 @@ async function initializeAuthorizedApp() {
   // 5. 监听窗口重新聚焦与唤醒事件，用户复制链接切回软件时毫秒级自动感应，杜绝后台无谓轮询触发系统隐私告警
   window.addEventListener('focus', checkAndAutoParseClipboard)
   EventsOn('app:wakeup', checkAndAutoParseClipboard)
+  nextTick(checkAndAutoParseClipboard)
 }
 
 function friendlyLicenseMessage(message: string) {
@@ -346,6 +345,8 @@ async function handleQuickDownloadSingle(
       title: detail.title,
       cover: ep.cover || detail.cover,
       isBangumi: detail.type === 'bangumi',
+      isCheese: detail.type === 'cheese',
+      ssid: detail.seasonId || 0,
       targetQuality: quality,
       targetCodec: codec,
       episodes: [ep.cid],
@@ -371,6 +372,8 @@ async function handleEpisodeBatchSubmit(selectedCids: number[], quality: string,
       title: detail.title,
       cover: detail.cover,
       isBangumi: detail.type === 'bangumi',
+      isCheese: detail.type === 'cheese',
+      ssid: detail.seasonId || 0,
       targetQuality: quality,
       targetCodec: codec,
       episodes: selectedCids,
