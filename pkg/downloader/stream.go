@@ -22,17 +22,36 @@ type URLRefresher func(ctx context.Context) ([]string, error)
 
 // StreamDownloader 单个媒体流 (视频或音频) 的高可靠断点续传下载器
 type StreamDownloader struct {
-	client     *http.Client
-	urls       []string
-	urlIdx     int
-	targetPath string
-	totalSize  int64
-	refresher  URLRefresher
+	client             *http.Client
+	urls               []string
+	urlIdx             int
+	targetPath         string
+	totalSize          int64
+	refresher          URLRefresher
+	restoredProgressFn DownloadProgressFn
+	totalSizeFn        func(int64)
 }
 
 // SetURLRefresher 配置直链鉴权失效时的动态刷新器
 func (s *StreamDownloader) SetURLRefresher(fn URLRefresher) {
 	s.refresher = fn
+}
+
+// Restored bytes contribute to completion, but are not new network traffic.
+// With no separate callback, retain the legacy combined progress behavior.
+func (s *StreamDownloader) SetRestoredProgressCallback(fn DownloadProgressFn) {
+	s.restoredProgressFn = fn
+}
+
+func (s *StreamDownloader) SetTotalSizeCallback(fn func(int64)) {
+	s.totalSizeFn = fn
+}
+
+func (s *StreamDownloader) setTotalSize(size int64) {
+	s.totalSize = size
+	if s.totalSizeFn != nil {
+		s.totalSizeFn(size)
+	}
 }
 
 // NewStreamDownloader 创建单流下载器 (支持多候选 CDN 节点与长连接 Transport)
@@ -180,7 +199,7 @@ func (s *StreamDownloader) GetTotalSize(ctx context.Context) (int64, error) {
 			_, _, total, pErr := parseContentRange(cr)
 			if pErr == nil && total > 0 {
 				_ = resp.Body.Close()
-				s.totalSize = total
+				s.setTotalSize(total)
 				s.urlIdx = (s.urlIdx + i) % len(s.urls)
 				return total, nil
 			}
@@ -202,7 +221,7 @@ func (s *StreamDownloader) GetTotalSize(ctx context.Context) (int64, error) {
 			}
 			if resp.ContentLength > 0 {
 				_ = resp.Body.Close()
-				s.totalSize = resp.ContentLength
+				s.setTotalSize(resp.ContentLength)
 				s.urlIdx = (s.urlIdx + i) % len(s.urls)
 				return resp.ContentLength, nil
 			}
@@ -297,21 +316,25 @@ func (s *StreamDownloader) DownloadWithConcurrency(ctx context.Context, concurre
 
 	var progressMu sync.Mutex
 	var parallelReported int64
-	reportProgress := func(delta int64) {
+	report := func(delta int64, restored bool) {
 		if delta == 0 {
 			return
 		}
 		progressMu.Lock()
 		parallelReported += delta
-		if progressFn != nil {
+		if restored && s.restoredProgressFn != nil {
+			s.restoredProgressFn(delta)
+		} else if progressFn != nil {
 			progressFn(delta)
 		}
 		progressMu.Unlock()
 	}
+	reportProgress := func(delta int64) { report(delta, false) }
+	reportRestored := func(delta int64) { report(delta, true) }
 
 	for i := range segments {
 		segment := &segments[i]
-		if err := prepareSegmentPart(ctx, segment, initialSize, reportProgress); err != nil {
+		if err := prepareSegmentPart(ctx, segment, initialSize, reportRestored); err != nil {
 			progressMu.Lock()
 			reported := parallelReported
 			progressMu.Unlock()
@@ -493,6 +516,12 @@ func copyExact(src io.Reader, dst io.Writer, count int64) (int64, error) {
 }
 
 func copyExactContext(ctx context.Context, src io.Reader, dst io.Writer, count int64) (int64, error) {
+	return copyExactContextProgress(ctx, src, dst, count, nil)
+}
+
+// copyExactContextProgress reports bytes as they are written, rather than waiting
+// for the whole HTTP range to finish. Callers still control UI notification frequency.
+func copyExactContextProgress(ctx context.Context, src io.Reader, dst io.Writer, count int64, progressFn DownloadProgressFn) (int64, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -512,6 +541,9 @@ func copyExactContext(ctx context.Context, src io.Reader, dst io.Writer, count i
 				return written, writeErr
 			}
 			written += int64(n)
+			if progressFn != nil {
+				progressFn(int64(n))
+			}
 		}
 		if err != nil {
 			if err == io.EOF && written == count {
@@ -670,7 +702,7 @@ func (s *StreamDownloader) downloadSegment(ctx context.Context, segment *streamS
 			_ = resp.Body.Close()
 			return err
 		}
-		written, copyErr := copyExact(resp.Body, part, declaredLength)
+		written, copyErr := copyExactContextProgress(ctx, resp.Body, part, declaredLength, progressFn)
 		closeErr := part.Close()
 		bodyCloseErr := resp.Body.Close()
 		if closeErr != nil && copyErr == nil {
@@ -678,9 +710,6 @@ func (s *StreamDownloader) downloadSegment(ctx context.Context, segment *streamS
 		}
 		if bodyCloseErr != nil && copyErr == nil {
 			copyErr = bodyCloseErr
-		}
-		if written > 0 && progressFn != nil {
-			progressFn(written)
 		}
 		if copyErr != nil || written != declaredLength {
 			urlIdx = (urlIdx + 1) % len(urls)
@@ -895,7 +924,7 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 			if cr != "" {
 				_, _, rTotal, pErr := parseContentRange(cr)
 				if pErr == nil && rTotal > 0 && s.totalSize <= 0 {
-					s.totalSize = rTotal
+					s.setTotalSize(rTotal)
 				}
 			}
 
@@ -1051,13 +1080,13 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 			}
 
 			if rTotal > 0 && s.totalSize <= 0 {
-				s.totalSize = rTotal
+				s.setTotalSize(rTotal)
 			}
 			if s.totalSize <= 0 && resp.ContentLength > 0 {
 				// 200/206 的 Content-Length 只有在表示当前实体长度时才可用于
 				// 完整性校验；206 的总长度未知时不能把分片长度当作文件总长。
 				if resp.StatusCode == http.StatusOK {
-					s.totalSize = resp.ContentLength
+					s.setTotalSize(resp.ContentLength)
 				}
 			}
 			// 只有已有本地前缀时才允许追加；从头开始的 206 仍必须覆盖写入。
@@ -1067,7 +1096,7 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 			isAppend = false
 			// 200 响应的 Content-Length 表示完整实体长度，可以作为最终完整性校验依据。
 			if s.totalSize <= 0 && resp.ContentLength > 0 {
-				s.totalSize = resp.ContentLength
+				s.setTotalSize(resp.ContentLength)
 			}
 			// 扣除之前已计入的字节进度，消除从头重写导致的进度统计漂移
 			if startOffset > 0 && progressFn != nil {

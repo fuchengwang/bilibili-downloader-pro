@@ -35,7 +35,7 @@ onMounted(async () => {
   // 加载画质列表
   if (props.detail.episodes && props.detail.episodes.length > 0) {
     try {
-      const ep0 = props.detail.episodes[0]
+      const ep0 = props.detail.episodes[Math.max(0, (props.detail.defaultPage || 1) - 1)] || props.detail.episodes[0]
       const qList = await GetAvailableQualities(
         ep0.bvid || props.detail.bvid,
         ep0.aid || props.detail.aid,
@@ -198,6 +198,7 @@ function handleSubmit() {
             </select>
           </div>
         </div>
+        <p class="quality-note">画质列表对应当前链接的视频；合集各集可能不同。“最高画质”按每集可用画质分别选择。</p>
       </div>
 
       <!-- Episode Grid View -->
@@ -352,6 +353,13 @@ function handleSubmit() {
   height: 28px;
   padding: 0 8px;
   font-size: 11.5px;
+}
+
+.quality-note {
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .tool-options {

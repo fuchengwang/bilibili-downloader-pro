@@ -28,6 +28,7 @@ type Settings struct {
 type ConfigManager struct {
 	mu       sync.RWMutex
 	dir      string
+	cacheDir string
 	settings Settings
 }
 
@@ -118,6 +119,7 @@ func NewConfigManager(dir string) *ConfigManager {
 	_ = os.MkdirAll(dir, 0755)
 	mgr := &ConfigManager{
 		dir:      dir,
+		cacheDir: filepath.Join(dir, "cache", "downloads"),
 		settings: defaultSettings(filepath.Join(dir, "downloads")),
 	}
 	_ = mgr.load()
@@ -128,14 +130,25 @@ func NewConfigManager(dir string) *ConfigManager {
 func GetManager() *ConfigManager {
 	once.Do(func() {
 		cfgDir := GetConfigDir()
+		cacheRoot, err := os.UserCacheDir()
+		if err != nil {
+			cacheRoot = os.TempDir()
+		}
 		mgr := &ConfigManager{
 			dir:      cfgDir,
+			cacheDir: filepath.Join(cacheRoot, "bilibili-downloader-pro", "downloads"),
 			settings: defaultSettings(DefaultDownloadDir()),
 		}
 		_ = mgr.load()
 		instance = mgr
 	})
 	return instance
+}
+
+// GetDownloadCacheDir returns the platform cache location; isolated managers keep
+// their temporary downloads inside their own sandbox.
+func (m *ConfigManager) GetDownloadCacheDir() string {
+	return m.cacheDir
 }
 
 func (m *ConfigManager) load() error {

@@ -44,6 +44,25 @@ func TestFetchVideoDetailRejectsNilTarget(t *testing.T) {
 	}
 }
 
+func TestCollectionDefaultPageTracksRequestedVideo(t *testing.T) {
+	client := playurlClient(t, `{"code":0,"data":{"bvid":"BVcurrent","aid":20,"title":"current video","pages":[{"cid":200,"page":1}],"ugc_season":{"sections":[{"episodes":[{"bvid":"BVfirst","aid":10,"cid":100,"title":"first"},{"bvid":"BVcurrent","aid":20,"cid":200,"title":"current"}]}]}}}`, nil)
+	detail, err := client.FetchVideoDetail(context.Background(), &ParsedTarget{Type: TargetNormal, BVID: "BVcurrent", Page: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.DefaultPage != 2 || detail.Episodes[detail.DefaultPage-1].BVID != detail.BVID {
+		t.Fatalf("collection quality lookup points at another video: %+v", detail)
+	}
+}
+
+func TestOrdinaryMultiPagePreservesRequestedPage(t *testing.T) {
+	client := playurlClient(t, `{"code":0,"data":{"bvid":"BVpages","aid":20,"pages":[{"cid":100,"page":1},{"cid":200,"page":2}]}}`, nil)
+	detail, err := client.FetchVideoDetail(context.Background(), &ParsedTarget{Type: TargetNormal, BVID: "BVpages", Page: 2})
+	if err != nil || detail.DefaultPage != 2 || detail.Episodes[detail.DefaultPage-1].CID != 200 {
+		t.Fatalf("requested page lost: %+v %v", detail, err)
+	}
+}
+
 // TestFetchBangumiDetail_DurationEndToEnd 测试解析端到端番剧响应时时长字段转换为秒
 func TestFetchBangumiDetail_DurationEndToEnd(t *testing.T) {
 	mockResp := seasonResponse{

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, toRaw } from 'vue'
 import {
   Search,
   ClipboardPaste,
@@ -123,7 +123,9 @@ async function fetchQualities(detail: bilibili.VideoDetail, ep: bilibili.Episode
       ep.epid || 0,
       detail.type === 'bangumi'
     )
-    if (request !== qualityRequest || parsedDetail.value !== detail) return
+    // ref wraps details in a reactive proxy; compare the underlying objects so
+    // the response to the initial parse is not mistaken for a stale request.
+    if (request !== qualityRequest || toRaw(parsedDetail.value) !== toRaw(detail)) return
     availableQualities.value = qList || []
 
     // 校验当前选中的清晰度是否不可用

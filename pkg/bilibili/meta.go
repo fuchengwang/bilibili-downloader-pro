@@ -236,6 +236,14 @@ func (c *Client) fetchNormalDetail(ctx context.Context, target *ParsedTarget) (*
 				idx++
 			}
 		}
+		// A collection consists of separate BVIDs. The URL refers to one of
+		// them, not necessarily the first entry in the collection.
+		for i, ep := range episodes {
+			if ep.BVID == d.Bvid || (ep.AID > 0 && ep.AID == d.Aid) {
+				detail.DefaultPage = i + 1
+				break
+			}
+		}
 	} else if len(d.Pages) > 0 {
 		// 2. 普通分 P 视频
 		if len(d.Pages) > 1 {

@@ -25,6 +25,7 @@ type workerHandle struct {
 	token       string
 	cancel      context.CancelFunc
 	invalidated bool
+	done        <-chan struct{}
 }
 
 // DownloadManager 负责整个下载队列、并发调度与状态管理
@@ -56,6 +57,7 @@ func NewDownloadManager(cfgMgr *config.ConfigManager) *DownloadManager {
 		mergeFunc:    MergeAudioVideoContext,
 	}
 	m.loadTasks()
+	m.reconcileTaskStorage()
 	return m
 }
 
@@ -174,16 +176,55 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 		return nil, fmt.Errorf("创建下载目录失败: %w", err)
 	}
 
-	// 检查是否已有相同 CID + 画质 + 编码的活跃任务在排队、下载或合成中
+	// 相同参数复用原任务；完成文件仍存在时不重复下载。
 	for _, existing := range m.tasks {
 		if existing == nil {
 			continue
 		}
 		if existing.CID == ep.CID &&
 			existing.TargetQuality == req.TargetQuality &&
-			existing.TargetCodec == req.TargetCodec &&
-			(existing.Status == StatusQueued || existing.Status == StatusDownloading || existing.Status == StatusMerging) {
+			existing.TargetCodec == req.TargetCodec {
+			if existing.Status == StatusCompleted {
+				// Changing the destination is an explicit request for another copy.
+				if !pathWithin(cfg.DownloadDir, existing.OutputPath) {
+					continue
+				}
+				info, statErr := os.Stat(existing.OutputPath)
+				if statErr == nil && info.Mode().IsRegular() && info.Size() > 0 {
+					m.mu.Unlock()
+					return existing, nil
+				}
+				if statErr != nil && !os.IsNotExist(statErr) {
+					m.mu.Unlock()
+					return nil, fmt.Errorf("检查已下载文件失败: %w", statErr)
+				}
+				before := *existing
+				existing.Status = StatusQueued
+				existing.CompletedAt = 0
+				existing.Progress = 0
+				existing.DownloadedBytes = 0
+				existing.Speed = 0
+				existing.SpeedStr = "0 KB/s"
+				existing.SizeStr = "准备中..."
+				existing.ErrorMsg = ""
+				m.mu.Unlock()
+				if err := m.SaveTasks(); err != nil {
+					m.mu.Lock()
+					*existing = before
+					m.mu.Unlock()
+					return nil, err
+				}
+				m.notifyChange(existing)
+				m.triggerSchedule()
+				return existing, nil
+			}
+			resume := existing.Status == StatusPaused || existing.Status == StatusError || existing.Status == StatusCancelled
 			m.mu.Unlock()
+			if resume {
+				if err := m.ResumeTask(existing.ID); err != nil {
+					return nil, err
+				}
+			}
 			return existing, nil
 		}
 	}
@@ -228,13 +269,8 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 	outPath := utils.EnsureSafePathLength(outDir, baseFileName, ".mp4")
 
 	taskID := newUUID()
-	shortID := taskID
-	if len(shortID) > 8 {
-		shortID = shortID[:8]
-	}
-	// 临时文件加入任务短 ID，保证多任务即使同名也 100% 物理隔离
-	vTmp := filepath.Join(outDir, fmt.Sprintf("%s.%s.video.downloading", baseFileName, shortID))
-	aTmp := filepath.Join(outDir, fmt.Sprintf("%s.%s.audio.downloading", baseFileName, shortID))
+	// 每个任务独占缓存子目录，下载目录只保存成品。
+	vTmp, aTmp := m.cachePaths(taskID)
 
 	task := &DownloadTask{
 		ID:            taskID,
@@ -386,7 +422,9 @@ func (m *DownloadManager) CancelTask(id string) error {
 // DeleteTask 从列表中彻底删除任务
 func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 	m.mu.Lock()
+	var workerDone <-chan struct{}
 	if w, ok := m.workers[id]; ok {
+		workerDone = w.done
 		if w.cancel != nil {
 			w.cancel()
 		}
@@ -442,8 +480,11 @@ func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 
 		// 异步安全清理临时文件，带指数退避重试确保 Windows 句柄释放后成功清理 (杜绝 EACCES 权限泄漏)
 		go func(vTmp, aTmp, outPath string, delFile bool) {
-			safeRemoveWithRetry(vTmp)
-			safeRemoveWithRetry(aTmp)
+			if workerDone != nil {
+				<-workerDone
+			}
+			cleanupStreamArtifacts(vTmp)
+			cleanupStreamArtifacts(aTmp)
 			if delFile && outPath != "" {
 				safeRemoveWithRetry(outPath)
 				// 如果所在目录是合集子目录且已经为空，顺便清理空文件夹 (严格排除主下载目录)
@@ -532,6 +573,7 @@ func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) error {
 	m.mu.Lock()
 	var remaining []*DownloadTask
 	var removed []*DownloadTask
+	workerDone := make(map[string]<-chan struct{})
 	for _, t := range m.tasks {
 		if t == nil {
 			continue
@@ -541,6 +583,7 @@ func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) error {
 		} else {
 			removed = append(removed, t)
 			if w, ok := m.workers[t.ID]; ok {
+				workerDone[t.ID] = w.done
 				if w.cancel != nil {
 					w.cancel()
 				}
@@ -580,6 +623,13 @@ func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) error {
 		return persistErr
 	}
 
+	for _, t := range removed {
+		if done := workerDone[t.ID]; done != nil {
+			<-done
+		}
+		cleanupStreamArtifacts(t.VideoTmpPath)
+		cleanupStreamArtifacts(t.AudioTmpPath)
+	}
 	if deleteFile {
 
 		dirsToCheck := make(map[string]bool)
@@ -591,8 +641,6 @@ func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) error {
 					dirsToCheck[dir] = true
 				}
 			}
-			safeRemoveWithRetry(t.VideoTmpPath)
-			safeRemoveWithRetry(t.AudioTmpPath)
 		}
 		// 顺便清理可能残留的空合集目录 (严格排除主下载目录)
 		rootDir := filepath.Clean(m.cfgMgr.Get().DownloadDir)
@@ -682,11 +730,15 @@ func (m *DownloadManager) checkAndSpawnTasks() {
 
 	token := newUUID()
 	ctx, cancel := context.WithCancel(context.Background())
-	m.workers[nextTask.ID] = workerHandle{token: token, cancel: cancel}
+	done := make(chan struct{})
+	m.workers[nextTask.ID] = workerHandle{token: token, cancel: cancel, done: done}
 	m.mu.Unlock()
 
 	m.notifyChange(nextTask)
-	go m.runTask(ctx, nextTask, token)
+	go func() {
+		defer close(done)
+		m.runTask(ctx, nextTask, token)
+	}()
 }
 
 func (m *DownloadManager) setTaskStatus(task *DownloadTask, status TaskStatus, errorMsg string) {
@@ -754,6 +806,11 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	}
 
 	m.mu.Lock()
+	worker, owned := m.workers[task.ID]
+	if !owned || worker.invalidated || worker.token != token || task.Status != StatusDownloading {
+		m.mu.Unlock()
+		return
+	}
 	task.QualityID = sel.QualityID
 	task.QualityLabel = sel.QualityLabel
 	task.Codec = sel.Codec
@@ -767,7 +824,15 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 			task.OutputPath = utils.EnsureSafePathLength(dir, fmt.Sprintf("%s %s", base, qTag), ".mp4")
 		}
 	}
+	outputPath, pathErr := m.availableOutputPathLocked(task.OutputPath, task.ID)
+	if pathErr == nil {
+		task.OutputPath = outputPath
+	}
 	m.mu.Unlock()
+	if pathErr != nil {
+		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, pathErr.Error())
+		return
+	}
 	m.persistTasks()
 
 	// 2. 准备视频与音频下载器 (支持候选 CDN 自动故障转移与 403 自动刷新换链)
@@ -795,89 +860,15 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		aSize, _ = aDownloader.GetTotalSize(ctx)
 	}
 
-	totalBytes := vSize + aSize
-
-	// 3. 统计已存在的部分大小
-	var vDownloaded, aDownloaded int64
-	if info, err := os.Stat(task.VideoTmpPath); err == nil {
-		vDownloaded = info.Size()
+	// 3. Keep restored disk bytes separate from this run's network traffic.
+	progress := newTaskDownloadProgress(ctx, m, task, token, vSize, aSize, aDownloader != nil)
+	vDownloader.SetRestoredProgressCallback(func(delta int64) { progress.record(delta, false) })
+	vDownloader.SetTotalSizeCallback(func(size int64) { progress.setSize(true, size) })
+	if aDownloader != nil {
+		aDownloader.SetTotalSizeCallback(func(size int64) { progress.setSize(false, size) })
 	}
-	if info, err := os.Stat(task.AudioTmpPath); err == nil {
-		aDownloaded = info.Size()
-	}
-
-	m.mu.Lock()
-	task.TotalBytes = totalBytes
-	task.DownloadedBytes = vDownloaded + aDownloaded
-	m.mu.Unlock()
-
-	// 进度平滑计算
-	lastTime := time.Now()
-	var lastDownloaded = task.DownloadedBytes
-	var currentSpeed int64 = 0
-
-	progressTicker := time.NewTicker(250 * time.Millisecond)
-	defer progressTicker.Stop()
-
-	progressDone := make(chan struct{})
-	defer close(progressDone)
-	go func() {
-		for {
-			select {
-			case <-progressDone:
-				return
-			case <-progressTicker.C:
-				now := time.Now()
-				durationSec := now.Sub(lastTime).Seconds()
-				if durationSec > 0.1 {
-					m.mu.RLock()
-					currentDownloaded := task.DownloadedBytes
-					total := task.TotalBytes
-					m.mu.RUnlock()
-
-					delta := currentDownloaded - lastDownloaded
-					instantSpeed := int64(float64(delta) / durationSec)
-					// 指数移动平均 (EMA) 平滑速度
-					currentSpeed = int64(float64(currentSpeed)*0.7 + float64(instantSpeed)*0.3)
-					speedStr := utils.FormatSpeed(currentSpeed)
-
-					var progress float64
-					var sizeStr, etaStr string
-					if total > 0 {
-						progress = float64(currentDownloaded) * 100.0 / float64(total)
-						if progress > 100 {
-							progress = 100
-						}
-						sizeStr = fmt.Sprintf("%s / %s", utils.FormatBytes(currentDownloaded), utils.FormatBytes(total))
-
-						if currentSpeed > 0 {
-							remainBytes := total - currentDownloaded
-							if remainBytes > 0 {
-								sec := remainBytes / currentSpeed
-								etaStr = utils.FormatDuration(int(sec))
-							} else {
-								etaStr = "完成中"
-							}
-						}
-					} else {
-						sizeStr = utils.FormatBytes(currentDownloaded)
-					}
-
-					m.mu.Lock()
-					task.Speed = currentSpeed
-					task.SpeedStr = speedStr
-					task.Progress = progress
-					task.SizeStr = sizeStr
-					task.ETAStr = etaStr
-					m.mu.Unlock()
-
-					lastTime = now
-					lastDownloaded = currentDownloaded
-					m.notifyChange(task)
-				}
-			}
-		}
-	}()
+	stopProgress := progress.start()
+	defer stopProgress()
 
 	cfg := m.cfgMgr.Get()
 	threads := cfg.ThreadsPerTask
@@ -890,12 +881,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 
 	// 4. 下载视频轨 (大体积媒体流，使用多线程分片加速，带自动降级保护)
 	err = vDownloader.DownloadWithConcurrency(ctx, threads, func(delta int64) {
-		m.mu.Lock()
-		task.DownloadedBytes += delta
-		if task.DownloadedBytes < 0 {
-			task.DownloadedBytes = 0
-		}
-		m.mu.Unlock()
+		progress.record(delta, true)
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -908,12 +894,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	// 5. 下载音频轨 (小体积媒体流，使用单流平稳下载)
 	if aDownloader != nil {
 		err = aDownloader.DownloadSingleStream(ctx, func(delta int64) {
-			m.mu.Lock()
-			task.DownloadedBytes += delta
-			if task.DownloadedBytes < 0 {
-				task.DownloadedBytes = 0
-			}
-			m.mu.Unlock()
+			progress.record(delta, true)
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -924,6 +905,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		}
 	}
 	// 6. 合成音视频
+	stopProgress()
 	if !m.setWorkerTaskStatus(task, token, StatusDownloading, StatusMerging, "") {
 		return
 	}
@@ -955,10 +937,8 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 
 	// 确保临时 downloading 文件在任何平台都被彻底清理干净
 	if cfg.DeleteTempFiles {
-		_ = os.Remove(vTmpP)
-		if aTmpP != "" {
-			_ = os.Remove(aTmpP)
-		}
+		cleanupStreamArtifacts(vTmpP)
+		cleanupStreamArtifacts(aTmpP)
 	}
 
 	// 7. 标记任务完成

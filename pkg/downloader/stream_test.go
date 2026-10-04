@@ -547,6 +547,137 @@ func TestStreamDownloader_416WithZeroTotalSizeRecovery(t *testing.T) {
 	t.Logf("绿灯：totalSize 未知时遇 416 成功自愈下载")
 }
 
+func TestStreamDownloader_ReportsProgressBeforeResponseCompletes(t *testing.T) {
+	for _, concurrency := range []int{1, 4, 8} {
+		t.Run(fmt.Sprintf("threads-%d", concurrency), func(t *testing.T) {
+			data := bytes.Repeat([]byte("media"), 256*1024)
+			release := make(chan struct{})
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				start, end := 0, len(data)-1
+				if header := req.Header.Get("Range"); header != "" {
+					if _, err := fmt.Sscanf(header, "bytes=%d-%d", &start, &end); err != nil {
+						http.Error(w, "invalid range", http.StatusBadRequest)
+						return
+					}
+					w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
+				}
+				w.Header().Set("Content-Length", strconv.Itoa(end-start+1))
+				if req.Header.Get("Range") != "" {
+					w.WriteHeader(http.StatusPartialContent)
+				}
+				if start == 0 && end == 0 {
+					_, _ = w.Write(data[:1])
+					return
+				}
+				// Keep every response unfinished until the downloader reports real bytes.
+				firstEnd := start + 32*1024
+				_, _ = w.Write(data[start:firstEnd])
+				w.(http.Flusher).Flush()
+				select {
+				case <-release:
+					_, _ = w.Write(data[firstEnd : end+1])
+				case <-req.Context().Done():
+				}
+			}))
+			defer ts.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			released := false
+			defer func() {
+				if !released {
+					close(release)
+				}
+			}()
+
+			target := filepath.Join(t.TempDir(), "live-progress.downloading")
+			dl := NewStreamDownloader([]string{ts.URL}, target)
+			progress := make(chan int64, 1)
+			var total int64
+			done := make(chan error, 1)
+			go func() {
+				done <- dl.DownloadWithConcurrency(ctx, concurrency, func(delta int64) {
+					current := atomic.AddInt64(&total, delta)
+					select {
+					case progress <- current:
+					default:
+					}
+				})
+			}()
+			select {
+			case downloaded := <-progress:
+				if downloaded <= 0 || downloaded >= int64(len(data)) {
+					t.Fatalf("expected intermediate progress, got %d", downloaded)
+				}
+			case err := <-done:
+				t.Fatalf("download ended before reporting progress: %v", err)
+			case <-time.After(3 * time.Second):
+				t.Fatal("received bytes but no progress while responses were unfinished")
+			}
+			close(release)
+			released = true
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("download did not finish")
+			}
+			if got := atomic.LoadInt64(&total); got != int64(len(data)) {
+				t.Fatalf("progress counted bytes incorrectly: got %d, want %d", got, len(data))
+			}
+			actual, err := os.ReadFile(target)
+			if err != nil || !bytes.Equal(actual, data) {
+				t.Fatalf("downloaded content mismatch: %v", err)
+			}
+		})
+	}
+}
+
+func TestStreamDownloader_SegmentProgressAcrossRetry(t *testing.T) {
+	data := bytes.Repeat([]byte("media"), 128*1024)
+	const firstSize = 32 * 1024
+	var requests int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		start, end := 0, 0
+		if _, err := fmt.Sscanf(req.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			http.Error(w, "invalid range", http.StatusBadRequest)
+			return
+		}
+		attempt := atomic.AddInt32(&requests, 1)
+		if (attempt == 1 && start != 0) || (attempt == 2 && start != firstSize) {
+			t.Errorf("unexpected retry offset: attempt %d, start %d", attempt, start)
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
+		w.Header().Set("Content-Length", strconv.Itoa(end-start+1))
+		w.WriteHeader(http.StatusPartialContent)
+		if attempt == 1 {
+			// Truncate the response after reporting bytes; the retry must resume
+			// without counting those already written bytes for a second time.
+			_, _ = w.Write(data[:firstSize])
+			return
+		}
+		_, _ = w.Write(data[start : end+1])
+	}))
+	defer ts.Close()
+	dl := NewStreamDownloader([]string{ts.URL}, filepath.Join(t.TempDir(), "retry.downloading"))
+	dl.totalSize = int64(len(data))
+	segment := streamSegment{start: 0, end: int64(len(data) - 1), path: streamSegmentPath(dl.targetPath, 0)}
+	var progress int64
+	if err := dl.downloadSegment(context.Background(), &segment, func(delta int64) {
+		progress += delta
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 2 || progress != int64(len(data)) {
+		t.Fatalf("retry progress mismatch: requests %d, bytes %d, want %d", got, progress, len(data))
+	}
+	actual, err := os.ReadFile(segment.path)
+	if err != nil || !bytes.Equal(actual, data) {
+		t.Fatalf("retried segment content mismatch: %v", err)
+	}
+}
+
 func TestStreamDownloader_ConcurrentRangeDownloadAndCleanup(t *testing.T) {
 	data := make([]byte, 2*1024*1024)
 	for i := range data {

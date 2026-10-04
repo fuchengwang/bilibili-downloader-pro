@@ -351,10 +351,7 @@ async function handleQuickDownloadSingle(
       episodes: [ep.cid],
     }
     const added = await AddDownloadTasks(req)
-    if (added && added.length > 0) {
-      showToast(`已加入下载队列: ${ep.title}`, 'success')
-      activeTab.value = 'queue'
-    }
+    showDownloadResults(added || [])
   } catch (err: any) {
     showToast('添加任务失败: ' + err.message, 'error')
   }
@@ -380,12 +377,29 @@ async function handleEpisodeBatchSubmit(selectedCids: number[], quality: string,
     }
     const added = await AddDownloadTasks(req)
     showEpisodeModal.value = false
-    if (added && added.length > 0) {
-      showToast(`成功添加 ${added.length} 个任务至下载队列`, 'success')
-      activeTab.value = 'queue'
-    }
+    showDownloadResults(added || [])
   } catch (err: any) {
     showToast('批量添加任务失败: ' + err.message, 'error')
+  }
+}
+
+function showDownloadResults(results: downloader.DownloadTask[]) {
+  if (results.length === 0) return
+  for (const task of results) {
+    const idx = tasks.value.findIndex(t => t.id === task.id)
+    if (idx >= 0) tasks.value[idx] = task
+    else tasks.value.unshift(task)
+  }
+  const completed = results.filter(t => t.status === 'completed').length
+  const pending = results.length - completed
+  if (pending === 0) {
+    showToast('已下载，文件已存在，可在下载历史中播放', 'success')
+    activeTab.value = 'history'
+  } else {
+    showToast(completed > 0
+      ? `${pending} 个任务在下载队列中，${completed} 个已下载`
+      : `${pending} 个任务已在下载队列中`, 'success')
+    activeTab.value = 'queue'
   }
 }
 
