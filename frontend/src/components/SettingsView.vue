@@ -30,7 +30,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'settings-saved', s: config.Settings): void
   (e: 'show-toast', msg: string, type: 'success' | 'error' | 'info'): void
-  (e: 'license-deactivated'): void
+  (e: 'license-deactivated', key: string): void
   (e: 'theme-changed', value: string): void
 }>()
 
@@ -80,6 +80,7 @@ function maskLicenseKey(key?: string) {
 
 async function handleDeactivate() {
   if (isDeactivating.value) return
+  const key = props.licenseStatus?.license_key || ''
   isDeactivating.value = true
   deactivateError.value = ''
   try {
@@ -91,7 +92,7 @@ async function handleDeactivate() {
         : message
       return
     }
-    emit('license-deactivated')
+    emit('license-deactivated', key)
   } catch (err: any) {
     const message = err?.message || String(err)
     deactivateError.value = /connect|network|timeout|连接|网络/i.test(message)
@@ -325,7 +326,7 @@ async function handleSave() {
           <div class="license-summary">
             <div class="license-detail">
               <KeyRound :size="15" />
-              <div class="license-key-value"><span>激活码</span><strong>{{ showLicenseKey ? (licenseStatus?.license_key || '—') : maskLicenseKey(licenseStatus?.license_key) }}</strong></div>
+              <div class="license-key-value"><span>激活码</span><strong :class="{ 'selectable-license-key': showLicenseKey }">{{ showLicenseKey ? (licenseStatus?.license_key || '—') : maskLicenseKey(licenseStatus?.license_key) }}</strong></div>
               <button
                 class="license-key-toggle"
                 type="button"
@@ -539,6 +540,7 @@ async function handleSave() {
 .license-detail span { font-size: 10.5px; color: var(--text-muted); }
 .license-detail strong { overflow: hidden; color: var(--text-primary); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
 .license-key-value { flex: 1; min-width: 0; }
+.selectable-license-key { user-select: text; -webkit-user-select: text; }
 .license-key-toggle { flex-shrink: 0; padding: 5px; color: var(--text-muted); background: transparent; }
 .license-key-toggle:hover { color: var(--text-primary); background: var(--neutral-08); }
 .license-action-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 2px; }

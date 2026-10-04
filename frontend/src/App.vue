@@ -57,6 +57,8 @@ const licenseKey = ref('')
 const licenseMessage = ref('')
 const licenseStatus = ref<any>(null)
 const isActivating = ref(false)
+const activationCooldown = ref(0)
+let activationCooldownTimer: ReturnType<typeof setInterval> | null = null
 let appInitialized = false
 
 // Modals
@@ -184,17 +186,42 @@ function friendlyLicenseMessage(message: string) {
   return message
 }
 
+function setLicenseMessage(message: string) {
+  if (activationCooldownTimer) clearInterval(activationCooldownTimer)
+  activationCooldownTimer = null
+  activationCooldown.value = 0
+  const text = friendlyLicenseMessage(message)
+  licenseMessage.value = text
+  const match = text.match(/(\d+)\s*秒后/)
+  if (!match || !/请求过于频繁|安全保护/.test(text)) return
+  const seconds = Number(match[1])
+  if (seconds <= 0) return
+  const deadline = Date.now() + seconds * 1000
+  activationCooldown.value = seconds
+  activationCooldownTimer = setInterval(() => {
+    activationCooldown.value = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
+    if (activationCooldown.value > 0) {
+      licenseMessage.value = text.replace(/\d+\s*秒后/, `${activationCooldown.value} 秒后`)
+    } else {
+      clearInterval(activationCooldownTimer!)
+      activationCooldownTimer = null
+      licenseMessage.value = '等待时间已结束，可以重新激活'
+    }
+  }, 250)
+}
+
 async function checkLicense() {
   licenseChecking.value = true
   try {
     const result: any = await CheckLicense(false)
     isLicensed.value = !!result?.success
     licenseStatus.value = result?.data || null
-    licenseMessage.value = result?.success ? '' : friendlyLicenseMessage(result?.message || '')
+    if (result?.success) licenseMessage.value = ''
+    else setLicenseMessage(result?.message || '')
     if (isLicensed.value) await initializeAuthorizedApp()
   } catch (err: any) {
     isLicensed.value = false
-    licenseMessage.value = friendlyLicenseMessage(err?.message || String(err))
+    setLicenseMessage(err?.message || String(err))
   } finally {
     licenseChecking.value = false
   }
@@ -202,13 +229,13 @@ async function checkLicense() {
 
 async function activateLicense() {
   const key = licenseKey.value.trim()
-  if (!key || isActivating.value) return
+  if (!key || isActivating.value || activationCooldown.value > 0) return
   isActivating.value = true
   licenseMessage.value = ''
   try {
     const result: any = await ActivateLicense(key)
     if (!result?.success) {
-      licenseMessage.value = friendlyLicenseMessage(result?.message || '')
+      setLicenseMessage(result?.message || '')
       return
     }
     isLicensed.value = true
@@ -216,7 +243,7 @@ async function activateLicense() {
     licenseKey.value = ''
     await initializeAuthorizedApp()
   } catch (err: any) {
-    licenseMessage.value = friendlyLicenseMessage(err?.message || String(err))
+    setLicenseMessage(err?.message || String(err))
   } finally {
     isActivating.value = false
   }
@@ -248,6 +275,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (clipboardTimer) clearInterval(clipboardTimer)
+  if (activationCooldownTimer) clearInterval(activationCooldownTimer)
   window.removeEventListener('focus', checkAndAutoParseClipboard)
 })
 
@@ -520,10 +548,11 @@ function handleLogoutSuccess() {
   }
 }
 
-function handleLicenseDeactivated() {
+function handleLicenseDeactivated(key: string) {
+  licenseKey.value = key
   isLicensed.value = false
   licenseStatus.value = null
-  licenseMessage.value = '本机已解绑，可以输入其他激活码'
+  licenseMessage.value = '本机已解绑'
   activeTab.value = 'parse'
 }
 </script>
@@ -686,10 +715,10 @@ function handleLicenseDeactivated() {
           />
         </label>
         <p v-if="licenseMessage" class="license-error">{{ licenseMessage }}</p>
-        <button class="btn-primary license-submit" type="submit" :disabled="!licenseKey.trim() || isActivating">
+        <button class="btn-primary license-submit" type="submit" :disabled="!licenseKey.trim() || isActivating || activationCooldown > 0">
           {{ isActivating ? '正在激活…' : '立即激活' }}
         </button>
-        <p class="license-help">没有激活码？请联系卖家购买。换机时可由卖家在后台解绑旧设备。</p>
+        <p class="license-help">没有激活码？请联系卖家购买。</p>
       </template>
       <div v-else class="license-loader"></div>
     </form>
