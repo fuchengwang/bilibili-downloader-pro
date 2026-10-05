@@ -22,6 +22,10 @@ export function CheckFileExists(arg1) {
   return window['go']['main']['App']['CheckFileExists'](arg1);
 }
 
+export function CheckForUpdates() {
+  return window['go']['main']['App']['CheckForUpdates']();
+}
+
 export function CheckLicense(arg1) {
   return window['go']['main']['App']['CheckLicense'](arg1);
 }
@@ -38,6 +42,10 @@ export function DeleteTask(arg1, arg2) {
   return window['go']['main']['App']['DeleteTask'](arg1, arg2);
 }
 
+export function DownloadUpdate() {
+  return window['go']['main']['App']['DownloadUpdate']();
+}
+
 export function GenerateQRCode() {
   return window['go']['main']['App']['GenerateQRCode']();
 }
@@ -52,6 +60,10 @@ export function GetSettings() {
 
 export function GetTasks() {
   return window['go']['main']['App']['GetTasks']();
+}
+
+export function GetUpdateState() {
+  return window['go']['main']['App']['GetUpdateState']();
 }
 
 export function GetUserInfo() {
@@ -86,6 +98,10 @@ export function PauseTask(arg1) {
   return window['go']['main']['App']['PauseTask'](arg1);
 }
 
+export function PauseUpdateDownload() {
+  return window['go']['main']['App']['PauseUpdateDownload']();
+}
+
 export function PollQRCode(arg1) {
   return window['go']['main']['App']['PollQRCode'](arg1);
 }
@@ -94,12 +110,20 @@ export function ReadClipboard() {
   return window['go']['main']['App']['ReadClipboard']();
 }
 
+export function RestartForUpdate() {
+  return window['go']['main']['App']['RestartForUpdate']();
+}
+
 export function ResumeAllTasks() {
   return window['go']['main']['App']['ResumeAllTasks']();
 }
 
 export function ResumeTask(arg1) {
   return window['go']['main']['App']['ResumeTask'](arg1);
+}
+
+export function RetryUpdateDownload() {
+  return window['go']['main']['App']['RetryUpdateDownload']();
 }
 
 export function SaveRawCookie(arg1) {
@@ -112,6 +136,10 @@ export function SaveSettings(arg1) {
 
 export function SelectDirectory() {
   return window['go']['main']['App']['SelectDirectory']();
+}
+
+export function SetAutomaticUpdateCheck(arg1) {
+  return window['go']['main']['App']['SetAutomaticUpdateCheck'](arg1);
 }
 
 export function ShowMainWindow() {

@@ -13,7 +13,8 @@ import {
   EyeOff,
   Sun
 } from 'lucide-vue-next'
-import { config, license } from '../../wailsjs/go/models'
+import UpdatePanel from './UpdatePanel.vue'
+import { config, license, updater } from '../../wailsjs/go/models'
 import {
   GetSettings,
   SaveSettings,
@@ -24,6 +25,7 @@ import {
 
 const props = defineProps<{
   initialSettings: config.Settings
+  updateState: updater.State
   licenseStatus: license.LicenseStatus | null
 }>()
 
@@ -309,6 +311,8 @@ async function handleSave() {
           <span>{{ isSaving ? '正在保存...' : '保存全部偏好设置' }}</span>
         </button>
       </div>
+
+      <UpdatePanel :state="updateState" />
 
       <!-- Section 4: 专业版授权 -->
       <div class="settings-card license-settings-card">

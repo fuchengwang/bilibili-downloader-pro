@@ -54,8 +54,12 @@ macOS 构建必须配置仓库 Actions Secrets：
 
 - `pnpm --dir frontend run build`
 - `go test -race -short ./...`：包括播放接口兼容、权限/试看处理、断点下载、音频缺失与分片偏移回归测试。
-- `pnpm --dir frontend exec node --test tests/quality-loading.test.mjs tests/clipboard.test.mjs`：验证选中课时的画质查询及剪贴板自动解析。
+- `pnpm --dir frontend exec node --test tests/quality-loading.test.mjs tests/clipboard.test.mjs tests/update-panel.test.mjs`：验证选中课时的画质查询及剪贴板自动解析。
 - `BBDOWN_CHEESE_TEST_EPISODES=课时编号列表 go test ./pkg/downloader -run '^TestLiveCheeseDownload$' -v`：用当前登录账号实际下载选定课堂课时（编号用逗号分隔），缓存和成品与正常下载记录隔离。
 - `BBDOWN_MEDIA_TESTS=1 go test ./pkg/downloader -run TestGeneratedMediaMerge -v`：需要本机 FFmpeg 和 FFprobe，生成 AVC/HEVC/AV1 + AAC/FLAC/E-AC-3 样本，检查合并后的双轨道、时长及完整解码。应用本身的合并流程仍使用纯 Go。
 
 v1.1.5 发布前已在线下载并合并普通视频与《工作细胞》公开第 1 集，完整解码通过；无会员权限的第 2 集被正确识别为试看。没有可用的大会员账号，因此会员完整内容的实际下载尚未实测，已用接口样例验证会话传递与高清流选择。
+
+## 软件更新
+
+偏好设置新增“软件更新”卡片，默认开启“自动检查更新”。自动发现新版只显示设置图标蓝点，用户点击后下载，可查看进度、暂停和继续。下载完成可立即重启或留到下次启动安装。包完整校验与安装恢复由 Go 层负责，不改动已有授权及用户数据。发布包要求、模块分工与验证命令见 [更新模块说明](docs/updater.md)。

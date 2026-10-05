@@ -1,0 +1,30 @@
+name: Test Native Updater
+
+on:
+  push:
+    branches: ['codex/bbdown-updates']
+  pull_request:
+    paths: ['pkg/updater/**', 'pkg/update/**', 'pkg/downloader/restart*', '.github/workflows/test-updater.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native installer (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test resumable downloads and native package installation
+        run: go test -race -count=1 -timeout 8m ./pkg/update ./pkg/updater
+        env:
+          BBDOWN_NATIVE_UPDATE_TESTS: '1'

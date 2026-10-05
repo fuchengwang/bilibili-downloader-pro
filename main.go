@@ -2,11 +2,16 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"time"
 
+	"bilibili_downloader/pkg/config"
 	"bilibili_downloader/pkg/instance"
 	"bilibili_downloader/pkg/license"
+	"bilibili_downloader/pkg/updater"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -19,11 +24,22 @@ import (
 var assets embed.FS
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--bbdown-version" {
+		fmt.Println(appVersion())
+		return
+	}
+	if handled, err := updater.HandleHelperArgs(os.Args[1:]); handled {
+		if err != nil {
+			log.Printf("install update: %v", err)
+		}
+		return
+	}
+
 	licenseClient, err := license.New(license.Config{
-		ServerURL:            "https://47.97.111.181:8090",
+		ServerURL:            serviceURL,
 		AppID:                "bbdown-pro",
 		AppName:              "BBDown Pro",
-		ClientVersion:        "1.1.8",
+		ClientVersion:        appVersion(),
 		Timeout:              10 * time.Second,
 		OfflineGraceDays:     30,
 		AutoVerifyInterval:   24 * time.Hour,
@@ -33,11 +49,24 @@ func main() {
 		log.Fatalf("初始化授权服务失败: %v", err)
 	}
 	app := NewApp(licenseClient)
+	if normalApplication {
+		if handled, err := updater.ContinueInstallation(filepath.Join(config.GetConfigDir(), "updates"), appVersion()); handled {
+			if err != nil {
+				log.Printf("continue update: %v", err)
+			}
+			return
+		}
 
-	// Ensure single instance
-	_ = instance.SetupSingleInstance(func() {
-		app.ShowMainWindow()
-	})
+		// Ensure single instance
+		_ = instance.SetupSingleInstance(func() {
+			app.ShowMainWindow()
+		})
+
+		if app.initializeUpdates() {
+			return
+		}
+
+	}
 
 	appearance := mac.NSAppearanceNameDarkAqua
 	background := &options.RGBA{R: 12, G: 14, B: 20, A: 255}
@@ -60,6 +89,7 @@ func main() {
 			Assets: assets,
 		},
 		OnStartup:  app.startup,
+		OnShutdown: app.shutdown,
 		OnDomReady: app.domReady, // 前端 DOM 彻底就绪后再展示窗口，彻底消灭白屏/灰屏闪烁
 		Bind: []interface{}{
 			app,

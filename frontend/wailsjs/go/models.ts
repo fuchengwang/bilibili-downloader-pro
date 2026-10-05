@@ -436,3 +436,40 @@ export namespace main {
 
 }
 
+export namespace updater {
+
+	export class State {
+	    revision: number;
+	    checked: boolean;
+	    autoCheck: boolean;
+	    currentVersion: string;
+	    version: string;
+	    notes: string;
+	    phase: string;
+	    error: string;
+	    downloaded: number;
+	    total: number;
+	    hasUpdate: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new State(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.revision = source["revision"];
+	        this.checked = source["checked"];
+	        this.autoCheck = source["autoCheck"];
+	        this.currentVersion = source["currentVersion"];
+	        this.version = source["version"];
+	        this.notes = source["notes"];
+	        this.phase = source["phase"];
+	        this.error = source["error"];
+	        this.downloaded = source["downloaded"];
+	        this.total = source["total"];
+	        this.hasUpdate = source["hasUpdate"];
+	    }
+	}
+
+}
+

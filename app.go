@@ -11,6 +11,7 @@ import (
 	"bilibili_downloader/pkg/config"
 	"bilibili_downloader/pkg/downloader"
 	"bilibili_downloader/pkg/license"
+	"bilibili_downloader/pkg/updater"
 	"bilibili_downloader/pkg/utils"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -30,12 +31,15 @@ type LicenseResult struct {
 
 // App struct
 type App struct {
-	ctx        context.Context
-	biliClient *bilibili.Client
-	downMgr    *downloader.DownloadManager
-	cfgMgr     *config.ConfigManager
-	license    licenseChecker
-	downMu     sync.Mutex
+	ctx             context.Context
+	biliClient      *bilibili.Client
+	downMgr         *downloader.DownloadManager
+	cfgMgr          *config.ConfigManager
+	license         licenseChecker
+	downMu          sync.Mutex
+	updates         *updater.Manager
+	updateInitError string
+	updateStartup   sync.Once
 }
 
 // NewApp creates a new App application struct
@@ -51,6 +55,9 @@ func NewApp(licenseClient licenseChecker) *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	if a.updates != nil {
+		a.updates.SetCallback(func(state updater.State) { wailsRuntime.EventsEmit(ctx, "update:state", state) })
+	}
 	status, err := a.license.CheckStatus(ctx, false)
 	if err == nil && status != nil && status.IsActivated {
 		a.ensureDownloadManager()
@@ -147,6 +154,22 @@ func (a *App) DeactivateLicense() LicenseResult {
 // domReady is called after front-end resources are completely loaded
 func (a *App) domReady(ctx context.Context) {
 	wailsRuntime.WindowShow(ctx)
+	a.updateStartup.Do(func() {
+		if a.updates == nil {
+			return
+		}
+		a.updates.MarkOpened()
+		go func() {
+			timer := time.NewTimer(3 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+			}
+			a.updates.CheckOnStartup(ctx)
+		}()
+	})
 }
 
 // ShowMainWindow brings the window to the foreground and unminimizes it

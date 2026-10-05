@@ -12,7 +12,7 @@ import EpisodeSelectorModal from './components/EpisodeSelectorModal.vue'
 import LoginModal from './components/LoginModal.vue'
 import Toast, { ToastItem } from './components/Toast.vue'
 
-import { bilibili, downloader, config } from '../wailsjs/go/models'
+import { bilibili, downloader, config, updater } from '../wailsjs/go/models'
 import {
   GetTasks,
   GetSettings,
@@ -29,7 +29,8 @@ import {
   OpenFile,
   ReadClipboard,
   CheckLicense,
-  ActivateLicense
+  ActivateLicense,
+  GetUpdateState
 } from '../wailsjs/go/main/App'
 import { EventsOn } from '../wailsjs/runtime/runtime'
 import { theme, normalizeTheme } from './theme'
@@ -51,6 +52,11 @@ const settings = ref<config.Settings>({
   fileNameTemplate: '{title} - {part}',
   theme: 'dark'
 })
+const updateState = ref<updater.State>({revision: 0, checked: false, autoCheck: true, currentVersion: '', version: '', notes: '', phase: 'idle', error: '', downloaded: 0, total: 0, hasUpdate: false})
+function receiveUpdateState(state: updater.State) {
+  if (state.revision >= updateState.value.revision) updateState.value = state
+}
+let stopUpdateEvents: (() => void) | null = null
 const licenseChecking = ref(true)
 const isLicensed = ref(false)
 const licenseKey = ref('')
@@ -268,12 +274,18 @@ function handleSettingsSaved(s: config.Settings) {
 }
 
 onMounted(async () => {
+  // Subscribe before requesting a snapshot; a later response must not replace
+  // newer live progress. Update checking never opens a toast or modal.
+  let receivedUpdate = false
+  stopUpdateEvents = EventsOn('update:state', (state: updater.State) => { receivedUpdate = true; receiveUpdateState(state) })
+  void GetUpdateState().then(state => { if (!receivedUpdate) updateState.value = state }).catch(() => {})
   // Theme preferences are available even on the activation screen.
   try { await loadSettings() } catch (err) { console.error('加载外观设置失败:', err) }
   await checkLicense()
 })
 
 onUnmounted(() => {
+  stopUpdateEvents?.()
   if (clipboardTimer) clearInterval(clipboardTimer)
   if (activationCooldownTimer) clearInterval(activationCooldownTimer)
   window.removeEventListener('focus', checkAndAutoParseClipboard)
@@ -565,6 +577,7 @@ function handleLicenseDeactivated(key: string) {
       :user-info="userInfo"
       :active-task-count="activeTasks.length"
       :completed-task-count="unreadCompletedCount"
+      :has-update="updateState.hasUpdate"
       @change-tab="handleTabChange"
       @open-login="showLoginModal = true"
     />
@@ -624,6 +637,7 @@ function handleLicenseDeactivated(key: string) {
           <SettingsView
             :initial-settings="settings"
             :license-status="licenseStatus"
+            :update-state="updateState"
             @settings-saved="handleSettingsSaved"
             @theme-changed="handleThemeChanged"
             @show-toast="showToast"

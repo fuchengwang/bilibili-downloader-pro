@@ -4,6 +4,7 @@ import {main} from '../models';
 import {downloader} from '../models';
 import {bilibili} from '../models';
 import {config} from '../models';
+import {updater} from '../models';
 
 export function ActivateLicense(arg1:string):Promise<main.LicenseResult>;
 
@@ -15,6 +16,8 @@ export function CheckFFmpeg():Promise<Record<string, any>>;
 
 export function CheckFileExists(arg1:string):Promise<boolean>;
 
+export function CheckForUpdates():Promise<void>;
+
 export function CheckLicense(arg1:boolean):Promise<main.LicenseResult>;
 
 export function ClearCompletedTasks(arg1:boolean):Promise<void>;
@@ -23,6 +26,8 @@ export function DeactivateLicense():Promise<main.LicenseResult>;
 
 export function DeleteTask(arg1:string,arg2:boolean):Promise<void>;
 
+export function DownloadUpdate():Promise<void>;
+
 export function GenerateQRCode():Promise<bilibili.QRCodeInfo>;
 
 export function GetAvailableQualities(arg1:string,arg2:number,arg3:number,arg4:number,arg5:boolean,arg6:boolean):Promise<Array<bilibili.QualityOption>>;
@@ -30,6 +35,8 @@ export function GetAvailableQualities(arg1:string,arg2:number,arg3:number,arg4:n
 export function GetSettings():Promise<config.Settings>;
 
 export function GetTasks():Promise<Array<downloader.DownloadTask>>;
+
+export function GetUpdateState():Promise<updater.State>;
 
 export function GetUserInfo():Promise<bilibili.UserInfo>;
 
@@ -47,18 +54,26 @@ export function PauseAllTasks():Promise<void>;
 
 export function PauseTask(arg1:string):Promise<void>;
 
+export function PauseUpdateDownload():Promise<void>;
+
 export function PollQRCode(arg1:string):Promise<bilibili.QRStatus>;
 
 export function ReadClipboard():Promise<string>;
 
+export function RestartForUpdate():Promise<void>;
+
 export function ResumeAllTasks():Promise<void>;
 
 export function ResumeTask(arg1:string):Promise<void>;
+
+export function RetryUpdateDownload():Promise<void>;
 
 export function SaveRawCookie(arg1:string):Promise<void>;
 
 export function SaveSettings(arg1:config.Settings):Promise<void>;
 
 export function SelectDirectory():Promise<string>;
+
+export function SetAutomaticUpdateCheck(arg1:boolean):Promise<void>;
 
 export function ShowMainWindow():Promise<void>;

@@ -16,6 +16,7 @@ const props = defineProps<{
   userInfo: bilibili.UserInfo | null
   activeTaskCount: number
   completedTaskCount?: number
+  hasUpdate?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -84,7 +85,7 @@ function normalizeImg(url?: string) {
         :class="{ active: activeTab === 'settings' }"
         @click="emit('change-tab', 'settings')"
       >
-        <SettingsIcon class="nav-icon" :size="16" />
+        <span class="settings-icon-wrap"><SettingsIcon class="nav-icon" :size="16" /><span v-if="hasUpdate" class="update-dot" title="有可用更新" aria-label="有可用更新"></span></span>
         <span class="nav-label">偏好设置</span>
       </button>
     </nav>
@@ -221,6 +222,9 @@ function normalizeImg(url?: string) {
   color: var(--bili-pink);
   font-weight: 600;
 }
+
+.settings-icon-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
+.update-dot { position: absolute; top: -3px; right: -3px; width: 6px; height: 6px; border-radius: 50%; background: #00aeec; box-shadow: 0 0 0 2px var(--bg-sidebar); }
 
 .nav-icon {
   flex-shrink: 0;
