@@ -16,6 +16,7 @@ node_modules/
 dist/
 .pnpm-store/
 .local/
+__pycache__/
 
 # OS & IDE
 .DS_Store
