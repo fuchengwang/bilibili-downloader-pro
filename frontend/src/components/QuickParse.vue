@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, toRaw } from 'vue'
+import { ref, computed, watch, toRaw } from 'vue'
 import {
   Search,
   ClipboardPaste,
@@ -12,10 +12,14 @@ import {
   Film,
   Download,
   Check,
-  Calendar
+  Calendar,
+  AlertCircle,
+  ExternalLink
 } from 'lucide-vue-next'
 import { bilibili } from '../../wailsjs/go/models'
-import { ParseURL, GetAvailableQualities, ReadClipboard } from '../../wailsjs/go/main/App'
+import { ParseURL, GetPlaybackInfo, ReadClipboard } from '../../wailsjs/go/main/App'
+import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
+import { episodeURL, isPermissionError } from '../utils/episode-selection'
 
 const props = defineProps<{
   defaultQuality: string
@@ -27,6 +31,7 @@ const emit = defineEmits<{
   (e: 'open-episodes', detail: bilibili.VideoDetail, selectedQuality: string, selectedCodec: string): void
   (e: 'quick-download-single', detail: bilibili.VideoDetail, ep: bilibili.EpisodeInfo, quality: string, codec: string): void
   (e: 'show-toast', msg: string, type: 'success' | 'error' | 'info'): void
+  (e: 'open-login'): void
 }>()
 
 const inputUrl = ref('')
@@ -35,10 +40,18 @@ const parsedDetail = ref<bilibili.VideoDetail | null>(null)
 const availableQualities = ref<bilibili.QualityOption[]>([])
 const selectedQuality = ref(props.defaultQuality || 'highest')
 const isFetchingQualities = ref(false)
+const playbackError = ref<bilibili.PlaybackError | null>(null)
 let qualityRequest = 0
 function currentEpisode(detail: bilibili.VideoDetail) {
-  return detail.episodes[Math.max(0, (detail.defaultPage || 1) - 1)] || detail.episodes[0]
+  if (detail.hasLinkedEpisode === false) return undefined
+  return detail.episodes[Math.max(0, (detail.defaultPage || 1) - 1)]
 }
+const linkedEpisode = computed(() => parsedDetail.value ? currentEpisode(parsedDetail.value) : undefined)
+const displayTitle = computed(() => linkedEpisode.value && (parsedDetail.value?.isCollection || parsedDetail.value?.type !== 'normal') ? linkedEpisode.value.title : parsedDetail.value?.title)
+const displayCover = computed(() => linkedEpisode.value?.cover || parsedDetail.value?.cover)
+const displayDuration = computed(() => linkedEpisode.value?.durationStr || parsedDetail.value?.durationStr)
+const singleDownloadBlocked = computed(() => isParsing.value || isFetchingQualities.value || isPermissionError(playbackError.value?.kind))
+const sourceURL = computed(() => linkedEpisode.value && parsedDetail.value ? episodeURL(linkedEpisode.value, parsedDetail.value.type) : '')
 
 // 监听偏好设置变更
 watch(() => props.defaultQuality, (val) => {
@@ -48,7 +61,8 @@ watch(() => props.defaultQuality, (val) => {
 // 监听登录状态变更，自动刷新当前已解析视频的清晰度权限
 watch(() => props.userInfo, () => {
   if (parsedDetail.value && parsedDetail.value.episodes && parsedDetail.value.episodes.length > 0) {
-    fetchQualities(parsedDetail.value, currentEpisode(parsedDetail.value))
+    const ep = currentEpisode(parsedDetail.value)
+    if (ep) fetchQualities(parsedDetail.value, ep)
   }
 })
 
@@ -80,6 +94,7 @@ function handleClear() {
   inputUrl.value = ''
   parsedDetail.value = null
   availableQualities.value = []
+  playbackError.value = null
 }
 
 // 执行解析
@@ -91,6 +106,11 @@ async function handleParse() {
   }
 
   isParsing.value = true
+  qualityRequest++
+  parsedDetail.value = null
+  isFetchingQualities.value = false
+  playbackError.value = null
+  availableQualities.value = []
   try {
     const res = await ParseURL(url)
     if (!res) {
@@ -101,7 +121,8 @@ async function handleParse() {
 
     // 获取可用画质列表
     if (res.episodes && res.episodes.length > 0) {
-      fetchQualities(res, currentEpisode(res))
+      const ep = currentEpisode(res)
+      if (ep) fetchQualities(res, ep)
     }
   } catch (err: any) {
     emit('show-toast', err?.message || '解析失败，请检查链接是否正确', 'error')
@@ -114,9 +135,10 @@ async function handleParse() {
 async function fetchQualities(detail: bilibili.VideoDetail, ep: bilibili.EpisodeInfo) {
   const request = ++qualityRequest
   availableQualities.value = []
+  playbackError.value = null
   isFetchingQualities.value = true
   try {
-    const qList = await GetAvailableQualities(
+    const info = await GetPlaybackInfo(
       ep.bvid || detail.bvid,
       ep.aid || detail.aid,
       ep.cid,
@@ -127,6 +149,8 @@ async function fetchQualities(detail: bilibili.VideoDetail, ep: bilibili.Episode
     // ref wraps details in a reactive proxy; compare the underlying objects so
     // the response to the initial parse is not mistaken for a stale request.
     if (request !== qualityRequest || toRaw(parsedDetail.value) !== toRaw(detail)) return
+    const qList = info?.qualities || []
+    playbackError.value = info?.error || null
     availableQualities.value = qList || []
 
     // 校验当前选中的清晰度是否不可用
@@ -137,9 +161,11 @@ async function fetchQualities(detail: bilibili.VideoDetail, ep: bilibili.Episode
       }
     }
   } catch (err: any) {
-    if (request === qualityRequest) {
+    if (request === qualityRequest && toRaw(parsedDetail.value) === toRaw(detail)) {
       availableQualities.value = []
-      emit('show-toast', '获取画质失败: ' + (err?.message || err), 'error')
+      const message = String(err?.message || err || '暂时无法检查播放权限')
+      playbackError.value = { kind: 'unavailable', message, hint: '请稍后重新检查。' }
+      emit('show-toast', message, 'error')
     }
   } finally {
     if (request === qualityRequest) isFetchingQualities.value = false
@@ -147,11 +173,9 @@ async function fetchQualities(detail: bilibili.VideoDetail, ep: bilibili.Episode
 }
 
 function handleSingleDownload() {
-  if (!parsedDetail.value || !parsedDetail.value.episodes || parsedDetail.value.episodes.length === 0) return
-  const targetIdx = (parsedDetail.value.defaultPage && parsedDetail.value.defaultPage > 0)
-    ? parsedDetail.value.defaultPage - 1
-    : 0
-  const ep = parsedDetail.value.episodes[targetIdx] || parsedDetail.value.episodes[0]
+  if (!parsedDetail.value || singleDownloadBlocked.value) return
+  const ep = currentEpisode(parsedDetail.value)
+  if (!ep) return
   emit('quick-download-single', parsedDetail.value, ep, selectedQuality.value, props.defaultCodec || 'auto')
 }
 
@@ -176,7 +200,8 @@ function formatPubDate(ts: number): string {
 
 function refreshQualities() {
   if (parsedDetail.value && parsedDetail.value.episodes && parsedDetail.value.episodes.length > 0) {
-    fetchQualities(parsedDetail.value, currentEpisode(parsedDetail.value))
+    const ep = currentEpisode(parsedDetail.value)
+    if (ep) fetchQualities(parsedDetail.value, ep)
   }
 }
 
@@ -227,8 +252,8 @@ defineExpose({
       <div class="card-left">
         <div class="cover-wrapper">
           <img
-            v-if="parsedDetail.cover"
-            :src="normalizeImg(parsedDetail.cover)"
+            v-if="displayCover"
+            :src="normalizeImg(displayCover)"
             class="video-cover"
             referrerpolicy="no-referrer"
             alt="Cover"
@@ -236,7 +261,7 @@ defineExpose({
           <div v-else class="cover-fallback">
             <Film :size="32" />
           </div>
-          <span class="duration-badge">{{ parsedDetail.durationStr }}</span>
+          <span class="duration-badge">{{ displayDuration }}</span>
           <span v-if="parsedDetail.isCollection" class="collection-badge">
             <Layers :size="11" />
             <span>{{ parsedDetail.type === 'cheese' ? '课堂' : '合集' }} · {{ parsedDetail.totalParts }}{{ parsedDetail.type === 'cheese' ? '课时' : 'P' }}</span>
@@ -246,7 +271,11 @@ defineExpose({
 
       <div class="card-right">
         <div class="video-header">
-          <h2 class="video-title" :title="parsedDetail.title">{{ parsedDetail.title }}</h2>
+          <h2 class="video-title" :title="displayTitle">{{ displayTitle }}</h2>
+          <p v-if="parsedDetail.isCollection" class="collection-context">
+            <span v-if="linkedEpisode" class="current-episode-label">{{ parsedDetail.isDefaultPart ? '默认 P1' : `${parsedDetail.type === 'cheese' ? '课' : 'P'}${linkedEpisode.index}` }} · 当前链接</span>
+            <span :title="parsedDetail.collectionTitle || parsedDetail.title">{{ parsedDetail.collectionTitle || parsedDetail.title }} · 共 {{ parsedDetail.totalParts }} {{ parsedDetail.type === 'cheese' ? '课时' : '集' }}</span>
+          </p>
         </div>
 
         <div class="meta-row">
@@ -285,9 +314,20 @@ defineExpose({
           {{ parsedDetail.description || '暂无简介' }}
         </div>
 
+        <div v-if="playbackError" class="playback-notice" role="status">
+          <div class="notice-message"><AlertCircle :size="14" /><span>{{ playbackError.message }}</span></div>
+          <p>{{ playbackError.hint }}</p>
+          <div class="notice-actions">
+            <button v-if="sourceURL" class="notice-link" @click="BrowserOpenURL(sourceURL)"><ExternalLink :size="12" />在B站打开</button>
+            <button v-if="isPermissionError(playbackError.kind)" class="notice-link" @click="emit('open-login')">登录 / 重新登录</button>
+            <button class="notice-link" :disabled="isFetchingQualities" @click="refreshQualities">重新检查</button>
+          </div>
+          <details v-if="playbackError.detail"><summary>详细信息</summary>{{ playbackError.detail }}</details>
+        </div>
+
         <!-- Download Action & Options Area -->
         <div class="action-footer">
-          <div class="options-wrapper">
+          <div v-if="linkedEpisode" class="options-wrapper">
             <!-- Quality Selector (Clean & Clear with disabled/grey options for locked qualities) -->
             <div class="select-group">
               <label class="select-label">清晰度:</label>
@@ -308,23 +348,19 @@ defineExpose({
 
           <!-- Actions Button -->
           <div class="action-btn-wrapper">
+            <button v-if="linkedEpisode" class="btn-primary main-action-btn" :disabled="singleDownloadBlocked" @click="handleSingleDownload">
+              <Download :size="15" />
+              <span>{{ isFetchingQualities ? '检查播放权限…' : (parsedDetail.isCollection ? (parsedDetail.type === 'cheese' ? '下载这一课' : '下载这一集') : '立即下载') }}</span>
+            </button>
             <button
               v-if="parsedDetail.isCollection || parsedDetail.totalParts > 1"
-              class="btn-primary main-action-btn"
+              :class="[linkedEpisode ? 'btn-secondary' : 'btn-primary', 'main-action-btn']"
               @click="handleOpenEpisodes"
             >
               <Layers :size="15" />
               <span>{{ parsedDetail.type === 'cheese' ? '选择课时' : '选择分集' }} (共 {{ parsedDetail.totalParts }} {{ parsedDetail.type === 'cheese' ? '课时' : '集' }})</span>
             </button>
 
-            <button
-              v-else
-              class="btn-primary main-action-btn"
-              @click="handleSingleDownload"
-            >
-              <Download :size="15" />
-              <span>立即下载</span>
-            </button>
           </div>
         </div>
       </div>
@@ -515,6 +551,18 @@ defineExpose({
   overflow: hidden;
 }
 
+.collection-context { display: flex; flex-wrap: wrap; gap: 5px 10px; margin-top: 6px; color: var(--text-muted); font-size: 11.5px; }
+.current-episode-label { color: var(--bili-pink); flex-shrink: 0; }
+.playback-notice { margin: 10px 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--neutral-05); font-size: 12px; color: var(--text-secondary); }
+.notice-message { display: flex; align-items: flex-start; gap: 6px; color: var(--warning); font-weight: 600; }
+.notice-message svg { flex-shrink: 0; margin-top: 2px; }
+.playback-notice p { margin-top: 5px; line-height: 1.5; }
+.notice-actions { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 7px; }
+.notice-link { display: inline-flex; align-items: center; gap: 4px; color: var(--bili-pink); font-size: 11.5px; background: transparent; }
+.notice-link:disabled { opacity: .5; cursor: default; }
+.playback-notice details { margin-top: 7px; color: var(--text-muted); font-size: 11px; }
+.playback-notice summary { cursor: pointer; }
+
 .meta-row {
   display: flex;
   align-items: center;
@@ -581,6 +629,7 @@ defineExpose({
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
   padding-top: 12px;
   border-top: 1px solid var(--border-subtle);
 }
@@ -616,6 +665,9 @@ defineExpose({
 }
 
 .action-btn-wrapper {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
   margin-left: auto;
   flex-shrink: 0;
 }
@@ -626,6 +678,7 @@ defineExpose({
   font-size: 13px;
   white-space: nowrap;
 }
+.main-action-btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
 
 /* Empty State */
 .empty-guide {

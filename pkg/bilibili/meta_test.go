@@ -63,6 +63,52 @@ func TestOrdinaryMultiPagePreservesRequestedPage(t *testing.T) {
 	}
 }
 
+func TestCollectionPartPreservesLinkedCIDAndPage(t *testing.T) {
+	client := playurlClient(t, `{"code":0,"data":{"bvid":"BVcurrent","aid":20,"title":"current video","pages":[{"cid":200,"page":1},{"cid":201,"page":2,"part":"第二部分","duration":42,"first_frame":"https://cover.test/part2"}],"ugc_season":{"title":"完整合集","sections":[{"episodes":[{"bvid":"BVfirst","aid":10,"cid":100,"title":"first"},{"bvid":"BVcurrent","aid":20,"cid":200,"title":"current"}]}]}}}`, nil)
+	detail, err := client.FetchVideoDetail(context.Background(), &ParsedTarget{Type: TargetNormal, BVID: "BVcurrent", Page: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := detail.Episodes[detail.DefaultPage-1]
+	if !detail.HasLinkedEpisode || detail.CollectionTitle != "完整合集" || ep.CID != 201 || ep.Page != 2 || ep.Cover != "https://cover.test/part2" || ep.Duration != 42 {
+		t.Fatalf("linked part information lost: %+v", detail)
+	}
+	if EpisodeURL(&ep, false, false) != "https://www.bilibili.com/video/BVcurrent/?p=2" {
+		t.Fatal("video page uses collection index rather than actual part")
+	}
+}
+
+func TestInvalidPartCannotSilentlySelectFirst(t *testing.T) {
+	client := playurlClient(t, `{"code":0,"data":{"bvid":"BVparts","aid":20,"pages":[{"cid":200,"page":1}]}}`, nil)
+	if _, err := client.FetchVideoDetail(context.Background(), &ParsedTarget{Type: TargetNormal, BVID: "BVparts", Page: 8}); err == nil {
+		t.Fatal("invalid part silently selected P1")
+	}
+}
+
+func TestDefaultPartIsOnlyMarkedWhenLinkOmitsP(t *testing.T) {
+	client := playurlClient(t, `{"code":0,"data":{"bvid":"BVparts","aid":20,"pages":[{"cid":200,"page":1},{"cid":201,"page":2}]}}`, nil)
+	for _, tc := range []struct {
+		url         string
+		defaultPart bool
+	}{
+		{"https://www.bilibili.com/video/BV1p48R6ME8T/", true},
+		{"https://www.bilibili.com/video/BV1p48R6ME8T/?p=1", false},
+		{"https://www.bilibili.com/video/BV1p48R6ME8T/?p=2", false},
+	} {
+		target, err := client.ParseInput(context.Background(), tc.url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		detail, err := client.FetchVideoDetail(context.Background(), target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if detail.IsDefaultPart != tc.defaultPart {
+			t.Fatalf("default-part label wrong for %s", tc.url)
+		}
+	}
+}
+
 // TestFetchBangumiDetail_DurationEndToEnd 测试解析端到端番剧响应时时长字段转换为秒
 func TestFetchBangumiDetail_DurationEndToEnd(t *testing.T) {
 	mockResp := seasonResponse{

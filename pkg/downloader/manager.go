@@ -287,6 +287,7 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 		Title:         req.Title,
 		PartTitle:     ep.Title,
 		Cover:         ep.Cover,
+		SourceURL:     bilibili.EpisodeURL(ep, req.IsBangumi, req.IsCheese),
 		TargetQuality: req.TargetQuality,
 		TargetCodec:   req.TargetCodec,
 		Status:        StatusQueued,
@@ -755,6 +756,10 @@ func (m *DownloadManager) setTaskStatus(task *DownloadTask, status TaskStatus, e
 
 func (m *DownloadManager) applyTaskStatusLocked(task *DownloadTask, status TaskStatus, errorMsg string) {
 	task.Status = status
+	task.ErrorKind, task.ErrorHint, task.ErrorDetail = "", "", ""
+	if status != StatusError {
+		task.ErrorMsg = ""
+	}
 	if errorMsg != "" {
 		task.ErrorMsg = errorMsg
 	}
@@ -775,7 +780,7 @@ func (m *DownloadManager) applyTaskStatusLocked(task *DownloadTask, status TaskS
 	}
 }
 
-func (m *DownloadManager) setWorkerTaskStatus(task *DownloadTask, token string, expected, status TaskStatus, errorMsg string) bool {
+func (m *DownloadManager) setWorkerTaskStatus(task *DownloadTask, token string, expected, status TaskStatus, errorMsg string, playbackErrors ...*bilibili.PlaybackError) bool {
 	m.mu.Lock()
 	w, owned := m.workers[task.ID]
 	if !owned || w.invalidated || w.token != token || (expected != "" && task.Status != expected) {
@@ -783,6 +788,10 @@ func (m *DownloadManager) setWorkerTaskStatus(task *DownloadTask, token string, 
 		return false
 	}
 	m.applyTaskStatusLocked(task, status, errorMsg)
+	if status == StatusError && len(playbackErrors) > 0 && playbackErrors[0] != nil {
+		info := playbackErrors[0]
+		task.ErrorKind, task.ErrorHint, task.ErrorDetail = info.Kind, info.Hint, info.Detail
+	}
 	m.mu.Unlock()
 	m.notifyChange(task)
 	return true
@@ -806,7 +815,8 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		if ctx.Err() != nil {
 			return
 		}
-		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, fmt.Sprintf("解析媒体流失败: %v", err))
+		info := bilibili.PlaybackErrorInfo(err)
+		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, info.Message, info)
 		return
 	}
 	courseKeys, err := m.biliClient.ResolveCourseKeys(ctx, sel)

@@ -32,6 +32,8 @@ export function GenerateQRCode():Promise<bilibili.QRCodeInfo>;
 
 export function GetAvailableQualities(arg1:string,arg2:number,arg3:number,arg4:number,arg5:boolean,arg6:boolean):Promise<Array<bilibili.QualityOption>>;
 
+export function GetPlaybackInfo(arg1:string,arg2:number,arg3:number,arg4:number,arg5:boolean,arg6:boolean):Promise<bilibili.PlaybackInfo>;
+
 export function GetSettings():Promise<config.Settings>;
 
 export function GetTasks():Promise<Array<downloader.DownloadTask>>;

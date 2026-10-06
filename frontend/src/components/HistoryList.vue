@@ -134,9 +134,9 @@ function confirmClearAll() {
 
         <div class="content-box">
           <div class="title-row">
-            <span class="item-title" :title="task.title">{{ task.title }}</span>
-            <span v-if="task.partTitle && task.partTitle !== task.title" class="part-badge" :title="task.partTitle">
-              {{ task.partTitle }}
+            <span class="item-title" :title="task.partTitle || task.title">{{ task.partTitle || task.title }}</span>
+            <span v-if="task.partTitle && task.partTitle !== task.title" class="part-badge" :title="task.title">
+              {{ task.title }}
             </span>
           </div>
 

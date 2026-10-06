@@ -201,6 +201,14 @@ func (a *App) GetAvailableQualities(bvid string, aid, cid, epid int64, isBangumi
 	return a.biliClient.GetAvailableQualities(a.ctx, bvid, aid, cid, epid, isBangumi, isCheese)
 }
 
+// GetPlaybackInfo 同时返回画质与明确的播放权限提示，供解析和选集界面共用。
+func (a *App) GetPlaybackInfo(bvid string, aid, cid, epid int64, isBangumi, isCheese bool) (*bilibili.PlaybackInfo, error) {
+	if err := a.requireLicense(); err != nil {
+		return nil, err
+	}
+	return a.biliClient.GetPlaybackInfo(a.ctx, bvid, aid, cid, epid, isBangumi, isCheese), nil
+}
+
 // AddDownloadTasks 添加一集或多集下载任务
 func (a *App) AddDownloadTasks(req downloader.DownloadRequest) ([]*downloader.DownloadTask, error) {
 	if err := a.requireLicense(); err != nil {
@@ -228,6 +236,7 @@ func (a *App) AddDownloadTasks(req downloader.DownloadRequest) ([]*downloader.Do
 		AID:  fmt.Sprintf("%d", req.AID),
 		EPID: epidStr,
 		SSID: ssidStr,
+		Page: req.SourcePage,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("无法获取集数元数据: %w", err)

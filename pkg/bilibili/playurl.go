@@ -223,6 +223,9 @@ func (c *Client) GetAvailableQualities(ctx context.Context, bvid string, aid, ci
 	if resp == nil {
 		return nil, fmt.Errorf("B站未返回清晰度信息")
 	}
+	if resp.isPreview() {
+		return nil, playbackError("preview_only", "B站仅返回试看内容")
+	}
 
 	qids, qnames := resp.getAcceptQualities()
 	dash := resp.getDash()
@@ -303,14 +306,14 @@ func (c *Client) FetchStreamSelection(ctx context.Context, bvid string, aid, cid
 	}
 
 	if resp.isPreview() {
-		return nil, fmt.Errorf("B站仅返回试看内容，请确认账号具有完整视频播放权限")
+		return nil, playbackError("preview_only", "B站仅返回试看内容")
 	}
 	dash := resp.getDash()
 	if dash == nil || len(dash.Video) == 0 {
 		if isBangumi || epid > 0 {
-			return nil, fmt.Errorf("番剧接口未返回可下载的 DASH 视频流，请检查该集的播放权限、地区限制或稍后重试")
+			return nil, playbackError("unavailable", "番剧接口未返回可下载的视频流")
 		}
-		return nil, fmt.Errorf("B站未返回 DASH 媒体流（请确认是否需登录或大会员权限）")
+		return nil, playbackError("unavailable", "B站未返回可下载的视频流")
 	}
 
 	video := pickVideoStream(dash.Video, targetQuality, targetCodec)
@@ -409,15 +412,28 @@ func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid
 			return nil, fmt.Errorf("请求番剧媒体流失败: %w", err)
 		}
 		if resp.Code != 0 {
-			return nil, fmt.Errorf("番剧媒体流返回异常 (code=%d): %s", resp.Code, resp.Message)
+			return nil, playbackAPIError(resp.Code, resp.Message)
 		}
 		if resp.isPreview() {
-			return nil, fmt.Errorf("B站仅返回该集的试看内容，无法作为完整视频下载，请确认账号具有该集播放权限")
+			return nil, playbackError("preview_only", "B站仅返回该集的试看内容")
 		}
 		if resp.getDash() != nil {
 			return &resp, nil
 		}
-		return nil, fmt.Errorf("番剧接口未返回 DASH 媒体流，请检查播放权限、地区限制或稍后重试")
+		return nil, playbackError("unavailable", "番剧接口未返回可下载的视频流")
+	}
+	if access := c.checkNormalPlaybackAccess(ctx, bvid, aid, cid); access != nil {
+		return nil, access
+	}
+	var bestError error
+	rememberError := func(err error) {
+		if err == nil {
+			return
+		}
+		// Retain an explicit permission reason when a later fallback has no useful explanation.
+		if bestError == nil || PlaybackErrorInfo(bestError).Kind == "unavailable" || PlaybackErrorInfo(bestError).Kind == "network" {
+			bestError = err
+		}
 	}
 
 	// 2. 普通视频：优先尝试官方 WBI 签名 playurl API (确保 1080P/4K/8K/杜比/Hi-Res 高清完整流)
@@ -436,34 +452,62 @@ func (c *Client) requestPlayURL(ctx context.Context, bvid string, aid, cid, epid
 	if signedQuery, err := c.SignWbiParams(ctx, paramMap); err == nil {
 		wbiURL := "https://api.bilibili.com/x/player/wbi/playurl?" + signedQuery
 		var wbiResp playurlAPIResp
-		if err := c.GetJSON(ctx, wbiURL, &wbiResp); err == nil && wbiResp.Code == 0 && wbiResp.getDash() != nil {
+		if err := c.GetJSON(ctx, wbiURL, &wbiResp); err != nil {
+			rememberError(err)
+		} else if wbiResp.Code != 0 {
+			rememberError(playbackAPIError(wbiResp.Code, wbiResp.Message))
+		} else if wbiResp.getDash() != nil {
 			return &wbiResp, nil
 		}
+	} else {
+		rememberError(err)
 	}
 
 	// 3. 次级降级：若 WBI 签名受限或接口超时，回退至未签名标准 playurl API 作为保底
 	stdURL := fmt.Sprintf("https://api.bilibili.com/x/player/playurl?bvid=%s&avid=%d&cid=%d&qn=127&fnval=4048&fnver=0&fourk=1&otype=json",
 		url.QueryEscape(bvid), aid, cid)
 	var stdResp playurlAPIResp
-	if err := c.GetJSON(ctx, stdURL, &stdResp); err == nil && stdResp.Code == 0 && stdResp.getDash() != nil {
+	if err := c.GetJSON(ctx, stdURL, &stdResp); err != nil {
+		rememberError(err)
+	} else if stdResp.Code != 0 {
+		rememberError(playbackAPIError(stdResp.Code, stdResp.Message))
+	} else if stdResp.getDash() != nil {
 		return &stdResp, nil
 	}
 
 	// 4. 三级降级：从 HTML 页面提取 window.__playinfo__
-	if htmlResp, err := c.extractPlayInfoFromHTML(ctx, bvid); err == nil && htmlResp != nil && htmlResp.getDash() != nil {
+	if htmlResp, err := c.extractPlayInfoFromHTML(ctx, bvid, cid); err != nil {
+		rememberError(err)
+	} else if htmlResp != nil && htmlResp.Code == 0 && htmlResp.getDash() != nil {
 		return htmlResp, nil
 	}
-
-	if stdResp.Code != 0 {
-		return nil, fmt.Errorf("playurl 接口返回 (code=%d): %s", stdResp.Code, stdResp.Message)
+	if bestError != nil {
+		return nil, PlaybackErrorInfo(bestError)
 	}
-
-	return nil, fmt.Errorf("未能获取到可用的 DASH 音视频流")
+	return nil, playbackError("unavailable", "B站播放接口与视频页均未返回可用媒体")
 }
 
 // extractPlayInfoFromHTML 从网页 HTML 中直接提取 window.__playinfo__
-func (c *Client) extractPlayInfoFromHTML(ctx context.Context, bvid string) (*playurlAPIResp, error) {
+func (c *Client) extractPlayInfoFromHTML(ctx context.Context, bvid string, cid int64) (*playurlAPIResp, error) {
 	pageURL := fmt.Sprintf("https://www.bilibili.com/video/%s", bvid)
+	// HTML is tied to a part. Do not fall back to P1 for another CID.
+	var view viewResponse
+	if err := c.GetJSON(ctx, "https://api.bilibili.com/x/web-interface/view?bvid="+url.QueryEscape(bvid), &view); err != nil {
+		return nil, err
+	}
+	page := 0
+	for _, p := range view.Data.Pages {
+		if p.Cid == cid {
+			page = p.Page
+			break
+		}
+	}
+	if page <= 0 {
+		return nil, fmt.Errorf("视频页未匹配到请求的分P")
+	}
+	if page > 1 {
+		pageURL += "?p=" + strconv.Itoa(page)
+	}
 	body, err := c.GetBytes(ctx, pageURL, nil)
 	if err != nil {
 		return nil, err

@@ -10,9 +10,12 @@ import {
   Clock,
   Zap,
   HardDrive,
-  Film
+  Film,
+  ExternalLink
 } from 'lucide-vue-next'
 import { downloader } from '../../wailsjs/go/models'
+import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
+import { episodeURL, isPermissionError } from '../utils/episode-selection'
 
 const props = defineProps<{
   tasks: downloader.DownloadTask[]
@@ -29,9 +32,16 @@ const emit = defineEmits<{
   (e: 'pause-all'): void
   (e: 'resume-all'): void
   (e: 'clear-completed'): void
+  (e: 'open-login'): void
 }>()
 
 const currentFilter = ref<'all' | 'downloading' | 'paused' | 'error'>('all')
+function isLegacyPlaybackError(task: downloader.DownloadTask) {
+  return !task.errorKind && /解析媒体流失败|DASH|playurl/.test(task.errorMsg || '')
+}
+function taskSourceURL(task: downloader.DownloadTask) {
+  return task.sourceUrl || episodeURL(task, task.isCheese ? 'cheese' : task.isBangumi ? 'bangumi' : 'normal')
+}
 
 function normalizeImg(url?: string) {
   if (!url) return ''
@@ -114,9 +124,9 @@ const filteredTasks = computed(() => {
 
         <div class="task-info">
           <div class="task-title-row">
-            <span class="task-title" :title="task.title">{{ task.title }}</span>
-            <span v-if="task.partTitle && task.partTitle !== task.title" class="part-badge" :title="task.partTitle">
-              {{ task.partTitle }}
+            <span class="task-title" :title="task.partTitle || task.title">{{ task.partTitle || task.title }}</span>
+            <span v-if="task.partTitle && task.partTitle !== task.title" class="part-badge" :title="task.title">
+              {{ task.title }}
             </span>
           </div>
 
@@ -151,14 +161,14 @@ const filteredTasks = computed(() => {
               </span>
               <span v-else-if="task.status === 'error'" class="status-tag tag-error" :title="task.errorMsg">
                 <AlertCircle :size="12" />
-                <span>{{ task.errorMsg || '下载失败' }}</span>
+                <span>{{ isLegacyPlaybackError(task) ? '暂时无法获取这个视频的下载地址' : (task.errorMsg || '下载失败') }}</span>
               </span>
               <span v-else-if="task.status === 'cancelled'" class="status-tag tag-cancelled">
                 <span>已取消</span>
               </span>
 
               <!-- Transferred Size -->
-              <span v-if="task.sizeStr" class="metric-text size-metric">
+              <span v-if="task.sizeStr && task.status !== 'error'" class="metric-text size-metric">
                 <HardDrive :size="11" />
                 <span>{{ task.sizeStr }}</span>
               </span>
@@ -173,6 +183,14 @@ const filteredTasks = computed(() => {
             <div class="metrics-right">
               <span class="progress-percent">{{ (task.progress || 0).toFixed(1) }}%</span>
             </div>
+          </div>
+          <div v-if="task.status === 'error' && (task.errorKind || isLegacyPlaybackError(task))" class="task-error-help">
+            <p>{{ task.errorHint || '请稍后重试，或在B站检查是否能完整播放。' }}</p>
+            <div class="error-help-actions">
+              <button v-if="taskSourceURL(task)" @click="BrowserOpenURL(taskSourceURL(task))"><ExternalLink :size="12" />在B站打开</button>
+              <button v-if="isPermissionError(task.errorKind)" @click="emit('open-login')">登录 / 重新登录</button>
+            </div>
+            <details v-if="task.errorDetail || isLegacyPlaybackError(task)"><summary>详细信息</summary>{{ task.errorDetail || task.errorMsg }}</details>
           </div>
         </div>
 
@@ -429,8 +447,18 @@ const filteredTasks = computed(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
   overflow: hidden;
 }
+
+.task-error-help { color: var(--text-muted); font-size: 11.5px; line-height: 1.5; }
+.error-help-actions { display: flex; gap: 14px; margin-top: 5px; }
+.error-help-actions button { color: var(--bili-pink); display: inline-flex; gap: 4px; align-items: center; font-size: 11.5px; background: transparent; }
+.task-error-help details { margin-top: 5px; font-size: 10.5px; }
+.task-error-help summary { cursor: pointer; }
+.status-error .metrics-left { overflow: visible; }
+.status-error .status-tag { align-items: flex-start; }
+.status-error .status-tag svg { flex-shrink: 0; margin-top: 2px; }
 
 .status-tag {
   display: flex;

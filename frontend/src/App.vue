@@ -382,8 +382,9 @@ async function handleQuickDownloadSingle(
       bvid: ep.bvid || detail.bvid,
       aid: ep.aid || detail.aid,
       epid: ep.epid || 0,
-      title: detail.title,
+      title: detail.collectionTitle || detail.title,
       cover: ep.cover || detail.cover,
+      sourcePage: ep.page || 1,
       isBangumi: detail.type === 'bangumi',
       isCheese: detail.type === 'cheese',
       ssid: detail.seasonId || 0,
@@ -409,8 +410,9 @@ async function handleEpisodeBatchSubmit(selectedCids: number[], quality: string,
       bvid: detail.bvid,
       aid: detail.aid,
       epid: firstEpWithEpid?.epid || 0,
-      title: detail.title,
+      title: detail.collectionTitle || detail.title,
       cover: detail.cover,
+      sourcePage: detail.episodes[(detail.defaultPage || 1) - 1]?.page || 1,
       isBangumi: detail.type === 'bangumi',
       isCheese: detail.type === 'cheese',
       ssid: detail.seasonId || 0,
@@ -602,6 +604,7 @@ function handleLicenseDeactivated(key: string) {
             @open-episodes="handleOpenEpisodes"
             @quick-download-single="handleQuickDownloadSingle"
             @show-toast="showToast"
+            @open-login="showLoginModal = true"
           />
         </div>
 
@@ -609,6 +612,7 @@ function handleLicenseDeactivated(key: string) {
         <div v-show="activeTab === 'queue'" class="tab-view">
           <DownloadQueue
             :tasks="tasks"
+            @open-login="showLoginModal = true"
             @pause-task="onPauseTask"
             @resume-task="onResumeTask"
             @cancel-task="onCancelTask"
@@ -653,6 +657,7 @@ function handleLicenseDeactivated(key: string) {
       :detail="activeEpisodeDetail"
       :initial-quality="activeEpisodeQuality"
       :initial-codec="activeEpisodeCodec"
+      :user-info="userInfo"
       @close="showEpisodeModal = false"
       @submit="handleEpisodeBatchSubmit"
     />

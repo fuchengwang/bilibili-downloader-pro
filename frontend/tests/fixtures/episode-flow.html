@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8" />
+<title>分集交互测试</title>
+<div id="app"></div>
+<script type="module">
+import { createApp, h, ref } from 'vue'
+import QuickParse from '../../src/components/QuickParse.vue'
+import EpisodeSelectorModal from '../../src/components/EpisodeSelectorModal.vue'
+import '../../src/styles/main.css'
+
+const scenario = new URL(location.href).searchParams.get('scenario') || 'paid'
+const cover = (part) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#32475d"/><text x="320" y="195" fill="white" text-anchor="middle" font-size="52">${part}</text></svg>`)}`
+const episodes = Array.from({ length: 28 }, (_, i) => ({
+  index: i + 1, page: 1, cid: 1000 + i, bvid: `BVfixture${i}`, aid: i + 1, epid: 0,
+  title: i === 7 ? '美的历程 | 美学' : i === 13 ? '菊花与刀 | 人类学 上' : i === 14 ? '菊花与刀 | 人类学 下' : i === 22 ? '链接指向的这一集' : `第 ${i + 1} 集：其他书目`,
+  longTitle: '', duration: 2911, durationStr: '48:31', cover: cover(`P${i + 1}`), badge: '',
+}))
+const detail = {
+  type: scenario === 'season' ? 'bangumi' : 'normal', bvid: 'BVfixture22', aid: 23,
+  title: '整个合集的标题', collectionTitle: '星空读书会', cover: cover('合集'),
+  description: '用于核验当前集展示、关键词筛选和选择范围。', ownerName: '测试UP主',
+  ownerFace: '', duration: 9999, durationStr: '02:46:39', viewCount: 12000,
+  likeCount: 100, danmakuCount: 10, pubDate: 1791216000,
+  defaultPage: 23, hasLinkedEpisode: scenario !== 'season', totalParts: episodes.length,
+  isCollection: true, episodes,
+}
+window.qa = { downloaded: [], submitted: [] }
+window.go = { main: { App: {
+  ReadClipboard: async () => 'BVfixture22', ParseURL: async () => detail,
+  GetPlaybackInfo: async () => scenario === 'denied'
+    ? { qualities: [], error: { kind: 'charge_required', message: '该视频需充电观看，当前账号暂无完整观看权限', hint: '请在B站视频页开通对应充电权益；已充电请登录对应账号后重试。' } }
+    : { qualities: [{ id: 80, label: '1080P 高清', isAvailable: true }] },
+} } }
+window.runtime = { BrowserOpenURL: () => {} }
+createApp({ setup() {
+  const modal = ref(false)
+  return () => h('main', { style: 'max-width:1000px; margin:40px auto; padding:20px;' }, [
+    h(QuickParse, {
+      defaultQuality: 'highest', defaultCodec: 'auto',
+      onOpenEpisodes: () => { modal.value = true },
+      onQuickDownloadSingle: (_detail, ep) => { window.qa.downloaded.push(ep.cid) },
+      onShowToast: () => {},
+    }),
+    modal.value ? h(EpisodeSelectorModal, {
+      detail, initialQuality: 'highest', initialCodec: 'auto',
+      onClose: () => { modal.value = false },
+      onSubmit: (cids) => { window.qa.submitted = cids },
+    }) : null,
+  ])
+} }).mount('#app')
+</script>
+</html>

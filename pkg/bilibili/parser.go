@@ -20,13 +20,14 @@ const (
 
 // ParsedTarget 统一的解析目标结构
 type ParsedTarget struct {
-	Type     TargetType `json:"type"`
-	RawInput string     `json:"rawInput"`
-	BVID     string     `json:"bvid"`
-	AID      string     `json:"aid"`
-	EPID     string     `json:"epid"`
-	SSID     string     `json:"ssid"`
-	Page     int        `json:"page"`
+	Type          TargetType `json:"type"`
+	RawInput      string     `json:"rawInput"`
+	BVID          string     `json:"bvid"`
+	AID           string     `json:"aid"`
+	EPID          string     `json:"epid"`
+	SSID          string     `json:"ssid"`
+	Page          int        `json:"page"`
+	PageSpecified bool       `json:"pageSpecified"`
 }
 
 var (
@@ -50,6 +51,7 @@ func (c *Client) ParseInput(ctx context.Context, input string) (*ParsedTarget, e
 	}
 
 	page := 1
+	pageSpecified := false
 	// 2. 如果是 b23.tv 短链，先展开为真实目标 URL
 	if strings.Contains(input, "b23.tv") {
 		finalURL, err := c.FinalURL(ctx, input)
@@ -68,6 +70,7 @@ func (c *Client) ParseInput(ctx context.Context, input string) (*ParsedTarget, e
 		if pVal := u.Query().Get("p"); pVal != "" {
 			if p, err := strconv.Atoi(pVal); err == nil && p > 0 {
 				page = p
+				pageSpecified = true
 			}
 		}
 		if epVal := u.Query().Get("ep_id"); epVal != "" {
@@ -115,20 +118,22 @@ func (c *Client) ParseInput(ctx context.Context, input string) (*ParsedTarget, e
 	if m := reBV.FindStringSubmatch(input); len(m) > 1 {
 		bvid := "BV1" + m[1][3:] // 规范化
 		return &ParsedTarget{
-			Type:     TargetNormal,
-			RawInput: input,
-			BVID:     bvid,
-			Page:     page,
+			Type:          TargetNormal,
+			RawInput:      input,
+			BVID:          bvid,
+			Page:          page,
+			PageSpecified: pageSpecified,
 		}, nil
 	}
 
 	// 5. av 号
 	if m := reAV.FindStringSubmatch(input); len(m) > 1 {
 		return &ParsedTarget{
-			Type:     TargetNormal,
-			RawInput: input,
-			AID:      m[1],
-			Page:     page,
+			Type:          TargetNormal,
+			RawInput:      input,
+			AID:           m[1],
+			Page:          page,
+			PageSpecified: pageSpecified,
 		}, nil
 	}
 

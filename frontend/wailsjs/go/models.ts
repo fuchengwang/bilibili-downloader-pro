@@ -2,6 +2,7 @@ export namespace bilibili {
 
 	export class EpisodeInfo {
 	    index: number;
+	    page: number;
 	    cid: number;
 	    bvid: string;
 	    aid: number;
@@ -20,6 +21,7 @@ export namespace bilibili {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.index = source["index"];
+	        this.page = source["page"];
 	        this.cid = source["cid"];
 	        this.bvid = source["bvid"];
 	        this.aid = source["aid"];
@@ -31,6 +33,78 @@ export namespace bilibili {
 	        this.cover = source["cover"];
 	        this.badge = source["badge"];
 	    }
+	}
+	export class PlaybackError {
+	    kind: string;
+	    message: string;
+	    hint: string;
+	    detail?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new PlaybackError(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.message = source["message"];
+	        this.hint = source["hint"];
+	        this.detail = source["detail"];
+	    }
+	}
+	export class QualityOption {
+	    id: number;
+	    label: string;
+	    codecs: string;
+	    isVipRequired: boolean;
+	    isLoginRequired: boolean;
+	    isAvailable: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new QualityOption(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.label = source["label"];
+	        this.codecs = source["codecs"];
+	        this.isVipRequired = source["isVipRequired"];
+	        this.isLoginRequired = source["isLoginRequired"];
+	        this.isAvailable = source["isAvailable"];
+	    }
+	}
+	export class PlaybackInfo {
+	    qualities: QualityOption[];
+	    error?: PlaybackError;
+
+	    static createFrom(source: any = {}) {
+	        return new PlaybackInfo(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.qualities = this.convertValues(source["qualities"], QualityOption);
+	        this.error = this.convertValues(source["error"], PlaybackError);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class QRCodeInfo {
 	    url: string;
@@ -64,28 +138,7 @@ export namespace bilibili {
 	        this.isExpired = source["isExpired"];
 	    }
 	}
-	export class QualityOption {
-	    id: number;
-	    label: string;
-	    codecs: string;
-	    isVipRequired: boolean;
-	    isLoginRequired: boolean;
-	    isAvailable: boolean;
 
-	    static createFrom(source: any = {}) {
-	        return new QualityOption(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.label = source["label"];
-	        this.codecs = source["codecs"];
-	        this.isVipRequired = source["isVipRequired"];
-	        this.isLoginRequired = source["isLoginRequired"];
-	        this.isAvailable = source["isAvailable"];
-	    }
-	}
 	export class UserInfo {
 	    isLogin: boolean;
 	    mid: number;
@@ -139,6 +192,9 @@ export namespace bilibili {
 	    totalParts: number;
 	    episodes: EpisodeInfo[];
 	    defaultPage: number;
+	    hasLinkedEpisode: boolean;
+	    collectionTitle: string;
+	    isDefaultPart: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new VideoDetail(source);
@@ -166,6 +222,9 @@ export namespace bilibili {
 	        this.totalParts = source["totalParts"];
 	        this.episodes = this.convertValues(source["episodes"], EpisodeInfo);
 	        this.defaultPage = source["defaultPage"];
+	        this.hasLinkedEpisode = source["hasLinkedEpisode"];
+	        this.collectionTitle = source["collectionTitle"];
+	        this.isDefaultPart = source["isDefaultPart"];
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -233,6 +292,7 @@ export namespace downloader {
 	    ssid?: number;
 	    title: string;
 	    cover: string;
+	    sourcePage?: number;
 	    isBangumi: boolean;
 	    isCheese: boolean;
 	    targetQuality: string;
@@ -251,6 +311,7 @@ export namespace downloader {
 	        this.ssid = source["ssid"];
 	        this.title = source["title"];
 	        this.cover = source["cover"];
+	        this.sourcePage = source["sourcePage"];
 	        this.isBangumi = source["isBangumi"];
 	        this.isCheese = source["isCheese"];
 	        this.targetQuality = source["targetQuality"];
@@ -269,6 +330,7 @@ export namespace downloader {
 	    title: string;
 	    partTitle: string;
 	    cover: string;
+	    sourceUrl: string;
 	    targetQuality: string;
 	    targetCodec: string;
 	    qualityId: number;
@@ -284,6 +346,9 @@ export namespace downloader {
 	    etaStr: string;
 	    duration: number;
 	    errorMsg: string;
+	    errorKind?: string;
+	    errorHint?: string;
+	    errorDetail?: string;
 	    createdAt: number;
 	    completedAt: number;
 	    outputPath: string;
@@ -306,6 +371,7 @@ export namespace downloader {
 	        this.title = source["title"];
 	        this.partTitle = source["partTitle"];
 	        this.cover = source["cover"];
+	        this.sourceUrl = source["sourceUrl"];
 	        this.targetQuality = source["targetQuality"];
 	        this.targetCodec = source["targetCodec"];
 	        this.qualityId = source["qualityId"];
@@ -321,6 +387,9 @@ export namespace downloader {
 	        this.etaStr = source["etaStr"];
 	        this.duration = source["duration"];
 	        this.errorMsg = source["errorMsg"];
+	        this.errorKind = source["errorKind"];
+	        this.errorHint = source["errorHint"];
+	        this.errorDetail = source["errorDetail"];
 	        this.createdAt = source["createdAt"];
 	        this.completedAt = source["completedAt"];
 	        this.outputPath = source["outputPath"];

@@ -22,9 +22,9 @@ function harness() {
     ref, toRaw,
     parsedDetail: ref(null), availableQualities: ref([]),
     selectedQuality: ref('highest'), isFetchingQualities: ref(false),
-    inputUrl: ref('video'), qualityRequest: 0,
+    inputUrl: ref('video'), qualityRequest: 0, playbackError: ref(null),
     emit: (...args) => messages.push(args),
-    GetAvailableQualities: (...args) => new Promise((resolve, reject) => requests.push({ args, resolve, reject })),
+    GetPlaybackInfo: (...args) => new Promise((resolve, reject) => requests.push({ args, resolve: qualities => resolve({ qualities }), resolveInfo: resolve, reject })),
   })
   vm.runInContext(code, context)
   return { context, requests, messages }
@@ -120,4 +120,36 @@ test('API failure displays an error and ends loading', async () => {
   assert.equal(c.availableQualities.value.length, 0)
   assert.equal(c.isFetchingQualities.value, false)
   assert.match(messages[0][1], /network failure/)
+})
+
+test('charge restriction is shown inline and a login refresh clears it after access is granted', async () => {
+  const { context: c, requests } = harness()
+  const raw = detail()
+  c.parsedDetail.value = raw
+  const pending = c.fetchQualities(raw, raw.episodes[0])
+  requests[0].resolveInfo({ error: { kind: 'charge_required', message: '该视频需充电观看', hint: '请登录已充电账号' } })
+  await pending
+  assert.equal(c.playbackError.value.kind, 'charge_required')
+  const refresh = c.fetchQualities(c.parsedDetail.value, c.parsedDetail.value.episodes[0])
+  requests[1].resolve(qualities)
+  await refresh
+  assert.equal(c.playbackError.value, null)
+  assert.deepEqual(toRaw(c.availableQualities.value), qualities)
+})
+
+test('a season link and an invalid part cannot silently download the first episode', () => {
+  const { context: c } = harness()
+  assert.equal(c.currentEpisode({ ...detail(), hasLinkedEpisode: false }), undefined)
+  assert.equal(c.currentEpisode({ ...detail(), defaultPage: 99, hasLinkedEpisode: true }), undefined)
+})
+
+test('a stale permission failure cannot replace the new linked video status', async () => {
+  const { context: c, requests } = harness()
+  const old = detail()
+  c.parsedDetail.value = old
+  const pending = c.fetchQualities(old, old.episodes[0])
+  c.parsedDetail.value = detail()
+  requests[0].reject(new Error('old video restricted'))
+  await pending
+  assert.equal(c.playbackError.value, null)
 })

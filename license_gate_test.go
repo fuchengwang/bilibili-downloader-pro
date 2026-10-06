@@ -37,6 +37,9 @@ func TestCoreDownloadEntryPointsRejectUnlicensedCalls(t *testing.T) {
 	if _, err := app.GetAvailableQualities("BV1xx", 1, 2, 0, false, false); err == nil {
 		t.Fatal("GetAvailableQualities should reject an unlicensed call")
 	}
+	if _, err := app.GetPlaybackInfo("BV1xx", 1, 2, 0, false, false); err == nil {
+		t.Fatal("GetPlaybackInfo should reject an unlicensed call")
+	}
 	if _, err := app.AddDownloadTasks(downloader.DownloadRequest{}); err == nil {
 		t.Fatal("AddDownloadTasks should reject an unlicensed call")
 	}

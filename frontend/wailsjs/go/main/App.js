@@ -54,6 +54,10 @@ export function GetAvailableQualities(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['GetAvailableQualities'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function GetPlaybackInfo(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['GetPlaybackInfo'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
 export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }

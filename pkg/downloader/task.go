@@ -25,6 +25,7 @@ type DownloadTask struct {
 	Title           string     `json:"title"`           // 视频主标题
 	PartTitle       string     `json:"partTitle"`       // 分P/分集标题
 	Cover           string     `json:"cover"`           // 封面图 URL
+	SourceURL       string     `json:"sourceUrl"`       // 实际单集或分P的视频页
 	TargetQuality   string     `json:"targetQuality"`   // 目标画质 (e.g. "highest", "120", "80")
 	TargetCodec     string     `json:"targetCodec"`     // 目标编码 (e.g. "auto", "AVC", "HEVC", "AV1")
 	QualityID       int        `json:"qualityId"`       // 最终解析出的清晰度 ID
@@ -40,11 +41,14 @@ type DownloadTask struct {
 	ETAStr          string     `json:"etaStr"`          // 预估剩余时间 (e.g. "12s")
 	Duration        int        `json:"duration"`        // 视频时长(秒)
 	ErrorMsg        string     `json:"errorMsg"`        // 错误信息
-	CreatedAt       int64      `json:"createdAt"`       // 创建时间戳
-	CompletedAt     int64      `json:"completedAt"`     // 完成时间戳
-	OutputPath      string     `json:"outputPath"`      // 最终合并输出的文件绝对路径
-	VideoTmpPath    string     `json:"videoTmpPath"`    // 视频临时分块文件路径
-	AudioTmpPath    string     `json:"audioTmpPath"`    // 音频临时分块文件路径
+	ErrorKind       string     `json:"errorKind,omitempty"`
+	ErrorHint       string     `json:"errorHint,omitempty"`
+	ErrorDetail     string     `json:"errorDetail,omitempty"`
+	CreatedAt       int64      `json:"createdAt"`    // 创建时间戳
+	CompletedAt     int64      `json:"completedAt"`  // 完成时间戳
+	OutputPath      string     `json:"outputPath"`   // 最终合并输出的文件绝对路径
+	VideoTmpPath    string     `json:"videoTmpPath"` // 视频临时分块文件路径
+	AudioTmpPath    string     `json:"audioTmpPath"` // 音频临时分块文件路径
 }
 
 // DownloadRequest 前端发起的下载请求结构体
@@ -55,6 +59,7 @@ type DownloadRequest struct {
 	SSID          int64   `json:"ssid,omitempty"`
 	Title         string  `json:"title"`
 	Cover         string  `json:"cover"`
+	SourcePage    int     `json:"sourcePage,omitempty"`
 	IsBangumi     bool    `json:"isBangumi"`
 	IsCheese      bool    `json:"isCheese"`
 	TargetQuality string  `json:"targetQuality"` // 用户选定的画质 ("highest", "120", "80", etc.)

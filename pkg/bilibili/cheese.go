@@ -85,6 +85,7 @@ func (c *Client) fetchCheeseDetail(ctx context.Context, target *ParsedTarget) (*
 	}
 	detail := &VideoDetail{
 		Type: TargetCheese, SeasonID: d.SeasonID, Title: strings.TrimSpace(d.Title),
+		CollectionTitle: strings.TrimSpace(d.Title), HasLinkedEpisode: target.EPID != "",
 		Cover: d.Cover, Description: d.Subtitle, OwnerName: d.UpInfo.Uname,
 		OwnerFace: d.UpInfo.Avatar, OwnerMid: d.UpInfo.Mid, DefaultPage: 1,
 	}
@@ -194,13 +195,15 @@ func (c *Client) requestCheesePlayURL(ctx context.Context, aid, cid, epid int64)
 		return nil, fmt.Errorf("请求课堂媒体流失败: %w", err)
 	}
 	if resp.Code != 0 {
-		return nil, fmt.Errorf("课堂媒体流返回错误 (code=%d): %s；请确认已登录购买课程的账号且课程未过期", resp.Code, resp.Message)
+		return nil, playbackAPIError(resp.Code, resp.Message)
 	}
 	if resp.isPreview() {
-		return nil, fmt.Errorf("该课堂课时仅返回试看内容，请登录已购买该课程的账号后重试")
+		err := playbackError("preview_only", "课堂接口仅返回试看内容")
+		err.Hint = "请登录已购买该课程且课程未过期的账号后重试。"
+		return nil, err
 	}
 	if resp.getDash() == nil {
-		return nil, fmt.Errorf("课堂接口未返回可下载的音视频流，请确认课时已发布且当前账号具有播放权限")
+		return nil, playbackError("unavailable", "课堂接口未返回可下载的视频流")
 	}
 	return &resp, nil
 }
