@@ -19,7 +19,7 @@ class GitCodeFlowTests(unittest.TestCase):
             root = Path(directory)
             repo, tag = "fixture/repo", "v1.1.10"
             base = "https://gitcode.com/" + repo
-            events, pending, published = [], {}, {}
+            events, pending, published, flags = [], {}, {}, []
             files = []
             for name in ["windows.zip", "macos.dmg", "SHA256SUMS.txt"]:
                 path = root / name
@@ -36,6 +36,7 @@ class GitCodeFlowTests(unittest.TestCase):
                     request.fulfill(json={"success": True})
                     return
                 if url.path.endswith("/publish"):
+                    flags.append(request.request.post_data_json)
                     published.update(pending)
                     events.append(("publish", tag))
                     request.fulfill(json={"success": True})
@@ -50,17 +51,26 @@ class GitCodeFlowTests(unittest.TestCase):
                     <div><label>Tag名称</label><input id="tag"/><button id="choice">{tag}</button></div>
                     <div><label>发行版标题</label><input/></div>
                     <div><label>发行版描述</label><textarea></textarea></div>
-                    <input type="file" multiple id="d-upload-temp"/><div id="files"></div>
+                    <label><input type="checkbox"/>设置为预发版本</label>
+                    <label><input type="checkbox" checked/>设置为最新版本</label>
+                    <div id="upload-trigger">请上传发行版文件，可以点击选择文件或直接拖拽文件进行上传</div><div id="files"></div>
                     <button id="publish" disabled>发布</button>
                     <script>
                     document.querySelector('#choice').onclick=()=>{{document.querySelector('#tag').value='{tag}';document.querySelector('#choice').remove();}};
-                    document.querySelector('#d-upload-temp').onchange=async(e)=>{{
+                    document.querySelector('#upload-trigger').onclick=()=>{{
+                      const input=document.createElement('input');input.type='file';input.multiple=true;document.body.append(input);
+                      input.onchange=async(e)=>{{
                       for(const f of e.target.files){{
                         const row=document.createElement('div');row.textContent=f.name;document.querySelector('#files').append(row);
                         await fetch('{base}/upload',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{name:f.name,bytes:Array.from(new Uint8Array(await f.arrayBuffer()))}})}});
                       }}document.querySelector('#publish').disabled=false;
+                      }};input.click();
                     }};
-                    document.querySelector('#publish').onclick=async()=>{{await fetch('{base}/publish',{{method:'POST'}});location.href='{base}/releases';}};
+                    document.querySelector('#publish').onclick=async()=>{{
+                      const boxes=document.querySelectorAll('input[type=checkbox]');
+                      await fetch('{base}/publish',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{prerelease:boxes[0].checked,latest:boxes[1].checked}})}});
+                      location.href='{base}/releases';
+                    }};
                     </script>
                     """
                 else:
@@ -88,7 +98,10 @@ class GitCodeFlowTests(unittest.TestCase):
                 provider.login()
                 self.assertTrue((browser.profile / "gitcode-login-ready").is_file())
                 self.assertFalse(events)
-                result = provider.publish(tag, "commit", "release notes", files)
+                result = provider.publish(
+                    tag, "commit", "release notes", files, prerelease=True
+                )
+                self.assertEqual(flags, [{"prerelease": True, "latest": False}])
                 self.assertEqual(set(result), {path.name for path in files})
                 self.assertEqual(
                     [e[0] for e in events],

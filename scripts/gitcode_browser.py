@@ -88,7 +88,43 @@ class GitCodeBrowser:
         if field.input_value() != tag:
             raise PublishError("GitCode 版本标签未确认，停止发布")
 
-    def publish(self, tag, commit, notes, files):
+    def set_checkbox(self, label, checked):
+        checkbox = self.page.get_by_role("checkbox", name=label, exact=True)
+        if checkbox.count() != 1:
+            raise PublishError(f"GitCode 未找到唯一版本选项：{label}")
+
+        def current():
+            # DevUI reflects its controlled state in the checked attribute; its
+            # hidden native input property can keep the preceding browser value.
+            return checkbox.evaluate(
+                "n => n.classList.contains('devui-checkbox__input') ? n.hasAttribute('checked') : n.checked"
+            )
+
+        if current() != checked:
+            self.page.get_by_text(label, exact=True).click()
+        wait_until(
+            lambda: current() == checked,
+            5,
+            f"GitCode 版本选项 {label}",
+            interval=0.1,
+        )
+
+    def upload_files(self, files):
+        upload = self.page.locator("input[type=file]")
+        if upload.count() == 1:
+            upload.set_input_files([str(path) for path in files])
+            return
+        trigger = self.page.get_by_text(
+            "请上传发行版文件，可以点击选择文件或直接拖拽文件进行上传", exact=True
+        )
+        if trigger.count() != 1:
+            raise PublishError("GitCode 未找到唯一附件上传控件，停止发布")
+        # The real site creates its input only after the upload area is clicked.
+        with self.page.expect_file_chooser() as chooser:
+            trigger.click()
+        chooser.value.set_files([str(path) for path in files])
+
+    def publish(self, tag, commit, notes, files, *, prerelease=False):
         self.open_releases()
         links = self.asset_links(tag)
         results = {}
@@ -135,12 +171,9 @@ class GitCodeBrowser:
         self.field("发行版标题", "input").fill("BBDown Pro " + tag)
         editor = self.field("发行版描述", "textarea, [contenteditable=true]")
         editor.fill(notes or "BBDown Pro " + tag)
-        upload = self.page.locator("#d-upload-temp")
-        if upload.count() != 1:
-            upload = self.page.locator("input[type=file]")
-        if upload.count() != 1:
-            raise PublishError("GitCode 未找到唯一附件上传控件，停止发布")
-        upload.set_input_files([str(path) for path in missing])
+        self.set_checkbox("设置为最新版本", not prerelease)
+        self.set_checkbox("设置为预发版本", prerelease)
+        self.upload_files(missing)
         for path in missing:
             self.page.get_by_text(path.name, exact=True).first.wait_for(timeout=30000)
         publish = self.page.get_by_role("button", name="发布", exact=True)
@@ -156,7 +189,12 @@ class GitCodeBrowser:
             return publish.is_enabled()
 
         wait_until(uploaded, 300, "GitCode 附件上传完成")
+        form_url = self.page.url
         publish.click()
+        try:
+            self.page.wait_for_url(lambda url: url != form_url, timeout=90000)
+        except BrowserTimeout as error:
+            raise PublishError("GitCode 未确认发布成功，保留上传记录供重试") from error
 
         # Only the public download links are used as evidence of success.
         def ready():
