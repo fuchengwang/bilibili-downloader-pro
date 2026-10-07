@@ -109,6 +109,50 @@ func TestDefaultPartIsOnlyMarkedWhenLinkOmitsP(t *testing.T) {
 	}
 }
 
+func TestMultiPageOverviewDoesNotChooseFirstEpisode(t *testing.T) {
+	client := playurlClient(t, `{"code":0,"data":{"bvid":"BVparts","aid":20,"title":"完整教程","pic":"https://cover.test/collection","duration":30,"pages":[{"cid":200,"page":1,"part":"第一集","duration":30,"first_frame":"https://cover.test/first"},{"cid":201,"page":2,"part":"第二集","duration":45,"first_frame":"https://cover.test/second"}]}}`, nil)
+	for _, tc := range []struct {
+		query string
+		page  int
+	}{
+		{"", 0}, {"?p=1", 1}, {"?p=2", 2},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			target, err := client.ParseInput(context.Background(), "https://www.bilibili.com/video/BV1xhLi6QEwq/"+tc.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			detail, err := client.FetchVideoDetail(context.Background(), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if detail.HasLinkedEpisode != (tc.page > 0) || detail.DefaultPage != tc.page {
+				t.Fatalf("incorrect linked episode: %+v", detail)
+			}
+			if detail.Title != "完整教程" || detail.Cover != "https://cover.test/collection" || detail.TotalParts != 2 {
+				t.Fatalf("overview metadata lost: %+v", detail)
+			}
+			if tc.page == 0 && (detail.Duration != 75 || detail.DurationStr != "01:15") {
+				t.Fatalf("overview must show the full duration, not P1: %+v", detail)
+			}
+			if detail.Episodes[1].Cover != "https://cover.test/second" {
+				t.Fatal("individual episode cover was lost")
+			}
+		})
+	}
+}
+
+func TestMultiPageOverviewOmitsIncompleteDuration(t *testing.T) {
+	client := playurlClient(t, `{"code":0,"data":{"bvid":"BVparts","duration":30,"pages":[{"cid":200,"page":1,"duration":30},{"cid":201,"page":2}]}}`, nil)
+	detail, err := client.FetchVideoDetail(context.Background(), &ParsedTarget{Type: TargetNormal, BVID: "BVparts", Page: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.HasLinkedEpisode || detail.Duration != 0 || detail.DurationStr != "" {
+		t.Fatalf("partial duration is presented as the total: %+v", detail)
+	}
+}
+
 // TestFetchBangumiDetail_DurationEndToEnd 测试解析端到端番剧响应时时长字段转换为秒
 func TestFetchBangumiDetail_DurationEndToEnd(t *testing.T) {
 	mockResp := seasonResponse{

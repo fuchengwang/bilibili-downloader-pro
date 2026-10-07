@@ -50,7 +50,7 @@ type VideoDetail struct {
 	DefaultPage      int           `json:"defaultPage"`      // 用户请求定位的分P
 	HasLinkedEpisode bool          `json:"hasLinkedEpisode"` // 链接是否指向具体的一集
 	CollectionTitle  string        `json:"collectionTitle"`  // 所属合集或课程名称
-	IsDefaultPart    bool          `json:"isDefaultPart"`    // 多P链接未指定分P时明确标注默认P1
+	IsDefaultPart    bool          `json:"isDefaultPart"`    // 多P链接未指定分P，展示整个稿件
 }
 
 // ---- API 响应结构体 ----
@@ -288,7 +288,7 @@ func (c *Client) fetchNormalDetail(ctx context.Context, target *ParsedTarget) (*
 		if detail.DefaultPage > len(d.Pages) {
 			return nil, fmt.Errorf("链接指定的 P%d 不存在，请检查分P链接", detail.DefaultPage)
 		}
-		detail.HasLinkedEpisode = true
+		detail.HasLinkedEpisode = !detail.IsDefaultPart
 		for _, p := range d.Pages {
 			partTitle := p.Part
 			if partTitle == "" {
@@ -309,6 +309,26 @@ func (c *Client) fetchNormalDetail(ctx context.Context, target *ParsedTarget) (*
 				DurationStr: utils.FormatDuration(p.Duration),
 				Cover:       cover,
 			})
+		}
+		if detail.IsDefaultPart {
+			// No part was requested: keep the main title/cover and only show
+			// a total duration when all part durations are available.
+			detail.DefaultPage = 0
+			detail.Duration = 0
+			complete := true
+			for _, ep := range episodes {
+				if ep.Duration <= 0 {
+					complete = false
+					break
+				}
+				detail.Duration += ep.Duration
+			}
+			if complete {
+				detail.DurationStr = utils.FormatDuration(detail.Duration)
+			} else {
+				detail.Duration = 0
+				detail.DurationStr = ""
+			}
 		}
 	}
 

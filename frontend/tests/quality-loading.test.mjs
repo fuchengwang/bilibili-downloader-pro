@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import ts from 'typescript'
-import { ref, toRaw } from 'vue'
+import { ref, toRaw, computed } from 'vue'
 
 // Execute the real component functions with a controllable Wails response.
 const component = readFileSync(new URL('../src/components/QuickParse.vue', import.meta.url), 'utf8')
@@ -13,13 +13,17 @@ const functionNames = new Set(['fetchQualities', 'handleClear', 'currentEpisode'
 const functions = ast.statements
   .filter(node => ts.isFunctionDeclaration(node) && functionNames.has(node.name.text))
   .map(node => node.getText(ast)).join('\n')
-const code = ts.transpileModule(functions, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+const displayNames = new Set(['linkedEpisode', 'displayTitle', 'displayCover', 'displayDuration'])
+const display = ast.statements
+  .filter(node => ts.isVariableStatement(node) && node.declarationList.declarations.some(decl => displayNames.has(decl.name.getText(ast))))
+  .map(node => node.getText(ast)).join('\n')
+const code = ts.transpileModule(functions + '\n' + display, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 
 function harness() {
   const requests = []
   const messages = []
   const context = vm.createContext({
-    ref, toRaw,
+    ref, toRaw, computed,
     parsedDetail: ref(null), availableQualities: ref([]),
     selectedQuality: ref('highest'), isFetchingQualities: ref(false),
     inputUrl: ref('video'), qualityRequest: 0, playbackError: ref(null),
@@ -141,6 +145,32 @@ test('a season link and an invalid part cannot silently download the first episo
   const { context: c } = harness()
   assert.equal(c.currentEpisode({ ...detail(), hasLinkedEpisode: false }), undefined)
   assert.equal(c.currentEpisode({ ...detail(), defaultPage: 99, hasLinkedEpisode: true }), undefined)
+})
+
+test('an overview uses the collection title and cover instead of the first episode', () => {
+  const { context: c } = harness()
+  c.parsedDetail.value = {
+    ...detail(), type: 'normal', isCollection: true, hasLinkedEpisode: false,
+    defaultPage: 0, title: '完整教程', cover: 'collection-cover', durationStr: '01:15',
+    episodes: [{ index: 1, title: '第一集', cover: 'part-one-cover', durationStr: '00:30' }],
+  }
+  assert.equal(vm.runInContext('linkedEpisode.value', c), undefined)
+  assert.equal(vm.runInContext('displayTitle.value', c), '完整教程')
+  assert.equal(vm.runInContext('displayCover.value', c), 'collection-cover')
+  assert.equal(vm.runInContext('displayDuration.value', c), '01:15')
+})
+
+test('an explicit first part still uses its own cover and title', () => {
+  const { context: c } = harness()
+  c.parsedDetail.value = {
+    ...detail(), type: 'normal', isCollection: true, hasLinkedEpisode: true,
+    defaultPage: 1, title: '完整教程', cover: 'collection-cover', durationStr: '01:15',
+    episodes: [{ index: 1, title: '第一集', cover: 'part-one-cover', durationStr: '00:30' }],
+  }
+  assert.equal(vm.runInContext('linkedEpisode.value.index', c), 1)
+  assert.equal(vm.runInContext('displayTitle.value', c), '第一集')
+  assert.equal(vm.runInContext('displayCover.value', c), 'part-one-cover')
+  assert.equal(vm.runInContext('displayDuration.value', c), '00:30')
 })
 
 test('a stale permission failure cannot replace the new linked video status', async () => {

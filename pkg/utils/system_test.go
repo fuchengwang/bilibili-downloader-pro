@@ -1,12 +1,51 @@
 package utils
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
 )
+
+func TestResolveOpenDirectoryTarget(t *testing.T) {
+	dir := t.TempDir()
+	video := filepath.Join(dir, "已完成的视频.mp4")
+	partial := filepath.Join(dir, "下载中的视频.mp4.downloading")
+	for _, path := range []string{video, partial} {
+		if err := os.WriteFile(path, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct {
+		name, path, want string
+	}{
+		{"已有视频", video, video},
+		{"已有目录", dir, dir},
+		{"文件已删除", filepath.Join(dir, "已删除的视频.mp4"), dir},
+		{"下载中定位临时文件", filepath.Join(dir, "下载中的视频.mp4"), partial},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveOpenDirectoryTarget(tc.path)
+			if err != nil || got != tc.want {
+				t.Fatalf("target = %q, err = %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestOpenDirectoryMissingParentDoesNotCreateIt(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "已删除的下载目录")
+	err := OpenDirectory(filepath.Join(dir, "视频.mp4"))
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("应报告目录不存在，实际: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("打开目录不应创建已删除的目录: %v", err)
+	}
+}
 
 // TestSanitizeFilename_IllegalCharacters 测试非法字符替换
 func TestSanitizeFilename_IllegalCharacters(t *testing.T) {

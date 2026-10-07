@@ -128,34 +128,38 @@ func FormatDuration(sec int) string {
 
 // OpenDirectory 在系统文件管理器中打开指定目录或高亮文件
 func OpenDirectory(path string) error {
+	target, err := resolveOpenDirectoryTarget(path)
+	if err != nil {
+		return err
+	}
+	return openDirectoryOS(target)
+}
+
+func resolveOpenDirectoryTarget(path string) (string, error) {
 	if path == "" {
-		return fmt.Errorf("路径为空")
+		return "", fmt.Errorf("路径为空")
 	}
 
 	cleanPath := filepath.Clean(path)
-
-	targetToOpen := cleanPath
-	if _, err := os.Stat(cleanPath); err != nil {
-		dir := filepath.Dir(cleanPath)
-		base := strings.TrimSuffix(filepath.Base(cleanPath), ".mp4")
-		matched := ""
-		if entries, rErr := os.ReadDir(dir); rErr == nil {
-			for _, e := range entries {
-				if strings.HasPrefix(e.Name(), base) && strings.Contains(e.Name(), ".downloading") {
-					matched = filepath.Join(dir, e.Name())
-					break
-				}
-			}
-		}
-		if matched != "" {
-			targetToOpen = matched
-		} else {
-			_ = os.MkdirAll(dir, 0755)
-			targetToOpen = dir
-		}
+	if _, err := os.Stat(cleanPath); err == nil {
+		return cleanPath, nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("无法访问文件或目录: %w", err)
 	}
 
-	return openDirectoryOS(targetToOpen)
+	dir := filepath.Dir(cleanPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("下载目录不存在或无法访问: %w", err)
+	}
+	base := strings.TrimSuffix(filepath.Base(cleanPath), ".mp4")
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), base) && strings.Contains(e.Name(), ".downloading") {
+			return filepath.Join(dir, e.Name()), nil
+		}
+	}
+	// 文件已移动或删除时打开已有的父目录，不创建空目录。
+	return dir, nil
 }
 
 // OpenFile 使用系统默认播放器打开/播放指定文件

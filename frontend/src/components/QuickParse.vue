@@ -261,7 +261,7 @@ defineExpose({
           <div v-else class="cover-fallback">
             <Film :size="32" />
           </div>
-          <span class="duration-badge">{{ displayDuration }}</span>
+          <span v-if="displayDuration" class="duration-badge">{{ displayDuration }}</span>
           <span v-if="parsedDetail.isCollection" class="collection-badge">
             <Layers :size="11" />
             <span>{{ parsedDetail.type === 'cheese' ? '课堂' : '合集' }} · {{ parsedDetail.totalParts }}{{ parsedDetail.type === 'cheese' ? '课时' : 'P' }}</span>
@@ -273,7 +273,7 @@ defineExpose({
         <div class="video-header">
           <h2 class="video-title" :title="displayTitle">{{ displayTitle }}</h2>
           <p v-if="parsedDetail.isCollection" class="collection-context">
-            <span v-if="linkedEpisode" class="current-episode-label">{{ parsedDetail.isDefaultPart ? '默认 P1' : `${parsedDetail.type === 'cheese' ? '课' : 'P'}${linkedEpisode.index}` }} · 当前链接</span>
+            <span v-if="linkedEpisode" class="current-episode-label">{{ `${parsedDetail.type === 'cheese' ? '课' : 'P'}${linkedEpisode.index}` }} · 当前链接</span>
             <span :title="parsedDetail.collectionTitle || parsedDetail.title">{{ parsedDetail.collectionTitle || parsedDetail.title }} · 共 {{ parsedDetail.totalParts }} {{ parsedDetail.type === 'cheese' ? '课时' : '集' }}</span>
           </p>
         </div>
