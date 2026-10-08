@@ -16,7 +16,6 @@ node_modules/
 dist/
 .pnpm-store/
 .local/
-__pycache__/
 
 # OS & IDE
 .DS_Store
@@ -43,3 +42,21 @@ settings.json
 # Go test / coverage
 *.out
 *.test
+
+# Standalone publisher and private publishing data must never be added here
+/tools/releaser/
+/docs/releaser.md
+/docs/publishing.md
+/scripts/build-releaser.sh
+/scripts/publish.sh
+/scripts/publish_release.py
+/scripts/publish.example.json
+/scripts/lanzou_browser.py
+/scripts/gitcode_browser.py
+/scripts/tests/test_releaser_ui.py
+/scripts/tests/test_publish.py
+/scripts/tests/test_browser.py
+/scripts/tests/test_gitcode_browser.py
+/.github/workflows/test-publishing.yml
+__pycache__/
+*.pyc

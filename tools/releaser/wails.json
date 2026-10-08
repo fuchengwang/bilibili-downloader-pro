@@ -1,9 +1,0 @@
-{
-  "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "BBDown 发布器",
-  "outputfilename": "BBDown 发布器",
-  "frontend:install": "pnpm install --frozen-lockfile",
-  "frontend:build": "pnpm run build",
-  "author": {"name": "BBDown Pro", "email": "wynfrith@outlook.com"},
-  "info": {"companyName": "BBDown", "productName": "BBDown Publisher", "productVersion": "1.0.0", "copyright": "Copyright © 2026 BBDown"}
-}

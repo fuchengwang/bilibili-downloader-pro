@@ -26,9 +26,7 @@ To build a redistributable, production mode package, use `wails build`.
 
 ## 自动构建与发布
 
-首次配置后，提交修改并运行 `bash scripts/release.sh`（版本取自 `wails.json`）。GitHub Actions 会运行后端测试，分别构建 Windows x64 ZIP 与 macOS Universal DMG；两个平台全部成功后才公开 Release，并附上 SHA256SUMS.txt。本机脚本等待构建成功，再同步 GitCode 源码、标签及安装包，并上传蓝奏云。
-
-`bash scripts/publish.sh` 是同一入口的别名；中断后加 `--resume` 只补做未完成的渠道。蓝奏云保留固定文件夹分享入口，新版两个安装包都完整下载校验成功后才清理旧版；自动更新后台可选启用。直接推送标签只触发 GitHub 构建。配置、登录及只读检查见 [发布脚本说明](docs/publishing.md)。
+提交修改后运行 `bash scripts/release.sh`（版本取自 `wails.json`），或推送新的 `v*` 标签。GitHub Actions 会运行后端测试，分别构建 Windows x64 ZIP 与 macOS Universal DMG；两个平台全部成功后才公开 Release，并附上 SHA256SUMS.txt。
 
 macOS 构建必须配置仓库 Actions Secrets：
 
