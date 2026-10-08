@@ -53,6 +53,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Test native Windows update and restart
+        run: go test -race -count=1 -timeout 8m ./pkg/update ./pkg/updater
+        env:
+          BBDOWN_NATIVE_UPDATE_TESTS: '1'
       - uses: pnpm/action-setup@v4
         with:
           version: 10.34.5
@@ -128,6 +132,11 @@ jobs:
           test -n "$IDENTITY"
           echo "APPLE_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
           rm "$RUNNER_TEMP/certificate.p12"
+      - name: Test Developer ID signed update and restart
+        run: go test -race -count=1 -timeout 8m ./pkg/update ./pkg/updater
+        env:
+          BBDOWN_NATIVE_UPDATE_TESTS: '1'
+          BBDOWN_TEST_SIGN_IDENTITY: ${{ env.APPLE_SIGN_IDENTITY }}
       - name: Sign, notarize, staple, and verify DMG
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}

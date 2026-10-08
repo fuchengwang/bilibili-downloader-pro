@@ -42,7 +42,11 @@ func makeProbeBundle(t *testing.T, bundle, binary, version, id string) {
 	if err := os.WriteFile(filepath.Join(bundle, "Contents", "Info.plist"), []byte(plist), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("/usr/bin/codesign", "--force", "--sign", "-", bundle).CombinedOutput(); err != nil {
+	identity := os.Getenv("BBDOWN_TEST_SIGN_IDENTITY")
+	if identity == "" {
+		identity = "-"
+	}
+	if out, err := exec.Command("/usr/bin/codesign", "--force", "--options", "runtime", "--sign", identity, bundle).CombinedOutput(); err != nil {
 		t.Fatalf("sign test bundle: %v %s", err, out)
 	}
 }

@@ -15,13 +15,18 @@ func installationTarget(string) (string, error) { return "", errUnsupported }
 func preparePackage(context.Context, string, update.Release, *Plan, string) error {
 	return errUnsupported
 }
-func validatePlatformPlan(*Plan) error      { return errUnsupported }
-func preparedBinary(p *Plan) string         { return p.Prepared }
-func helperSuffix() string                  { return "" }
-func detachCommand(*exec.Cmd)               {}
-func quietCommand(*exec.Cmd)                {}
-func waitParent(context.Context, int) error { return errUnsupported }
-func replaceInstallation(*Plan) error       { return errUnsupported }
-func restoreInstallation(*Plan) error       { return errUnsupported }
-func launchApplication(string) error        { return errUnsupported }
-func lockInstaller(string) (func(), error)  { return nil, errUnsupported }
+func validatePlatformPlan(*Plan) error { return errUnsupported }
+func preparedBinary(p *Plan) string    { return p.Prepared }
+func helperSuffix() string             { return "" }
+func prepareHelper(string, string, string) (string, string, error) {
+	return "", "", errUnsupported
+}
+func detachCommand(*exec.Cmd)                             {}
+func quietCommand(*exec.Cmd)                              {}
+func waitParent(context.Context, int) error               { return errUnsupported }
+func replaceInstallation(*Plan) error                     { return errUnsupported }
+func restoreInstallation(*Plan) error                     { return errUnsupported }
+func launchApplication(string) error                      { return errUnsupported }
+func startApplicationForUpdate(string) (*exec.Cmd, error) { return nil, errUnsupported }
+func stopLaunchMonitor(*exec.Cmd)                         {}
+func lockInstaller(string) (func(), error)                { return nil, errUnsupported }

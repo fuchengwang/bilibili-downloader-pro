@@ -121,6 +121,13 @@ func validatePlatformPlan(p *Plan) error {
 }
 func preparedBinary(p *Plan) string { return p.Prepared }
 func helperSuffix() string          { return ".exe" }
+func prepareHelper(executable, directory, name string) (string, string, error) {
+	helper := filepath.Join(directory, name+helperSuffix())
+	if err := copyFile(executable, helper, 0700); err != nil {
+		return "", "", err
+	}
+	return helper, helper, nil
+}
 func detachCommand(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW, HideWindow: true}
 }
@@ -205,14 +212,19 @@ func restoreInstallation(p *Plan) error {
 	return nativeReplace(p.Target, p.Backup, p.Prepared)
 }
 func launchApplication(target string) error {
-	cmd := exec.Command(target)
-	cmd.Dir = filepath.Dir(target)
-	detachCommand(cmd)
-	if err := cmd.Start(); err != nil {
+	cmd, err := startApplicationForUpdate(target)
+	if err != nil {
 		return err
 	}
 	return cmd.Process.Release()
 }
+func startApplicationForUpdate(target string) (*exec.Cmd, error) {
+	cmd := exec.Command(target)
+	cmd.Dir = filepath.Dir(target)
+	detachCommand(cmd)
+	return cmd, cmd.Start()
+}
+func stopLaunchMonitor(*exec.Cmd) {}
 func lockInstaller(directory string) (func(), error) {
 	path, err := windows.UTF16PtrFromString(filepath.Join(directory, "install.lock"))
 	if err != nil {

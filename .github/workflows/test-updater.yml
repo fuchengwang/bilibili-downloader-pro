@@ -2,9 +2,10 @@ name: Test Native Updater
 
 on:
   push:
-    branches: ['codex/bbdown-updates']
+    branches: ['main', 'codex/**']
+    paths: ['pkg/updater/**', 'pkg/update/**', 'pkg/downloader/restart*', 'app_update.go', 'main.go', 'frontend/src/components/UpdatePanel.vue', 'frontend/tests/update-panel.test.mjs', '.github/workflows/test-updater.yml']
   pull_request:
-    paths: ['pkg/updater/**', 'pkg/update/**', 'pkg/downloader/restart*', '.github/workflows/test-updater.yml']
+    paths: ['pkg/updater/**', 'pkg/update/**', 'pkg/downloader/restart*', 'app_update.go', 'main.go', 'frontend/src/components/UpdatePanel.vue', 'frontend/tests/update-panel.test.mjs', '.github/workflows/test-updater.yml']
   workflow_dispatch:
 
 permissions:

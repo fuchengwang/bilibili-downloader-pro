@@ -24,6 +24,7 @@ const status = computed(() => {
     case 'preparing': return '正在准备更新…'
     case 'paused': return '下载已暂停'
     case 'ready': return '更新已准备好'
+    case 'install_failed': return '上次更新未完成'
     case 'restarting': return '正在重启…'
     default: return props.state.hasUpdate ? '有可用更新' : props.state.checked ? '未发现新版本' : ''
   }
@@ -85,6 +86,7 @@ async function changeAutomatic(event: Event) {
         </button>
         <button v-else-if="state.phase === 'downloading'" class="update-button secondary" :disabled="requesting" @click="act(PauseUpdateDownload)"><Pause :size="14" />暂停</button>
         <button v-else-if="ready && dismissed" class="update-button primary" :disabled="requesting" @click="act(RestartForUpdate)">重启使用新版</button>
+        <button v-else-if="state.phase === 'install_failed'" class="update-button primary" :disabled="requesting" @click="act(RestartForUpdate)">重试安装</button>
       </div>
       <p v-if="state.notes && state.hasUpdate" class="release-notes">{{ state.notes }}</p>
 
@@ -96,8 +98,8 @@ async function changeAutomatic(event: Event) {
       </div>
 
       <div v-if="ready && !dismissed" class="ready-message" role="status">
-        <div class="ready-heading"><CheckCircle2 :size="17" /><strong>更新完成</strong><button class="dismiss-button" aria-label="关闭更新提示" @click="dismissed = true"><X :size="15" /></button></div>
-        <p>重启后即可使用新版。</p>
+        <div class="ready-heading"><CheckCircle2 :size="17" /><strong>更新已下载</strong><button class="dismiss-button" aria-label="关闭更新提示" @click="dismissed = true"><X :size="15" /></button></div>
+        <p>重启以安装并使用新版。</p>
         <div class="ready-actions">
           <button class="update-button primary" :disabled="requesting" @click="act(RestartForUpdate)">立即重启</button>
           <button class="update-button secondary" :disabled="requesting" @click="dismissed = true">暂不重启</button>

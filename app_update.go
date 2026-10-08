@@ -96,7 +96,7 @@ func (a *App) RestartForUpdate() error {
 	if err := a.requireUpdater(); err != nil {
 		return err
 	}
-	if a.updates.Snapshot().Phase != "ready" {
+	if phase := a.updates.Snapshot().Phase; phase != "ready" && phase != "install_failed" {
 		return errors.New("请先完成更新下载")
 	}
 	if mgr := a.currentDownloadManager(); mgr != nil {

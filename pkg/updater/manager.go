@@ -119,8 +119,11 @@ func New(cfg Config) (*Manager, error) {
 				m.state.HasUpdate = true
 				m.state.Phase = "ready"
 				m.state.Error = p.Error
-				if p.Phase == "scheduled" {
-					m.state.Error = "上次更新未完成，可以再次尝试"
+				if p.Phase != "ready" {
+					m.state.Phase = "install_failed"
+					if m.state.Error == "" {
+						m.state.Error = "上次更新未完成，可以重试安装"
+					}
 				}
 			} else {
 				m.state.Error = "更新文件无法使用，请重新下载"
@@ -394,6 +397,14 @@ func (m *Manager) MarkOpened() {
 	if p.Phase != "applied" && p.Phase != "scheduled" {
 		return
 	}
+	receipt, err := json.Marshal(openedInstallation{Token: p.Token, Version: p.Version, BinaryHash: p.BinaryHash})
+	if err != nil {
+		return
+	}
+	if err := utils.AtomicWriteFile(filepath.Join(m.cfg.Directory, "opened.json"), receipt, 0600); err != nil {
+		log.Printf("acknowledge update startup: %v", err)
+		return
+	}
 	_ = os.RemoveAll(p.Backup)
 	_ = os.Remove(filepath.Join(m.cfg.Directory, "install.json"))
 	_ = os.RemoveAll(filepath.Join(m.cfg.Directory, "downloads"))
@@ -413,7 +424,7 @@ func (m *Manager) MarkOpened() {
 
 func (m *Manager) LaunchInstall() error {
 	m.mu.Lock()
-	if m.closed || m.cancel != nil || m.state.Phase != "ready" {
+	if m.closed || m.cancel != nil || (m.state.Phase != "ready" && m.state.Phase != "install_failed") {
 		m.mu.Unlock()
 		return errors.New("更新尚未准备完成")
 	}
@@ -424,7 +435,7 @@ func (m *Manager) LaunchInstall() error {
 	err := LaunchInstall(m.cfg.Directory, m.cfg.Executable)
 	if err != nil {
 		m.mu.Lock()
-		m.state.Phase = "ready"
+		m.state.Phase = "install_failed"
 		m.state.Error = friendlyError(err)
 		m.mu.Unlock()
 		m.publish()

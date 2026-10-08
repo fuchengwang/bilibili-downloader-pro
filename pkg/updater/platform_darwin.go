@@ -153,8 +153,30 @@ func validatePlatformPlan(p *Plan) error {
 }
 func preparedBinary(p *Plan) string { return filepath.Join(p.Prepared, p.BinaryRelative) }
 func helperSuffix() string          { return "" }
-func detachCommand(cmd *exec.Cmd)   { cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
-func quietCommand(cmd *exec.Cmd)    {}
+
+func prepareHelper(executable, directory, name string) (string, string, error) {
+	bundle, err := installationTarget(executable)
+	if err != nil {
+		return "", "", err
+	}
+	helper := filepath.Join(directory, name+".app")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// Developer ID executables are sealed with the bundle's Info.plist and
+	// resources. Copying just Contents/MacOS produces a helper macOS kills.
+	if out, err := exec.CommandContext(ctx, "/usr/bin/ditto", bundle, helper).CombinedOutput(); err != nil {
+		_ = os.RemoveAll(helper)
+		return "", "", fmt.Errorf("无法准备更新程序: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	if err := exec.CommandContext(ctx, "/usr/bin/codesign", "--verify", "--deep", "--strict", helper).Run(); err != nil {
+		_ = os.RemoveAll(helper)
+		return "", "", errors.New("更新程序签名校验失败，请重新安装软件后重试")
+	}
+	return filepath.Join(helper, "Contents", "MacOS", filepath.Base(executable)), helper, nil
+}
+
+func detachCommand(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
+func quietCommand(cmd *exec.Cmd)  {}
 func waitParent(ctx context.Context, pid int) error {
 	if pid <= 0 || pid == os.Getpid() {
 		return errors.New("invalid parent process")
@@ -177,6 +199,14 @@ func replaceInstallation(p *Plan) error {
 }
 func restoreInstallation(p *Plan) error     { return unix.RenamexNp(p.Target, p.Backup, unix.RENAME_SWAP) }
 func launchApplication(target string) error { return exec.Command("/usr/bin/open", "-n", target).Run() }
+func startApplicationForUpdate(target string) (*exec.Cmd, error) {
+	// -W observes a new app that exits before its window is ready. The watcher
+	// can be stopped after acknowledgement without terminating the application.
+	cmd := exec.Command("/usr/bin/open", "-n", "-W", target)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return cmd, cmd.Start()
+}
+func stopLaunchMonitor(cmd *exec.Cmd) { _ = cmd.Process.Kill() }
 func lockInstaller(directory string) (func(), error) {
 	f, err := os.OpenFile(filepath.Join(directory, "install.lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {

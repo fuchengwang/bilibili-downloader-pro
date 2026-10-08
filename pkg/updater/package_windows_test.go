@@ -9,6 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func makeNativePackage(t *testing.T, root, oldBinary, newBinary string) (string, string) {
@@ -67,5 +70,47 @@ func TestBadWindowsPackageDoesNotDamageCurrentExe(t *testing.T) {
 	}
 	if raw, err := os.ReadFile(target); err != nil || string(raw) != "old" {
 		t.Fatal("preparation changed current exe", err)
+	}
+}
+
+func TestWindowsReplacementWaitsForFileHandleRelease(t *testing.T) {
+	p := nativeFixturePlan(t, t.TempDir())
+	name, err := windows.UTF16PtrFromString(p.Target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := windows.CreateFile(name, windows.GENERIC_READ, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if handle != windows.InvalidHandle {
+			_ = windows.CloseHandle(handle)
+		}
+	}()
+	done := make(chan error, 1)
+	go func() { done <- replaceInstallation(p) }()
+	select {
+	case err := <-done:
+		t.Fatal("replacement did not wait for the open file", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if raw, err := os.ReadFile(p.Target); err != nil || string(raw) != "old executable" {
+		t.Fatal("blocked replacement damaged the old application", err)
+	}
+	if err := windows.CloseHandle(handle); err != nil {
+		t.Fatal(err)
+	}
+	handle = windows.InvalidHandle
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("replacement did not recover after the handle closed")
+	}
+	if hash, _ := hashFile(p.Target); hash != p.BinaryHash {
+		t.Fatal("replacement did not install the complete new executable")
 	}
 }

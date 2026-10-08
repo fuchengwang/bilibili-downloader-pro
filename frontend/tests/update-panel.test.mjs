@@ -17,7 +17,7 @@ function harness() {
     SetAutomaticUpdateCheck: async choice => { choices.push(choice); state.autoCheck = choice },
     CheckForUpdates: async () => {}, DownloadUpdate: async () => {}, PauseUpdateDownload: async () => {}, RetryUpdateDownload: async () => {}, RestartForUpdate: async () => {},
   })
-  vm.runInContext(code + '\nglobalThis.ui = {act, changeAutomatic, progress, status, error, dismissed, requesting}', context)
+  vm.runInContext(code + '\nglobalThis.ui = {act, changeAutomatic, progress, status, error, dismissed, requesting, ready}', context)
   return { state, choices, context, ui: context.ui }
 }
 test('automatic check is one checkbox, with no interval wording', async () => {
@@ -57,4 +57,13 @@ test('deferring only hides the notice and keeps a ready update accessible', asyn
   const {state,ui} = harness();state.version='1.1.0';state.phase='ready';await nextTick()
   ui.dismissed.value=true;state.error='';await nextTick();assert.equal(ui.dismissed.value, true);assert.equal(state.phase,'ready')
   state.version='1.2.0';await nextTick();assert.equal(ui.dismissed.value,false)
+})
+test('an interrupted installation offers retry without claiming completion', () => {
+  const {state, ui} = harness()
+  state.hasUpdate = true; state.version = '1.1.0'; state.phase = 'install_failed'; state.error = '上次更新未完成，可以重试安装'
+  assert.equal(ui.ready.value, false)
+  assert.equal(ui.status.value, '上次更新未完成')
+  assert.equal(ui.error.value, state.error)
+  assert.match(component, /state\.phase === 'install_failed'[\s\S]*?act\(RestartForUpdate\)[\s\S]*?>重试安装</)
+  assert.doesNotMatch(component, /更新完成/)
 })

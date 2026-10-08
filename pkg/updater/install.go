@@ -30,7 +30,14 @@ type Plan struct {
 	Phase          string `json:"phase"`
 	AutoApply      bool   `json:"autoApply"`
 	ParentPID      int    `json:"parentPid"`
+	HelperPID      int    `json:"helperPid,omitempty"`
 	Error          string `json:"error"`
+}
+
+type openedInstallation struct {
+	Token      string `json:"token"`
+	Version    string `json:"version"`
+	BinaryHash string `json:"binaryHash"`
 }
 
 func ReadPlan(directory string) (*Plan, error) {
@@ -160,7 +167,11 @@ func LaunchInstall(directory, executable string) (resultErr error) {
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	defer func() {
+		if unlock != nil {
+			unlock()
+		}
+	}()
 	p, err := ReadPlan(directory)
 	if err != nil {
 		return err
@@ -199,44 +210,88 @@ func LaunchInstall(directory, executable string) (resultErr error) {
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return err
 	}
-	helper := filepath.Join(helperDir, "apply-"+hex.EncodeToString(nonce[:])+helperSuffix())
-	if err := copyFile(executable, helper, 0700); err != nil {
+	helper, helperRoot, err := prepareHelper(executable, helperDir, "apply-"+hex.EncodeToString(nonce[:]))
+	if err != nil {
 		return err
 	}
+	defer func() {
+		if resultErr != nil {
+			_ = os.RemoveAll(helperRoot)
+		}
+	}()
 	logFile, err := os.OpenFile(filepath.Join(directory, "install.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
-		_ = os.Remove(helper)
 		return err
 	}
 	defer logFile.Close()
 	p.ParentPID = os.Getpid()
+	p.HelperPID = 0
 	p.AutoApply = false
 	p.Phase = "scheduled"
 	p.Error = ""
 	if err := WritePlan(directory, p); err != nil {
-		_ = os.Remove(helper)
 		return err
 	}
-	cmd := exec.Command(helper, "--bbdown-apply-update", filepath.Join(directory, "install.json"))
+	if err := os.Remove(filepath.Join(directory, "opened.json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	cmd := exec.Command(helper, "--bbdown-apply-update", filepath.Join(directory, "install.json"), p.Token)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	detachCommand(cmd)
 	if err := cmd.Start(); err != nil {
-		p.Phase = "failed"
-		p.Error = "未能启动更新程序，可以重新尝试"
-		_ = WritePlan(directory, p)
-		_ = os.Remove(helper)
 		return err
 	}
-	_ = cmd.Process.Release()
+	// Process creation alone does not mean the helper can run (macOS can kill
+	// an invalid signed executable before main). Let it take the installer lock
+	// and validate the plan before the caller is allowed to quit.
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait(); close(done) }()
+	unlock()
+	unlock = nil
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := waitHelperReady(ctx, directory, p.Token, cmd.Process.Pid, done); err != nil {
+		_ = cmd.Process.Kill()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+		return fmt.Errorf("更新程序未能就绪，软件未退出，请重试: %w", err)
+	}
 	return nil
+}
+
+func waitHelperReady(ctx context.Context, directory, token string, pid int, done <-chan error) error {
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			if err == nil {
+				err = errors.New("更新程序提前退出")
+			}
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if p, err := ReadPlan(directory); err == nil && p.Token == token && p.HelperPID == pid && p.Phase == "scheduled" {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func HandleHelperArgs(args []string) (bool, error) {
 	if len(args) == 0 || args[0] != "--bbdown-apply-update" {
 		return false, nil
 	}
-	if len(args) != 2 {
+	if len(args) != 2 && len(args) != 3 {
 		return true, errors.New("missing update plan")
 	}
 	directory := filepath.Dir(args[1])
@@ -252,8 +307,18 @@ func HandleHelperArgs(args []string) (bool, error) {
 	if err := validatePlan(p, directory); err != nil {
 		return true, err
 	}
+	if len(args) == 3 && args[2] != p.Token {
+		return true, errors.New("update plan changed before helper startup")
+	}
 	if p.Phase != "scheduled" {
 		return true, errors.New("update was not scheduled")
+	}
+	if hash, err := hashFile(preparedBinary(p)); err != nil || hash != p.BinaryHash {
+		return true, errors.New("更新文件校验失败，请重新下载")
+	}
+	p.HelperPID = os.Getpid()
+	if err := WritePlan(directory, p); err != nil {
+		return true, err
 	}
 	err = applyPlan(directory, p)
 	return true, err
@@ -268,8 +333,10 @@ func applyPlan(directory string, p *Plan) error {
 	if hash, err := hashFile(targetBinary(p)); err == nil && hash == p.BinaryHash {
 		p.Phase = "applied"
 		p.AutoApply = false
-		_ = WritePlan(directory, p)
-		return launchApplication(p.Target)
+		if err := WritePlan(directory, p); err != nil {
+			return failPlan(directory, p, err)
+		}
+		return launchAndConfirm(directory, p)
 	}
 	hash, err := hashFile(preparedBinary(p))
 	if err != nil || hash != p.BinaryHash {
@@ -278,6 +345,10 @@ func applyPlan(directory string, p *Plan) error {
 	if err := replaceInstallation(p); err != nil {
 		return failPlan(directory, p, err)
 	}
+	if hash, err := hashFile(targetBinary(p)); err != nil || hash != p.BinaryHash {
+		_ = restoreInstallation(p)
+		return failPlan(directory, p, errors.New("安装后的程序校验失败"))
+	}
 	p.Phase = "applied"
 	p.AutoApply = false
 	p.Error = ""
@@ -285,13 +356,75 @@ func applyPlan(directory string, p *Plan) error {
 		_ = restoreInstallation(p)
 		return failPlan(directory, p, err)
 	}
-	if err := launchApplication(p.Target); err != nil {
+	return launchAndConfirm(directory, p)
+}
+
+func launchAndConfirm(directory string, p *Plan) error {
+	cmd, err := startApplicationForUpdate(p.Target)
+	if err != nil {
 		if restoreErr := restoreInstallation(p); restoreErr != nil {
 			return failPlan(directory, p, fmt.Errorf("启动失败，旧版本备份在 %s: %w", p.Backup, restoreErr))
 		}
 		return failPlan(directory, p, err)
 	}
+	defer stopLaunchMonitor(cmd)
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait(); close(exited) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if err := waitApplicationStartup(ctx, directory, p, exited); err != nil {
+		if errors.Is(err, errApplicationExited) {
+			if restoreErr := restoreInstallation(p); restoreErr != nil {
+				return failPlan(directory, p, fmt.Errorf("新版启动失败，旧版备份在 %s: %w", p.Backup, restoreErr))
+			}
+			return failPlan(directory, p, err)
+		}
+		// A successful OS launch request is not proof that the new window opened.
+		// Keep the backup when startup is unconfirmed; a late/next successful
+		// startup can still acknowledge the exact installed version and hash.
+		p.Error = "新版未能确认启动，请重新打开软件；旧版备份已保留"
+		_ = WritePlan(directory, p)
+		return fmt.Errorf("%s: %w", p.Error, err)
+	}
+	_ = os.Remove(filepath.Join(directory, "opened.json"))
 	return nil
+}
+
+func waitApplicationOpened(ctx context.Context, directory string, p *Plan) error {
+	return waitApplicationStartup(ctx, directory, p, nil)
+}
+
+var errApplicationExited = errors.New("新版在启动完成前退出，已恢复旧版")
+
+func hasOpenedReceipt(directory string, p *Plan) bool {
+	var receipt openedInstallation
+	raw, err := os.ReadFile(filepath.Join(directory, "opened.json"))
+	return err == nil && json.Unmarshal(raw, &receipt) == nil && receipt.Token == p.Token && receipt.Version == p.Version && receipt.BinaryHash == p.BinaryHash
+}
+
+func waitApplicationStartup(ctx context.Context, directory string, p *Plan, exited <-chan error) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if hasOpenedReceipt(directory, p) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-exited:
+			// A short-lived test/headless app may acknowledge and then exit
+			// between polls. The receipt still proves a successful startup.
+			if hasOpenedReceipt(directory, p) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("%w: %v", errApplicationExited, err)
+			}
+			return errApplicationExited
+		case <-ticker.C:
+		}
+	}
 }
 
 func waitInstallerLock(directory string) (func(), error) {
