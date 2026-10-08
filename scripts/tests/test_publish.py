@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -173,6 +174,62 @@ class PublishingTests(unittest.TestCase):
         ):
             release.trigger_build("1.1.10")
         self.assertFalse(any(args[:2] == ("git", "push") for args in calls))
+
+    def test_changed_head_does_not_push_or_create_a_tag(self):
+        calls = []
+        def command(*args):
+            calls.append(args)
+            return "changed" if args[:2] == ("git", "rev-parse") else ""
+        with patch.object(release, "command", side_effect=command):
+            with self.assertRaisesRegex(release.PublishError, "提交已变化"):
+                release.trigger_build("1.1.12", "original")
+        self.assertFalse(any(a[:2] == ("git", "push") for a in calls))
+
+    def test_remote_tag_must_point_to_the_pinned_commit(self):
+        with patch.object(release,"command",return_value="tag-object\trefs/tags/v1.1.12\noriginal\trefs/tags/v1.1.12^{}"):
+            release.verify_origin_tag("v1.1.12","original")
+            with self.assertRaisesRegex(release.PublishError,"标签与本次提交不一致"):
+                release.verify_origin_tag("v1.1.12","other")
+
+    def main_fixture(self):
+        root = Path(self.temp.name) / "project"
+        root.mkdir()
+        (root / "wails.json").write_text(json.dumps({"info":{"productVersion":"1.1.20"}}))
+        config=root/"config.json"
+        config.write_text(json.dumps({"github_repo":"example/repo","gitcode_repo":"example/repo", "lanzou":{"folder_path":["fixture"]},"updater":{"enabled":False}}))
+        def command(*args):
+            if args[:2] == ("git","rev-parse"): return "original"
+            if args[:2] == ("git","show"): return json.dumps({"info":{"productVersion":"1.1.10"}})
+            if args[:2] == ("git","ls-remote"): return "original\trefs/tags/v1.1.10"
+            return ""
+        return root,config,command
+
+    def test_resume_older_version_uses_its_commit_for_gitcode_and_preserves_identity(self):
+        root,config,command=self.main_fixture()
+        with (patch.object(release,"ROOT",root),
+              patch.object(sys,"argv",["publish","1.1.10","--resume","--stage","gitcode","--expected-commit","original","--config",str(config)]),
+              patch.object(release,"command",side_effect=command) as runner,
+              patch.object(release,"prepare_assets",return_value=(self.files,"original notes")),
+              patch.dict(os.environ,{"GITCODE_TOKEN":"fixture"}),
+              patch.object(release,"GitCode") as provider):
+            provider.return_value.publish.return_value={}
+            release.main()
+            pushes=[c.args for c in runner.call_args_list if c.args[:3]==("git","push","gitcode")]
+            self.assertEqual(pushes,[('git','push','gitcode','original:refs/heads/main','v1.1.10:refs/tags/v1.1.10')])
+        state=json.loads((root/".local/publish/v1.1.10/state.json").read_text())
+        self.assertEqual(state["commit"],"original")
+        self.assertEqual(state["gitcode_source"]["head"],"original")
+
+    def test_build_interruption_keeps_version_and_commit_record(self):
+        root,config,command=self.main_fixture()
+        with (patch.object(release,"ROOT",root),
+              patch.object(sys,"argv",["publish","1.1.10","--resume","--config",str(config)]),
+              patch.object(release,"command",side_effect=command),
+              patch.object(release,"prepare_assets",side_effect=release.PublishError("build failed")),
+              self.assertRaises(release.PublishError)):
+            release.main()
+        state=json.loads((root/".local/publish/v1.1.10/state.json").read_text())
+        self.assertEqual(state,{"version":"1.1.10","commit":"original"})
 
     def test_failed_formal_build_stops_before_asset_download(self):
         calls = []

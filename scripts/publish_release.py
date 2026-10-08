@@ -36,6 +36,14 @@ PACKAGES = {
     ),
 }
 OLD_NAME = re.compile(r"^(Windows版|MacOS版) BBDown Pro(\d+\.\d+\.\d+)\.(zip|dmg)$")
+EVENTS = False
+
+
+def emit(step, status, message, **fields):
+    """A small, versioned protocol for the desktop publisher; no credentials."""
+    if EVENTS:
+        print("BBDOWN_EVENT " + json.dumps(dict(protocol=1, step=step, status=status,
+              message=message, **fields), ensure_ascii=False), flush=True)
 
 
 class PublishError(Exception):
@@ -101,7 +109,7 @@ def safe_error(error):
     return type(error).__name__ + "（请检查登录、网络或本地截图）"
 
 
-def trigger_build(version):
+def trigger_build(version, expected_commit=None):
     tag = "v" + version
     if command("git", "status", "--porcelain"):
         raise PublishError("请先提交发布改动")
@@ -111,29 +119,45 @@ def trigger_build(version):
             f"标签 {tag} 已存在，补做分发请加 --resume；重建请运行 "
             f"gh workflow run release.yml -f tag={tag}"
         )
-    command("git", "push", "origin", "HEAD")
-    command("git", "tag", "-a", tag, "-m", "BBDown Pro " + tag)
+    commit = command("git", "rev-parse", "HEAD")
+    if expected_commit and commit != expected_commit:
+        raise PublishError("代码提交已变化，请重新检查后开始发布")
+    branch = command("git", "symbolic-ref", "--short", "HEAD")
+    command("git", "push", "origin", f"{commit}:refs/heads/{branch}")
+    command("git", "tag", "-a", tag, commit, "-m", "BBDown Pro " + tag)
     command("git", "push", "origin", tag)
     print("已触发正式构建：" + tag, flush=True)
+
+
+def verify_origin_tag(tag, commit):
+    refs = command("git", "ls-remote", "origin", "refs/tags/" + tag, "refs/tags/" + tag + "^{}")
+    targets = dict(line.split(None, 1)[::-1] for line in refs.splitlines() if line.strip())
+    remote = targets.get("refs/tags/" + tag + "^{}", targets.get("refs/tags/" + tag))
+    if remote != commit:
+        raise PublishError("GitHub 上的版本标签与本次提交不一致，停止分发")
 
 
 def run_stage(name, operation, state, save, retry=False):
     """Keep independent channels running after a failure and persist its boundary."""
     stages = state.setdefault("stages", {})
     if stages.get(name, {}).get("status") == "complete" and not retry:
+        emit(name, "complete", "上次已完成，本次复用结果")
         print(f"{name} 已完成，跳过；需要重新校验可用 --stage {name}", flush=True)
         return True
     stages[name] = {"status": "running"}
     save()
+    emit(name, "running", "正在执行")
     try:
         operation()
     except Exception as error:  # noqa: BLE001 - channel boundary must preserve partial results.
         stages[name] = {"status": "failed", "error": safe_error(error)}
         save()
+        emit(name, "failed", safe_error(error))
         print(f"{name} 未完成：{safe_error(error)}；继续其他渠道。", flush=True)
         return False
     stages[name] = {"status": "complete"}
     save()
+    emit(name, "complete", "已完成并验证")
     return True
 
 
@@ -279,6 +303,7 @@ class UpdateServer:
         return result["data"]
 
     def publish(self, version, notes, files, urls):
+        emit("updater", "running", "核对云端已有版本，准备更新草稿", link=self.settings["base_url"])
         artifacts = [
             {
                 "os": platform,
@@ -325,17 +350,19 @@ class UpdateServer:
             raise PublishError("该版本已撤回，不自动重新发布")
         if release["status"] == "published":
             return release
+        emit("updater", "running", "安装包信息已登记，等待服务器试下载和 SHA-256 校验")
         if release["check_status"] not in ("passed", "checking"):
             self.api("POST", path + "/test-download", json={"force": False})
 
         def checked():
             current = self.api("GET", path)
-            return current if current["check_status"] != "checking" else None
+            return current if current["check_status"] in ("passed", "failed") else None
 
         release = wait_until(checked, 1800, "更新后台试下载", interval=5)
         if release["check_status"] != "passed":
             raise PublishError("更新后台试下载未通过，草稿保留供重试")
         if self.settings.get("publish", True):
+            emit("updater", "running", "服务器试下载通过，正在正式发布")
             release = self.api("POST", path + "/publish")
         return release
 
@@ -344,9 +371,11 @@ def complete_lanzou(browser, packages, version, save_result):
     """The deletion barrier is crossed only after BOTH anonymous downloads match."""
     results = {}
     for platform, path in packages.items():
+        emit("lanzou", "running", "上传：" + path.name)
         browser.ensure_upload(path)
     for platform, path in packages.items():
         url = browser.share_url(path.name)
+        emit("lanzou", "running", "匿名下载校验：" + path.name)
         browser.verify_download(url, path)
         results[platform] = {"name": path.name, "url": url, "sha256": digest(path)}
         save_result(results)
@@ -405,7 +434,7 @@ def prepare_assets(repo, tag, directory, timeout):
                 "--limit",
                 "20",
                 "--json",
-                "headSha,headBranch,status,conclusion",
+                "headSha,headBranch,status,conclusion,databaseId,url",
             )
         )
         latest = next(
@@ -416,6 +445,13 @@ def prepare_assets(repo, tag, directory, timeout):
             ),
             None,
         )
+        if latest:
+            emit("build", "running", "GitHub 构建：" + latest["status"], link=latest.get("url", ""))
+            if latest.get("databaseId"):
+                details = json.loads(command("gh", "run", "view", str(latest["databaseId"]),
+                                           "--repo", repo, "--json", "jobs"))
+                for job in details.get("jobs", []):
+                    emit("build", "running", f"{job['name']}：{job['conclusion'] or job['status']}")
         if (
             latest
             and latest["status"] == "completed"
@@ -427,7 +463,10 @@ def prepare_assets(repo, tag, directory, timeout):
         return None
 
     print("等待 Windows ZIP 和已签名公证的 macOS DMG 正式发布……", flush=True)
+    emit("build", "running", "等待双平台构建、macOS 签名和公证", link=f"https://github.com/{repo}/actions")
     release = wait_until(available, timeout, "GitHub 正式 Release", interval=15)
+    emit("build", "complete", "双平台正式安装包已生成")
+    emit("assets", "running", "下载正式校验清单")
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     def download(name):
@@ -456,6 +495,7 @@ def prepare_assets(repo, tag, directory, timeout):
             sums[match[2]] = match[1].lower()
     files = {}
     for platform, spec in PACKAGES.items():
+        emit("assets", "running", "下载并校验：" + spec[0])
         if spec[0] not in sums:
             raise PublishError("正式 Release 校验清单缺少安装包")
         path = directory / spec[0]
@@ -463,10 +503,12 @@ def prepare_assets(repo, tag, directory, timeout):
             download(spec[0])
         verify_file(path, sums[spec[0]])
         files[platform] = path
+    emit("assets", "complete", "Windows ZIP / macOS DMG 的 SHA-256 与正式清单一致")
     return files, release["body"]
 
 
 def main():
+    global EVENTS
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("version", nargs="?", help="可选版本号，必须与 wails.json 一致")
@@ -492,10 +534,14 @@ def main():
         "--stage", choices=["all", "gitcode", "lanzou", "updater"], default="all"
     )
     parser.add_argument("--timeout", type=int, default=7200)
+    parser.add_argument("--events", action="store_true", help="输出桌面发布器进度事件")
+    parser.add_argument("--expected-commit", help="固定本次发布的提交")
+    parser.add_argument("--notes-file", type=Path, help="发布说明 UTF-8 文件")
     parser.add_argument(
         "--visible", action="store_true", help="使用可见 Chrome 处理网页验证"
     )
     args = parser.parse_args()
+    EVENTS = args.events
     if not args.config.is_file():
         raise PublishError(
             "请先复制 scripts/publish.example.json 到 .local/publish.json 并填写配置"
@@ -503,9 +549,10 @@ def main():
     config = json.loads(args.config.read_text())
     if args.visible:
         config["lanzou"]["headless"] = False
-    version = json.loads((ROOT / "wails.json").read_text())["info"]["productVersion"]
+    current_version = json.loads((ROOT / "wails.json").read_text())["info"]["productVersion"]
+    version = args.version.removeprefix("v") if args.version else current_version
     version_tuple(version)
-    if args.version and args.version.removeprefix("v") != version:
+    if not args.resume and version != current_version:
         raise PublishError("参数版本必须与 wails.json 的 productVersion 一致")
     tag = "v" + version
     directory = ROOT / ".local/publish" / tag
@@ -562,14 +609,14 @@ def main():
         if not args.resume:
             if args.stage != "all":
                 raise PublishError("单独补做某一步时请加 --resume")
-            trigger_build(version)
+            emit("build", "running", "推送固定提交和版本标签，触发 GitHub 正式构建")
+            trigger_build(version, args.expected_commit)
         commit = command("git", "rev-parse", tag + "^{commit}")
+        if args.expected_commit and commit != args.expected_commit:
+            raise PublishError("版本标签与本次任务固定的提交不一致")
         source = json.loads(command("git", "show", tag + ":wails.json"))
         if source["info"]["productVersion"] != version:
             raise PublishError("版本标签对应的程序版本不一致")
-        files, notes = prepare_assets(
-            config["github_repo"], tag, directory / "assets", args.timeout
-        )
         state_path = directory / "state.json"
         state = (
             json.loads(state_path.read_text())
@@ -578,6 +625,18 @@ def main():
         )
         if state["commit"] != commit:
             raise PublishError("版本标签对应的提交发生变化")
+        save = lambda: json_write(state_path, state)
+        save()  # Preserve the identity even if building or downloading is interrupted.
+        if args.resume:
+            command("git", "push", "origin", tag)  # Also recover a local tag whose push failed.
+        verify_origin_tag(tag, commit)
+        files, notes = prepare_assets(
+            config["github_repo"], tag, directory / "assets", args.timeout
+        )
+        if args.notes_file:
+            notes = args.notes_file.read_text(encoding="utf-8")
+            command("gh", "release", "edit", tag, "--repo", config["github_repo"],
+                    "--notes-file", str(args.notes_file))
         assets = {
             p.name: {"sha256": digest(p), "size": p.stat().st_size}
             for p in files.values()
@@ -585,7 +644,6 @@ def main():
         if state.get("assets") and state["assets"] != assets:
             raise PublishError("同版本的正式安装包已变化，请使用新版本号")
         state["assets"] = assets
-        save = lambda: json_write(state_path, state)
         save()
         failed = []
 
@@ -594,13 +652,13 @@ def main():
                 "git",
                 "push",
                 "gitcode",
-                "HEAD:refs/heads/main",
+                f"{commit}:refs/heads/main",
                 f"{tag}:refs/tags/{tag}",
             )
             state["gitcode_source"] = {
                 "branch": "main",
                 "tag": tag,
-                "head": command("git", "rev-parse", "HEAD"),
+                "head": commit,
             }
             save()
             attachments = list(files.values()) + [directory / "assets/SHA256SUMS.txt"]

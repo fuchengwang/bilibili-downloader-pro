@@ -1,4 +1,8 @@
-# 一次命令发布新版
+# 桌面发布器
+
+日常发布可以使用独立的 **BBDown 发布器.app**。它提供发布前检查、账号登录、实时步骤与日志、打开渠道页面、失败后继续和激活码后台联动。使用方法与构建命令见 [发布器说明](releaser.md)。下方命令行入口仍可使用。
+
+## 一次命令发布新版
 
 入口为 `bash scripts/release.sh`，`bash scripts/publish.sh` 是同一个入口的别名。正式安装包由现有 GitHub Actions 构建；脚本等待两平台正式 Release 就绪，下载并校验 Windows ZIP/macOS DMG，同步 GitCode 源码、标签与安装包，再分发到固定蓝奏云文件夹。需要本机安装 Git、GitHub CLI (`gh`)、uv 和 Google Chrome，并在脚本等待和分发期间保持电脑运行。
 

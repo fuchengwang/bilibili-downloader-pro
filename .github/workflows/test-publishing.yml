@@ -1,0 +1,22 @@
+name: Publishing tool checks
+on:
+  push:
+    branches: [main, 'codex/**']
+    paths: ['tools/releaser/**', 'scripts/publish_release.py', 'scripts/*browser.py', 'scripts/tests/**', '.github/workflows/test-publishing.yml']
+  pull_request:
+    paths: ['tools/releaser/**', 'scripts/publish_release.py', 'scripts/*browser.py', 'scripts/tests/**', '.github/workflows/test-publishing.yml']
+permissions:
+  contents: read
+jobs:
+  publishing:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: astral-sh/setup-uv@v6
+      - name: Test publisher task persistence, cancellation, and login
+        run: go test -race -count=1 ./tools/releaser/...
+      - name: Test publishing and browser interactions against local fixtures
+        run: uv run --python 3.12 --with requests==2.32.5 --with playwright==1.58.0 python -m unittest discover -s scripts/tests -v

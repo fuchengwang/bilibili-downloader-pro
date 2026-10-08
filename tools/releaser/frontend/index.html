@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BBDown 发布器</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header class="topbar"><div class="brand"><div class="brand-mark">↥</div><div><strong>BBDown 发布器</strong><span>从构建到上线，一次完成</span></div></div><div class="top-actions"><span id="liveBadge" class="pill">准备发布</span><button id="settingsButton" class="quiet">设置与登录 <span>↗</span></button></div></header>
+<main>
+<aside>
+  <div class="eyebrow">本次发布</div><div class="version-row"><h1 id="version">—</h1><span class="pill small">双平台</span></div>
+  <div class="commit" id="commit">正在读取项目…</div><button id="projectButton" class="project-path" title="打开项目目录">选择项目目录</button>
+  <label class="field-label" for="notes">更新说明 <span>可选</span></label><textarea id="notes" rows="5" placeholder="写下本次更新内容。留空时沿用 GitHub 自动生成的说明。"></textarea>
+  <div class="target-note">Windows ZIP + macOS DMG<br>GitCode · 蓝奏云 · 云端更新</div>
+  <button id="startButton" class="primary" disabled>正在检查…</button><button id="stopButton" class="danger hidden">停止本机任务</button>
+  <div id="startHint" class="hint">开始后会推送版本标签并发布安装包。</div>
+  <div class="section-line"><strong>发布前检查</strong><button id="refreshButton" class="text-button">重新检查 ↻</button></div>
+  <div id="checkProblems" class="checks"></div><details id="checkDetails" class="check-details"><summary id="checkSummary">查看检查项</summary><div id="checks" class="checks"></div></details>
+  <div class="history-section"><label class="field-label" for="history">发布记录</label><select id="history"><option value="">暂无记录</option></select><button id="newJobButton" class="text-button hidden">回到当前版本 ↗</button></div>
+</aside>
+<section class="workspace">
+  <div class="workspace-head"><div><div class="eyebrow">发布流程</div><h2 id="headline">每一步，都看得见</h2><p id="subline">先检查，再构建；上传后校验，最后发布云端更新。</p></div><div class="elapsed"><span id="elapsed">—</span><small>任务用时</small></div></div>
+  <div class="progress-track"><div id="progress"></div></div>
+  <div id="steps" class="steps"></div>
+  <div id="jobError" class="error-box hidden" role="alert"></div>
+  <div class="result-actions"><button data-open="github">GitHub Release ↗</button><button data-open="lanzou">下载入口 ↗</button><button data-open="assets">本地记录 ↗</button></div>
+  <details id="logDetails" class="log-details"><summary><span>运行日志</span><span id="logCount">0 条</span></summary><div id="logs" class="logs"></div><div class="log-footer"><button data-open="screenshot" class="text-button">打开失败截图 ↗</button><span>中断后，已完成步骤会保留。</span></div></details>
+  <div class="footer-note"><span class="status-dot"></span><span id="notice">首次使用，在「设置与登录」完成账号连接。</span></div>
+</section>
+</main>
+<dialog id="settingsDialog"><form id="settingsForm"><div class="dialog-head"><div><div class="eyebrow">发布设置</div><h2>连接你的发布渠道</h2></div><button type="button" id="closeSettings" class="icon-button" aria-label="关闭设置">×</button></div>
+  <label class="field-label" for="project">BBDown Pro 项目目录</label><div class="input-row"><input id="project" required><button type="button" id="chooseProject">选择…</button></div>
+  <div class="account-row"><div><strong>GitHub</strong><small id="githubStatus">用于正式构建</small></div><button type="button" data-login="github">登录 GitHub ↗</button></div>
+  <div class="account-row"><div><strong>GitCode</strong><small id="gitcodeStatus">发布双平台安装包</small></div><button type="button" data-login="gitcode">登录 GitCode ↗</button></div>
+  <div class="account-row"><div><strong>蓝奏云</strong><small id="lanzouStatus">固定下载文件夹</small></div><button type="button" data-login="lanzou">登录蓝奏云 ↗</button></div>
+  <div class="cloud-section"><div class="cloud-head"><strong>激活码系统 · 云端更新</strong><label class="toggle"><input type="checkbox" id="cloudEnabled"><span>自动联动</span></label></div>
+  <label class="field-label" for="cloudURL">后台地址</label><input id="cloudURL" type="url" required placeholder="https://47.97.111.181:8090">
+  <div class="input-row credentials"><input id="username" autocomplete="username" placeholder="后台用户名" aria-label="后台用户名"><input id="password" type="password" autocomplete="current-password" placeholder="后台密码" aria-label="后台密码"></div>
+  <div class="cloud-login-row"><span id="cloudStatus" class="hint">登录凭据保存在系统钥匙串。</span><button type="button" id="cloudLogin">登录并启用</button><button type="button" id="cloudLogout" class="text-button hidden">退出登录</button></div>
+  <p class="hint">上传完成后，自动登记 GitCode 下载链接；服务器试下载通过后发布更新。</p></div>
+  <label class="browser-option"><input id="visibleBrowser" type="checkbox"><span>上传时显示 Chrome 窗口，方便处理登录和验证码</span></label>
+  <p id="settingsError" class="form-error" role="alert"></p><div class="dialog-footer"><span class="hint">构建在 GitHub 运行，关闭窗口后本机任务继续。</span><button id="saveSettings" type="submit" class="primary">保存设置</button></div>
+</form></dialog>
+<div id="toast" class="toast hidden" role="alert"></div><script type="module" src="/app.js"></script>
+</body></html>
