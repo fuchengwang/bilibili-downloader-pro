@@ -29,6 +29,7 @@ type Manager struct {
 	prefs  string
 	store  TokenStore
 	cancel context.CancelFunc
+	done   chan struct{}
 	secret string
 	client *http.Client
 }
@@ -593,7 +594,10 @@ func (m *Manager) launchLocked(activity, project, name string, args []string, to
 		m.state.ActivityLogs = nil
 	}
 	m.state.Notice = "任务已启动"
+	done := make(chan struct{})
+	m.done = done
 	go func() {
+		defer close(done)
 		wait := make(chan error, 1)
 		go func() { e := cmd.Wait(); processDone(); _ = writer.Close(); wait <- e }()
 		scanner := bufio.NewScanner(reader)
@@ -672,6 +676,22 @@ func (m *Manager) Stop() {
 	if m.cancel != nil {
 		m.cancel()
 		m.state.Notice = "正在停止本机任务并保存进度……"
+	}
+}
+
+// Wait for owned processes to stop before the desktop application exits.
+func (m *Manager) Shutdown() {
+	m.mu.Lock()
+	done := m.done
+	if m.cancel != nil {
+		m.cancel()
+	}
+	m.mu.Unlock()
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(8 * time.Second):
+		}
 	}
 }
 func (m *Manager) Link(target string) (string, error) {

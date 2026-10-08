@@ -148,7 +148,7 @@ func TestCancellationPreservesProgressAndStopsOwnedProcess(t *testing.T) {
 		t.Fatal(e)
 	}
 	time.Sleep(80 * time.Millisecond)
-	m.Stop()
+	m.Shutdown()
 	s := awaitIdle(t, m)
 	if s.Job.Status != "stopped" || !completed(s.Job, "preflight") {
 		t.Fatal("cancel discarded boundary")

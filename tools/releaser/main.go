@@ -91,7 +91,7 @@ func main() {
 			}
 			return false
 		},
-		OnShutdown:         func(context.Context) { a.manager.Stop() },
+		OnShutdown:         func(context.Context) { a.manager.Shutdown() },
 		SingleInstanceLock: &options.SingleInstanceLock{UniqueId: "com.bbdown.publisher", OnSecondInstanceLaunch: func(options.SecondInstanceData) { wr.WindowShow(a.ctx); wr.WindowUnminimise(a.ctx) }},
 		Bind:               []interface{}{a}, Mac: &mac.Options{TitleBar: mac.TitleBarHiddenInset(), Appearance: mac.NSAppearanceNameDarkAqua,
 			About: &mac.AboutInfo{Title: "BBDown 发布器", Message: "可恢复的双平台发布工具 · 1.0.0"}},
