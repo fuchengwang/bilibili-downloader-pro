@@ -416,6 +416,7 @@ func (m *Manager) MarkOpened() {
 		}
 	}
 	_ = os.RemoveAll(p.Backup)
+	_ = os.RemoveAll(p.Prepared) // Windows staging and backup are separate paths.
 	_ = os.Remove(filepath.Join(m.cfg.Directory, "install.json"))
 	_ = os.RemoveAll(filepath.Join(m.cfg.Directory, "downloads"))
 	_ = os.RemoveAll(filepath.Join(m.cfg.Directory, "helper"))
