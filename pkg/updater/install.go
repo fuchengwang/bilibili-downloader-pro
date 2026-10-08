@@ -118,7 +118,7 @@ func LaunchPending(directory, executable string, currentVersion string) (bool, e
 	if err != nil {
 		return false, err
 	}
-	if p.Version == currentVersion || !p.AutoApply || p.Phase != "ready" {
+	if !newerVersion(p.Version, currentVersion) || !p.AutoApply || p.Phase != "ready" {
 		return false, nil
 	}
 	if err := LaunchInstall(directory, executable); err != nil {
@@ -139,7 +139,7 @@ func ContinueInstallation(directory, currentVersion string) (bool, error) {
 	if err != nil {
 		return false, nil
 	}
-	if p.Version == currentVersion || validatePlan(p, directory) != nil || (p.Phase != "scheduled" && p.Phase != "applied") {
+	if !newerVersion(p.Version, currentVersion) || validatePlan(p, directory) != nil || (p.Phase != "scheduled" && p.Phase != "applied") {
 		return false, nil
 	}
 	deadline := time.Now().Add(300 * time.Millisecond)
@@ -338,6 +338,15 @@ func applyPlan(directory string, p *Plan) error {
 		}
 		return launchAndConfirm(directory, p)
 	}
+	// The app may have been manually upgraded while this plan was pending.
+	// Inspect the executable actually on disk before replacing it with a cache.
+	installedVersion, err := executableVersion(ctx, targetBinary(p))
+	if err != nil {
+		return failPlan(directory, p, err)
+	}
+	if !newerVersion(p.Version, installedVersion) {
+		return failPlan(directory, p, errors.New("此更新包已过期，当前版本已更新，请重新检查"))
+	}
 	hash, err := hashFile(preparedBinary(p))
 	if err != nil || hash != p.BinaryHash {
 		return failPlan(directory, p, errors.New("更新文件校验失败，请重新下载"))
@@ -511,16 +520,28 @@ func copyFile(source, target string, mode os.FileMode) error {
 }
 
 func checkExecutableVersion(ctx context.Context, path, expected string) error {
+	version, err := executableVersion(ctx, path)
+	if err != nil {
+		return err
+	}
+	if version != expected {
+		return errors.New("安装包版本与后台发布版本不一致")
+	}
+	return nil
+}
+
+func executableVersion(ctx context.Context, path string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "--bbdown-version")
 	quietCommand(cmd)
 	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("更新程序无法运行: %w", err)
+		return "", fmt.Errorf("更新程序无法运行: %w", err)
 	}
-	if strings.TrimSpace(string(out)) != expected {
-		return errors.New("安装包版本与后台发布版本不一致")
+	version, _, err := update.ParseVersion(strings.TrimSpace(string(out)))
+	if err != nil {
+		return "", errors.New("无法读取更新程序版本")
 	}
-	return nil
+	return version, nil
 }

@@ -397,6 +397,43 @@ func TestHelperRejectsPlanChangedAfterScheduling(t *testing.T) {
 	}
 }
 
+func TestManualUpgradeDoesNotApplyOrDisplayAnOlderPendingUpdate(t *testing.T) {
+	for _, phase := range []string{"ready", "scheduled", "applied", "failed"} {
+		t.Run(phase, func(t *testing.T) {
+			directory := t.TempDir()
+			p := nativeFixturePlan(t, t.TempDir())
+			p.Phase, p.AutoApply = phase, true
+			if err := WritePlan(directory, p); err != nil {
+				t.Fatal(err)
+			}
+			if handled, err := LaunchPending(directory, targetBinary(p), "1.0.2"); err != nil || handled {
+				t.Fatal("a manually upgraded app tried to downgrade", handled, err)
+			}
+			if handled, err := ContinueInstallation(directory, "1.0.2"); err != nil || handled {
+				t.Fatal("an obsolete installation intercepted the newer app", handled, err)
+			}
+			m, err := New(Config{Directory: directory, Executable: targetBinary(p), Version: "1.0.2", Client: &fakeClient{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer m.Close()
+			if state := m.Snapshot(); state.HasUpdate || state.Error != "" || state.Phase != "idle" {
+				t.Fatal("obsolete update was still displayed", state)
+			}
+			m.MarkOpened()
+			if _, err := os.Stat(filepath.Join(directory, "install.json")); !os.IsNotExist(err) {
+				t.Fatal("obsolete plan survived successful manual upgrade", err)
+			}
+			if _, err := os.Stat(p.Prepared); !os.IsNotExist(err) {
+				t.Fatal("obsolete staging file survived successful manual upgrade", err)
+			}
+			if raw, err := os.ReadFile(targetBinary(p)); err != nil || string(raw) != "old executable" {
+				t.Fatal("cleanup touched the running installation", err)
+			}
+		})
+	}
+}
+
 func TestNativeHelperEarlyExitKeepsOldAppAndAllowsRetry(t *testing.T) {
 	if os.Getenv("BBDOWN_NATIVE_UPDATE_TESTS") != "1" {
 		t.Skip("native helpers opt-in")

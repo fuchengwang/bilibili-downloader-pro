@@ -128,7 +128,7 @@ func New(cfg Config) (*Manager, error) {
 			} else {
 				m.state.Error = "更新文件无法使用，请重新下载"
 			}
-		} else if p.Version != cfg.Version {
+		} else if newerVersion(p.Version, cfg.Version) {
 			m.state.Error = "软件位置或更新文件已改变，请重新下载"
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -381,29 +381,39 @@ func (m *Manager) Close() {
 // previous version's backup is kept next to the installation.
 func (m *Manager) MarkOpened() {
 	p, err := ReadPlan(m.cfg.Directory)
-	if err != nil || p.Version != m.cfg.Version || validatePlan(p, m.cfg.Directory) != nil {
+	if err != nil || newerVersion(p.Version, m.cfg.Version) || validatePlan(p, m.cfg.Directory) != nil {
 		return
 	}
 	target, err := installationTarget(m.cfg.Executable)
 	if err != nil || target != p.Target {
 		return
 	}
-	hash, err := hashFile(targetBinary(p))
-	if err != nil || hash != p.BinaryHash {
-		return
-	}
-	// Also recovers a helper interrupted after atomic replacement but before
-	// saving the "applied" marker. The running version and hash are authoritative.
-	if p.Phase != "applied" && p.Phase != "scheduled" {
-		return
-	}
-	receipt, err := json.Marshal(openedInstallation{Token: p.Token, Version: p.Version, BinaryHash: p.BinaryHash})
-	if err != nil {
-		return
-	}
-	if err := utils.AtomicWriteFile(filepath.Join(m.cfg.Directory, "opened.json"), receipt, 0600); err != nil {
-		log.Printf("acknowledge update startup: %v", err)
-		return
+	if p.Version == m.cfg.Version {
+		hash, err := hashFile(targetBinary(p))
+		if err != nil || hash != p.BinaryHash {
+			return
+		}
+		// Recover interruption after replacement but before the applied marker.
+		if p.Phase != "applied" && p.Phase != "scheduled" {
+			return
+		}
+		receipt, _ := json.Marshal(openedInstallation{Token: p.Token, Version: p.Version, BinaryHash: p.BinaryHash})
+		if err := utils.AtomicWriteFile(filepath.Join(m.cfg.Directory, "opened.json"), receipt, 0600); err != nil {
+			log.Printf("acknowledge update startup: %v", err)
+			return
+		}
+	} else {
+		// A newer manually installed version has now opened successfully. Drop
+		// the obsolete plan only when no installer is using its staged files.
+		unlock, err := lockInstaller(m.cfg.Directory)
+		if err != nil {
+			return
+		}
+		defer unlock()
+		latest, err := ReadPlan(m.cfg.Directory)
+		if err != nil || latest.Token != p.Token {
+			return
+		}
 	}
 	_ = os.RemoveAll(p.Backup)
 	_ = os.Remove(filepath.Join(m.cfg.Directory, "install.json"))
