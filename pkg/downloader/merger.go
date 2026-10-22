@@ -275,6 +275,10 @@ func mergeWithPureGoContext(ctx context.Context, videoPath, audioPath, outputPat
 		return fmt.Errorf("音频轨道缺少 tkhd 元数据")
 	}
 
+	if handled, err := tryMergeProgressiveAVCAAC(ctx, vF, aF, vBoxes, aBoxes, vMoov, aMoov, outputPath, deleteTemp); handled {
+		return err
+	}
+
 	// 动态计算音频轨道 Track ID (取视频 moov 中最大 Track ID + 1)，
 	// 避免与包含多条视频/字幕轨的源文件发生 ID 冲突
 	maxTrackID := uint32(0)

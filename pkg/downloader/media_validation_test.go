@@ -89,6 +89,9 @@ func TestGeneratedMediaMerge(t *testing.T) {
 			if err := MergeAudioVideo(v, a, out, false); err != nil {
 				t.Fatal(err)
 			}
+			if tc.encoder == "libx264" && tc.audio == "aac" && tc.fragmented {
+				assertProgressiveOutput(t, out)
+			}
 			data := run(ffprobe, "-v", "error", "-show_entries", "stream=codec_type,codec_name,codec_tag_string,duration", "-of", "json", out)
 			var probe struct {
 				Streams []struct {

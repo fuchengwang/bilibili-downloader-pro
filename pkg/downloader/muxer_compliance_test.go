@@ -12,7 +12,7 @@ import (
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
-// TestMuxerCompliance 严格校验自研复用器生成的 fMP4 文件是否 100% 符合 ISO 规范 (default-base-is-moof 与精确对齐)
+// TestMuxerCompliance 校验普通 AVC/AAC 成品的完整索引，以及其他分片路径的数据偏移。
 func TestMuxerCompliance(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Short mode: skipping live stream test")
@@ -75,6 +75,20 @@ func TestMuxerCompliance(t *testing.T) {
 	boxes, err := scanBoxes(fh, fi.Size())
 	if err != nil {
 		t.Fatalf("scanBoxes failed: %v", err)
+	}
+	for _, b := range boxes {
+		if b.Type == "moov" {
+			_, _ = fh.Seek(b.Offset, ioSeekStart())
+			box, err := mp4.DecodeBox(uint64(b.Offset), fh)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if box.(*mp4.MoovBox).Mvex == nil {
+				assertProgressiveOutput(t, outMp4)
+				t.Log("AVC/AAC ordinary MP4 has complete sample tables and media durations")
+				return
+			}
+		}
 	}
 
 	moofCount := 0
