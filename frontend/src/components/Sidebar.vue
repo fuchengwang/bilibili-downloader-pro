@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Settings as SettingsIcon,
   User as UserIcon,
+  LoaderCircle,
   Crown,
   Tv
 } from 'lucide-vue-next'
@@ -14,6 +15,8 @@ import { bilibili } from '../../wailsjs/go/models'
 const props = defineProps<{
   activeTab: string
   userInfo: bilibili.UserInfo | null
+  userInfoLoading?: boolean
+  userInfoError?: boolean
   activeTaskCount: number
   completedTaskCount?: number
   hasUpdate?: boolean
@@ -22,6 +25,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'change-tab', tab: string): void
   (e: 'open-login'): void
+  (e: 'retry-account'): void
 }>()
 
 const isVip = computed(() => {
@@ -33,6 +37,12 @@ function normalizeImg(url?: string) {
   if (url.startsWith('//')) return 'https:' + url
   if (url.startsWith('http://')) return 'https://' + url.substring(7)
   return url
+}
+
+function handleAccountClick() {
+  if (props.userInfoLoading) return
+  if (props.userInfoError) emit('retry-account')
+  else emit('open-login')
 }
 </script>
 
@@ -91,10 +101,13 @@ function normalizeImg(url?: string) {
     </nav>
 
     <!-- Bottom User Account Card -->
-    <div class="user-card" @click="emit('open-login')">
+    <div class="user-card" :class="{ 'is-loading': userInfoLoading }" @click="handleAccountClick">
       <div class="avatar-wrap">
+        <div v-if="userInfoLoading" class="avatar-placeholder">
+          <LoaderCircle :size="16" class="account-spinner" aria-label="正在加载账号" />
+        </div>
         <img
-          v-if="userInfo?.isLogin && userInfo.face"
+          v-else-if="userInfo?.isLogin && userInfo.face"
           :src="normalizeImg(userInfo.face)"
           class="user-avatar"
           referrerpolicy="no-referrer"
@@ -110,10 +123,14 @@ function normalizeImg(url?: string) {
 
       <div class="user-info">
         <div class="user-name">
-          {{ userInfo?.isLogin ? userInfo.uname : '点击登录账号' }}
+          <template v-if="userInfoLoading">正在加载账号</template>
+          <template v-else-if="userInfoError">账号暂不可用</template>
+          <template v-else>{{ userInfo?.isLogin ? userInfo.uname : '点击登录账号' }}</template>
         </div>
         <div class="user-status">
-          <span v-if="userInfo?.isLogin" :class="isVip ? 'vip-text' : 'normal-text'">
+          <span v-if="userInfoLoading" class="normal-text">请稍候</span>
+          <span v-else-if="userInfoError" class="normal-text">点击重试</span>
+          <span v-else-if="userInfo?.isLogin" :class="isVip ? 'vip-text' : 'normal-text'">
             {{ userInfo.vipLabel || '普通用户' }}
           </span>
           <span v-else class="login-hint">登录解锁 4K/1080P60</span>
@@ -269,6 +286,10 @@ function normalizeImg(url?: string) {
   background: var(--neutral-07);
   border-color: rgba(251, 114, 153, 0.3);
 }
+
+.user-card.is-loading { cursor: wait; }
+.account-spinner { animation: accountSpin 0.8s linear infinite; }
+@keyframes accountSpin { to { transform: rotate(360deg); } }
 
 .avatar-wrap {
   position: relative;

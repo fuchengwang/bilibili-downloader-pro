@@ -30,6 +30,7 @@ type CookieData struct {
 	Buvid3   string            `json:"buvid3"`
 	DedeUID  string            `json:"DedeUserID"`
 	Cookies  map[string]string `json:"cookies"`
+	UserInfo *UserInfo         `json:"userInfo,omitempty"` // 上次确认的账号资料，仅用于首屏展示
 }
 
 // Client 封装与 B 站所有交互的 HTTP 客户端
@@ -79,6 +80,8 @@ func (c *Client) SetCookies(data *CookieData) error {
 		return fmt.Errorf("cookie data is nil")
 	}
 	copyData := cloneCookieData(data)
+	// A newly supplied session must never inherit another account's profile.
+	copyData.UserInfo = nil
 	bytes, err := json.MarshalIndent(copyData, "", "  ")
 	if err != nil {
 		return err
@@ -152,6 +155,7 @@ func cloneCookieData(data *CookieData) *CookieData {
 		return nil
 	}
 	copyData := *data
+	copyData.UserInfo = cloneUserInfo(data.UserInfo)
 	copyData.Cookies = make(map[string]string, len(data.Cookies))
 	for key, value := range data.Cookies {
 		copyData.Cookies[key] = value

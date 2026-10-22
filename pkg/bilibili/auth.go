@@ -191,7 +191,8 @@ func (c *Client) PollQRCode(ctx context.Context, qrcodeKey string) (*QRStatus, e
 
 // GetUserInfo 获取当前登录账号的详细资料
 func (c *Client) GetUserInfo(ctx context.Context) (*UserInfo, error) {
-	if !c.IsLoggedIn() {
+	session := c.GetCookies()
+	if session == nil || session.SessData == "" {
 		return &UserInfo{IsLogin: false}, nil
 	}
 
@@ -201,8 +202,15 @@ func (c *Client) GetUserInfo(ctx context.Context) (*UserInfo, error) {
 		return nil, fmt.Errorf("获取用户信息失败: %w", err)
 	}
 
-	if resp.Code != 0 || !resp.Data.IsLogin {
-		return &UserInfo{IsLogin: false}, nil
+	if resp.Code != 0 && resp.Code != -101 {
+		return nil, fmt.Errorf("获取用户信息失败: %s (code=%d)", resp.Message, resp.Code)
+	}
+	if resp.Code == -101 || !resp.Data.IsLogin {
+		info := &UserInfo{IsLogin: false}
+		if !c.cacheUserInfo(session.SessData, info) {
+			return nil, fmt.Errorf("账号已切换，请重试")
+		}
+		return info, nil
 	}
 
 	d := resp.Data
@@ -221,7 +229,7 @@ func (c *Client) GetUserInfo(ctx context.Context) (*UserInfo, error) {
 		dueStr = dueTime.Format("2006-01-02")
 	}
 
-	return &UserInfo{
+	info := &UserInfo{
 		IsLogin:    true,
 		Mid:        d.Mid,
 		Uname:      d.Uname,
@@ -233,7 +241,11 @@ func (c *Client) GetUserInfo(ctx context.Context) (*UserInfo, error) {
 		VipDueDate: d.VipDueDate,
 		VipDueStr:  dueStr,
 		Money:      d.Money,
-	}, nil
+	}
+	if !c.cacheUserInfo(session.SessData, info) {
+		return nil, fmt.Errorf("账号已切换，请重试")
+	}
+	return info, nil
 }
 
 // ParseAndSaveRawCookie 从用户粘贴的 Cookie 字符串中提取关键字段并保存

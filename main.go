@@ -86,11 +86,12 @@ func main() {
 		StartHidden:      true,
 		BackgroundColour: background,
 		AssetServer: &assetserver.Options{
-			Assets: assets,
+			Assets:     assets,
+			Middleware: startupThemeMiddleware(func() string { return app.cfgMgr.Get().Theme }),
 		},
 		OnStartup:  app.startup,
 		OnShutdown: app.shutdown,
-		OnDomReady: app.domReady, // 前端 DOM 彻底就绪后再展示窗口，彻底消灭白屏/灰屏闪烁
+		OnDomReady: app.domReady,
 		Bind: []interface{}{
 			app,
 		},

@@ -6,12 +6,17 @@ import (
 	"bytes"
 	"os/exec"
 	"strings"
+	"syscall"
+
+	"golang.org/x/sys/windows"
 )
 
 // getRawMachineID 获取 Windows 平台的唯一机器码
 func getRawMachineID() (string, error) {
-	// 方案1: 读取注册表 MachineGuid (快速、无进程弹窗、极稳定)
+	// 保持原有标识来源和查询顺序；后台查询不创建控制台窗口。
+	// 方案1: 读取注册表 MachineGuid
 	cmdReg := exec.Command("reg", "query", `HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography`, "/v", "MachineGuid")
+	cmdReg.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
 	var outReg bytes.Buffer
 	cmdReg.Stdout = &outReg
 	if err := cmdReg.Run(); err == nil {
@@ -31,6 +36,7 @@ func getRawMachineID() (string, error) {
 
 	// 方案2: wmic csproduct get uuid
 	cmdWmic := exec.Command("wmic", "csproduct", "get", "uuid")
+	cmdWmic.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
 	var outWmic bytes.Buffer
 	cmdWmic.Stdout = &outWmic
 	if err := cmdWmic.Run(); err == nil {
@@ -45,6 +51,7 @@ func getRawMachineID() (string, error) {
 
 	// 方案3: powershell Get-CimInstance
 	cmdPS := exec.Command("powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_ComputerSystemProduct).UUID")
+	cmdPS.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
 	var outPS bytes.Buffer
 	cmdPS.Stdout = &outPS
 	if err := cmdPS.Run(); err == nil {

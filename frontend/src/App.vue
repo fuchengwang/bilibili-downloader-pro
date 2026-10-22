@@ -17,6 +17,7 @@ import {
   GetTasks,
   GetSettings,
   GetUserInfo,
+  GetCachedUserInfo,
   AddDownloadTasks,
   PauseTask,
   ResumeTask,
@@ -32,7 +33,7 @@ import {
   ActivateLicense,
   GetUpdateState
 } from '../wailsjs/go/main/App'
-import { EventsOn } from '../wailsjs/runtime/runtime'
+import { EventsOn, EventsEmit } from '../wailsjs/runtime/runtime'
 import { theme, normalizeTheme } from './theme'
 
 // State
@@ -40,6 +41,9 @@ const activeTab = ref<'parse' | 'queue' | 'history' | 'settings'>('parse')
 const tasks = ref<downloader.DownloadTask[]>([])
 const unreadCompletedCount = ref(0)
 const userInfo = ref<bilibili.UserInfo | null>(null)
+const userInfoLoading = ref(true)
+const userInfoError = ref(false)
+let userInfoRequest = 0
 const settings = ref<config.Settings>({
   downloadDir: '',
   defaultQuality: 'highest',
@@ -117,6 +121,35 @@ async function checkAndAutoParseClipboard() {
 // 轮询与事件监听
 let taskTimer: any = null
 
+async function loadCachedUserInfo() {
+  try {
+    userInfo.value = await GetCachedUserInfo()
+    userInfoLoading.value = userInfo.value === null
+  } catch (err) {
+    console.error('读取本地账号资料失败:', err)
+  }
+}
+
+async function refreshUserInfo() {
+  const request = ++userInfoRequest
+  userInfoLoading.value = userInfo.value === null
+  userInfoError.value = false
+  try {
+    const user = await GetUserInfo()
+    if (request !== userInfoRequest) return
+    if (!user) throw new Error('账号信息为空')
+    userInfo.value = user
+  } catch (err) {
+    if (request !== userInfoRequest) return
+    // An unavailable service is not proof of logout. Keep a cached profile,
+    // or offer retry if this account has no locally known profile yet.
+    userInfoError.value = userInfo.value === null
+    console.error('加载用户信息失败:', err)
+  } finally {
+    if (request === userInfoRequest) userInfoLoading.value = false
+  }
+}
+
 async function initializeAuthorizedApp() {
   if (appInitialized) return
   appInitialized = true
@@ -127,14 +160,8 @@ async function initializeAuthorizedApp() {
     console.error('加载偏好设置失败:', err)
   }
 
-  try {
-    const u = await GetUserInfo()
-    if (u) {
-      userInfo.value = u
-    }
-  } catch (err) {
-    console.error('加载用户信息失败:', err)
-  }
+  // Refresh remotely without holding up the local task list or its events.
+  void refreshUserInfo()
 
   try {
     const tList = await GetTasks()
@@ -224,13 +251,17 @@ async function checkLicense() {
     licenseStatus.value = result?.data || null
     if (result?.success) licenseMessage.value = ''
     else setLicenseMessage(result?.message || '')
-    if (isLicensed.value) await initializeAuthorizedApp()
   } catch (err: any) {
     isLicensed.value = false
     setLicenseMessage(err?.message || String(err))
   } finally {
     licenseChecking.value = false
+    // Select the real first page before showing the window. This check is local;
+    // hidden WebViews need no animation frames or account/network initialization.
+    await nextTick()
+    EventsEmit('app:ready')
   }
+  if (isLicensed.value) await initializeAuthorizedApp()
 }
 
 async function activateLicense() {
@@ -281,6 +312,7 @@ onMounted(async () => {
   void GetUpdateState().then(state => { if (!receivedUpdate) updateState.value = state }).catch(() => {})
   // Theme preferences are available even on the activation screen.
   try { await loadSettings() } catch (err) { console.error('加载外观设置失败:', err) }
+  await loadCachedUserInfo()
   await checkLicense()
 })
 
@@ -547,7 +579,10 @@ async function onOpenFile(path: string, task?: downloader.DownloadTask) {
 }
 
 function handleLoginSuccess(u: bilibili.UserInfo) {
+  userInfoRequest++
   userInfo.value = u
+  userInfoLoading.value = false
+  userInfoError.value = false
   showToast(`登录成功: ${u.uname || 'B站用户'}`, 'success')
   if (quickParseRef.value?.refreshQualities) {
     quickParseRef.value.refreshQualities()
@@ -555,7 +590,10 @@ function handleLoginSuccess(u: bilibili.UserInfo) {
 }
 
 function handleLogoutSuccess() {
+  userInfoRequest++
   userInfo.value = null
+  userInfoLoading.value = false
+  userInfoError.value = false
   showToast('已退出登录', 'info')
   if (quickParseRef.value?.refreshQualities) {
     quickParseRef.value.refreshQualities()
@@ -577,11 +615,14 @@ function handleLicenseDeactivated(key: string) {
     <Sidebar
       :active-tab="activeTab"
       :user-info="userInfo"
+      :user-info-loading="userInfoLoading"
+      :user-info-error="userInfoError"
       :active-task-count="activeTasks.length"
       :completed-task-count="unreadCompletedCount"
       :has-update="updateState.hasUpdate"
       @change-tab="handleTabChange"
       @open-login="showLoginModal = true"
+      @retry-account="refreshUserInfo"
     />
 
     <!-- Main Content Area -->
@@ -711,35 +752,30 @@ function handleLicenseDeactivated(key: string) {
     />
   </div>
 
-  <div v-else class="license-screen">
+  <div v-else-if="!licenseChecking" class="license-screen">
     <div class="license-glow license-glow-pink"></div>
     <div class="license-glow license-glow-blue"></div>
     <form class="license-card" @submit.prevent="activateLicense">
       <img src="./assets/images/logo-universal.png" class="license-logo" alt="BBDown Pro" />
       <div class="license-eyebrow">BBDOWN PRO</div>
-      <h1>{{ licenseChecking ? '正在检查授权' : '激活专业版' }}</h1>
-      <p class="license-copy">
-        {{ licenseChecking ? '正在读取本机授权，请稍候…' : '首次激活需要联网，成功后可在断网环境正常使用。' }}
-      </p>
-      <template v-if="!licenseChecking">
-        <label class="license-field">
-          <span>激活码</span>
-          <input
-            v-model="licenseKey"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="例如：PRO-XXXX-XXXX-XXXX"
-            autofocus
-          />
-        </label>
-        <p v-if="licenseMessage" class="license-error">{{ licenseMessage }}</p>
-        <button class="btn-primary license-submit" type="submit" :disabled="!licenseKey.trim() || isActivating || activationCooldown > 0">
-          {{ isActivating ? '正在激活…' : '立即激活' }}
-        </button>
-        <p class="license-help">没有激活码？请联系卖家购买。</p>
-      </template>
-      <div v-else class="license-loader"></div>
+      <h1>激活专业版</h1>
+      <p class="license-copy">首次激活需要联网，成功后可在断网环境正常使用。</p>
+      <label class="license-field">
+        <span>激活码</span>
+        <input
+          v-model="licenseKey"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="例如：PRO-XXXX-XXXX-XXXX"
+          autofocus
+        />
+      </label>
+      <p v-if="licenseMessage" class="license-error">{{ licenseMessage }}</p>
+      <button class="btn-primary license-submit" type="submit" :disabled="!licenseKey.trim() || isActivating || activationCooldown > 0">
+        {{ isActivating ? '正在激活…' : '立即激活' }}
+      </button>
+      <p class="license-help">没有激活码？请联系卖家购买。</p>
     </form>
   </div>
 </template>
@@ -791,8 +827,6 @@ function handleLicenseDeactivated(key: string) {
 .license-submit { width: 100%; height: 42px; margin-top: 16px; }
 .license-submit:disabled { opacity: 0.5; cursor: default; }
 .license-help { margin: 15px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.6; }
-.license-loader { width: 24px; height: 24px; margin: 8px auto 0; border: 2px solid var(--neutral-12); border-top-color: var(--bili-pink); border-radius: 50%; animation: licenseSpin .7s linear infinite; }
-@keyframes licenseSpin { to { transform: rotate(360deg); } }
 
 .app-layout {
   display: flex;

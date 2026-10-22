@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"bilibili_downloader/pkg/bilibili"
@@ -40,6 +41,7 @@ type App struct {
 	updates         *updater.Manager
 	updateInitError string
 	updateStartup   sync.Once
+	windowReady     atomic.Bool
 }
 
 // NewApp creates a new App application struct
@@ -55,6 +57,10 @@ func NewApp(licenseClient licenseChecker) *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	wailsRuntime.EventsOnce(ctx, "app:ready", func(...interface{}) {
+		a.windowReady.Store(true)
+		a.ShowMainWindow()
+	})
 	if a.updates != nil {
 		a.updates.SetCallback(func(state updater.State) { wailsRuntime.EventsEmit(ctx, "update:state", state) })
 	}
@@ -62,15 +68,6 @@ func (a *App) startup(ctx context.Context) {
 	if err == nil && status != nil && status.IsActivated {
 		a.ensureDownloadManager()
 	}
-
-	go func() {
-		// 核心安全防护：启动 4 秒兜底定时器，若系统因 WebView2 初始化缓慢或环境异常未触发 domReady，
-		// 强制展现窗口，彻底杜绝 Windows / macOS 下软件常驻后台但窗口永远隐形的假死现象
-		time.Sleep(4 * time.Second)
-		if a.ctx != nil {
-			wailsRuntime.WindowShow(a.ctx)
-		}
-	}()
 }
 
 func (a *App) ensureDownloadManager() *downloader.DownloadManager {
@@ -151,9 +148,8 @@ func (a *App) DeactivateLicense() LicenseResult {
 	return LicenseResult{Success: true, Message: "本机已解绑"}
 }
 
-// domReady is called after front-end resources are completely loaded
+// domReady starts update bookkeeping; the frontend shows the window after applying its theme.
 func (a *App) domReady(ctx context.Context) {
-	wailsRuntime.WindowShow(ctx)
 	a.updateStartup.Do(func() {
 		if a.updates == nil {
 			return
@@ -174,7 +170,7 @@ func (a *App) domReady(ctx context.Context) {
 
 // ShowMainWindow brings the window to the foreground and unminimizes it
 func (a *App) ShowMainWindow() {
-	if a.ctx != nil {
+	if a.windowReady.Load() && a.ctx != nil {
 		wailsRuntime.WindowShow(a.ctx)
 		wailsRuntime.WindowUnminimise(a.ctx)
 		wailsRuntime.EventsEmit(a.ctx, "app:wakeup")
@@ -426,6 +422,11 @@ func (a *App) GenerateQRCode() (*bilibili.QRCodeInfo, error) {
 // PollQRCode 轮询二维码扫码状态
 func (a *App) PollQRCode(key string) (*bilibili.QRStatus, error) {
 	return a.biliClient.PollQRCode(a.ctx, key)
+}
+
+// GetCachedUserInfo reads the last account profile locally for the first frame.
+func (a *App) GetCachedUserInfo() *bilibili.UserInfo {
+	return a.biliClient.GetCachedUserInfo()
 }
 
 // GetUserInfo 获取当前登录用户信息
