@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { ref, onBeforeUnmount } from 'vue'
 import {
   Folder,
   FolderOpen,
   Cpu,
-  Save,
   ClipboardCheck,
   ShieldCheck,
   KeyRound,
@@ -42,6 +41,7 @@ const form = ref<config.Settings>({
   defaultCodec: props.initialSettings?.defaultCodec || 'auto',
   maxConcurrent: props.initialSettings?.maxConcurrent || 3,
   threadsPerTask: props.initialSettings?.threadsPerTask || 4,
+  downloadLimitKB: props.initialSettings?.downloadLimitKB ?? 0,
   autoMerge: props.initialSettings?.autoMerge ?? true,
   deleteTempFiles: props.initialSettings?.deleteTempFiles ?? true,
   autoClipboard: props.initialSettings?.autoClipboard ?? true,
@@ -50,24 +50,128 @@ const form = ref<config.Settings>({
 })
 
 const isSaving = ref(false)
-const isSavingTheme = ref(false)
+const saveStatus = ref('修改后自动保存')
+const limitEnabled = ref(form.value.downloadLimitKB > 0)
+const limitUnit = ref<'KB' | 'MB'>(form.value.downloadLimitKB >= 1024 || !limitEnabled.value ? 'MB' : 'KB')
+const downloadLimitInput = ref(limitEnabled.value ? String(form.value.downloadLimitKB / (limitUnit.value === 'MB' ? 1024 : 1)) : '2')
 
-async function handleThemeChange() {
-  isSavingTheme.value = true
-  let previous = props.initialSettings.theme || 'dark'
-  try {
-    const saved = await GetSettings()
-    previous = saved.theme
-    // Persist only appearance so changing themes does not save unrelated draft edits.
-    await SaveSettings({ ...saved, theme: form.value.theme })
-    emit('theme-changed', form.value.theme)
-  } catch (err: any) {
-    form.value.theme = previous
-    emit('show-toast', '外观设置保存失败: ' + (err?.message || err), 'error')
-  } finally {
-    isSavingTheme.value = false
+function restoreLimitControls(limit: number) {
+  limitEnabled.value = limit > 0
+  if (limit > 0) {
+    limitUnit.value = limit >= 1024 ? 'MB' : 'KB'
+    downloadLimitInput.value = String(limit / (limitUnit.value === 'MB' ? 1024 : 1))
   }
 }
+
+async function handleLimitToggle() {
+  if (limitTimer) clearTimeout(limitTimer)
+  limitTimer = null
+  limitError.value = ''
+  if (!limitEnabled.value) {
+    form.value.downloadLimitKB = 0
+    await savePreference('downloadLimitKB', 0)
+  } else await handleSave()
+}
+
+async function handleLimitUnitChange() {
+  await handleSave()
+}
+const limitError = ref('')
+let lastSavedSettings = { ...form.value }
+const editVersions: Partial<Record<keyof config.Settings, number>> = {}
+let saveQueue: Promise<void> = Promise.resolve()
+let pendingSaves = 0
+let limitTimer: ReturnType<typeof setTimeout> | null = null
+let directoryTimer: ReturnType<typeof setTimeout> | null = null
+let saveNoticeTimer: ReturnType<typeof setTimeout> | null = null
+let savedSinceNotice = false
+
+function cancelSaveNotice() {
+  if (saveNoticeTimer) clearTimeout(saveNoticeTimer)
+  saveNoticeTimer = null
+}
+
+function scheduleSaveNotice() {
+  cancelSaveNotice()
+  if (!savedSinceNotice) return
+  saveNoticeTimer = setTimeout(() => {
+    saveNoticeTimer = null
+    if (pendingSaves || limitTimer || directoryTimer) return
+    savedSinceNotice = false
+    emit('show-toast', '偏好设置已自动保存', 'success')
+  }, 600)
+}
+
+// Each change merges only its own field into the latest persisted settings.
+// Serialize writes so fast edits and appearance changes cannot overwrite each other.
+function savePreference<K extends keyof config.Settings>(key: K, value: config.Settings[K]) {
+  cancelSaveNotice()
+  const limitDraft = `${limitEnabled.value}|${downloadLimitInput.value}|${limitUnit.value}`
+  const revision = (editVersions[key] || 0) + 1
+  editVersions[key] = revision
+  pendingSaves++
+  isSaving.value = true
+  saveStatus.value = '正在自动保存…'
+  const operation = saveQueue.then(async () => {
+    let saved: config.Settings | undefined
+    try {
+      saved = await GetSettings()
+      const settings = { ...saved, [key]: value }
+      if (saved[key] !== value) {
+        await SaveSettings(settings)
+        savedSinceNotice = true
+      }
+      lastSavedSettings = settings
+      emit('settings-saved', settings)
+      if (key === 'theme') emit('theme-changed', String(value))
+      saveStatus.value = '已自动保存'
+    } catch (err: any) {
+      savedSinceNotice = false
+      // Roll back only this failed edit; preserve any newer choice queued after it.
+      if (editVersions[key] === revision && form.value[key] === value) {
+        form.value[key] = (saved || lastSavedSettings)[key]
+        if (key === 'downloadLimitKB' && limitDraft === `${limitEnabled.value}|${downloadLimitInput.value}|${limitUnit.value}`) {
+          restoreLimitControls(form.value.downloadLimitKB)
+        }
+      }
+      saveStatus.value = '保存失败，请重新修改后重试'
+      emit('show-toast', '自动保存失败: ' + (err?.message || err), 'error')
+    } finally {
+      pendingSaves--
+      isSaving.value = pendingSaves > 0
+      if (pendingSaves > 0) saveStatus.value = '正在自动保存…'
+      else scheduleSaveNotice()
+    }
+  })
+  saveQueue = operation
+  return operation
+}
+
+function scheduleLimitSave() {
+  cancelSaveNotice()
+  if (limitTimer) clearTimeout(limitTimer)
+  limitTimer = setTimeout(() => { limitTimer = null; void handleSave() }, 500)
+}
+
+function saveDirectory() {
+  if (directoryTimer) clearTimeout(directoryTimer)
+  directoryTimer = null
+  if (form.value.downloadDir.trim()) void savePreference('downloadDir', form.value.downloadDir.trim())
+  else saveStatus.value = '下载目录不能为空，尚未保存'
+}
+
+function scheduleDirectorySave() {
+  cancelSaveNotice()
+  if (directoryTimer) clearTimeout(directoryTimer)
+  directoryTimer = setTimeout(saveDirectory, 500)
+}
+
+onBeforeUnmount(() => {
+  cancelSaveNotice()
+  // Flush text edits still waiting on the typing delay when this view closes.
+  if (limitTimer) { clearTimeout(limitTimer); limitTimer = null; void handleSave() }
+  if (directoryTimer) saveDirectory()
+})
 const showDeactivateConfirm = ref(false)
 const isDeactivating = ref(false)
 const deactivateError = ref('')
@@ -105,33 +209,13 @@ async function handleDeactivate() {
   }
 }
 
-// 响应父级设置变更
-watch(
-  () => props.initialSettings,
-  (val) => {
-    if (val && val.downloadDir) {
-      form.value = { ...form.value, ...val }
-    }
-  },
-  { immediate: true }
-)
-
-onMounted(async () => {
-  try {
-    const s = await GetSettings()
-    if (s) {
-      form.value = { ...form.value, ...s }
-    }
-  } catch (e) {}
-})
-
 async function handleBrowseDir() {
   try {
     const path = await SelectDirectory()
     if (path) {
       form.value.downloadDir = path
       emit('show-toast', '已成功更改下载目录', 'success')
-      emit('settings-saved', form.value)
+      await savePreference('downloadDir', path)
     }
   } catch (err: any) {
     emit('show-toast', '选择目录失败: ' + err.message, 'error')
@@ -147,16 +231,21 @@ async function handleOpenDir() {
 }
 
 async function handleSave() {
-  isSaving.value = true
-  try {
-    await SaveSettings(form.value)
-    emit('show-toast', '偏好设置已成功保存！', 'success')
-    emit('settings-saved', form.value)
-  } catch (err: any) {
-    emit('show-toast', '保存设置失败: ' + err.message, 'error')
-  } finally {
-    isSaving.value = false
+  if (limitTimer) clearTimeout(limitTimer)
+  limitTimer = null
+  if (!limitEnabled.value) return
+  const input = downloadLimitInput.value.trim()
+  const limit = Math.floor(Number(input) * (limitUnit.value === 'MB' ? 1024 : 1) + 1e-7)
+  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(input) || !Number.isSafeInteger(limit) || limit < 1 || limit > 1048576) {
+    cancelSaveNotice()
+    savedSinceNotice = false
+    saveStatus.value = '限速未保存：请输入有效的下载速度'
+    limitError.value = '请输入有效速度，范围为 1 KB/s 到 1024 MB/s'
+    return
   }
+  limitError.value = ''
+  form.value.downloadLimitKB = limit
+  await savePreference('downloadLimitKB', limit)
 }
 </script>
 
@@ -174,7 +263,7 @@ async function handleSave() {
         <div class="card-body">
           <div class="form-item">
             <label class="item-label" for="theme-select">界面模式</label>
-            <select id="theme-select" v-model="form.theme" class="form-select" :disabled="isSavingTheme || isSaving" @change="handleThemeChange">
+            <select id="theme-select" v-model="form.theme" class="form-select" @change="savePreference('theme', form.theme)">
               <option value="light">浅色模式</option>
               <option value="dark">深色模式</option>
               <option value="system">跟随系统</option>
@@ -203,6 +292,7 @@ async function handleSave() {
                 type="text"
                 class="dir-input"
                 placeholder="正在获取默认下载目录..."
+                @input="scheduleDirectorySave" @blur="saveDirectory" @keydown.enter="saveDirectory"
               />
               <button class="btn-secondary browse-btn" @click="handleBrowseDir">
                 <span>更改目录...</span>
@@ -223,7 +313,7 @@ async function handleSave() {
           </div>
           <div class="header-text">
             <h3 class="card-title">下载与画质偏好</h3>
-            <p class="card-subtitle">设置默认下载画质、编码与并发任务数量</p>
+            <p class="card-subtitle">画质、编码、并发与限速修改后自动保存</p>
           </div>
         </div>
 
@@ -231,7 +321,7 @@ async function handleSave() {
           <div class="grid-2">
             <div class="form-item">
               <label class="item-label">默认首选画质</label>
-              <select v-model="form.defaultQuality" class="form-select">
+              <select v-model="form.defaultQuality" class="form-select" @change="savePreference('defaultQuality', form.defaultQuality)">
                 <option value="highest">最高画质 (自动匹配当前账号最高权限)</option>
                 <option value="127">8K 超高清</option>
                 <option value="120">4K 超清</option>
@@ -245,7 +335,7 @@ async function handleSave() {
 
             <div class="form-item">
               <label class="item-label">默认视频编码</label>
-              <select v-model="form.defaultCodec" class="form-select">
+              <select v-model="form.defaultCodec" class="form-select" @change="savePreference('defaultCodec', form.defaultCodec)">
                 <option value="auto">自动选择 (同画质优先兼容)</option>
                 <option value="AVC">AVC / H.264 (兼容性最好)</option>
                 <option value="HEVC">HEVC / H.265 (高压缩比)</option>
@@ -257,7 +347,7 @@ async function handleSave() {
           <div class="grid-2" style="margin-top: 14px;">
             <div class="form-item">
               <label class="item-label">单任务分片下载线程数</label>
-              <select v-model.number="form.threadsPerTask" class="form-select">
+              <select v-model.number="form.threadsPerTask" class="form-select" @change="savePreference('threadsPerTask', form.threadsPerTask)">
                 <option :value="1">1 线程 (单流平稳)</option>
                 <option :value="2">2 线程</option>
                 <option :value="3">3 线程</option>
@@ -276,9 +366,34 @@ async function handleSave() {
                   min="1"
                   max="10"
                   class="concurrency-range"
+                  @input="savePreference('maxConcurrent', form.maxConcurrent)"
                 />
                 <span class="range-val-badge">{{ form.maxConcurrent }} 个任务</span>
               </div>
+            </div>
+          </div>
+          <div class="form-item speed-limit-item">
+            <div class="speed-limit-header">
+              <div>
+                <label class="item-label" for="limit-enabled">限制下载速度</label>
+                <p class="card-subtitle">{{ limitEnabled ? '为其他应用留出带宽，所有下载任务共享上限' : '不限速，使用可用带宽下载' }}</p>
+              </div>
+              <label class="speed-switch">
+                <input id="limit-enabled" v-model="limitEnabled" type="checkbox" role="switch" aria-label="限制下载速度" @change="handleLimitToggle" />
+                <span class="speed-switch-track" aria-hidden="true"></span>
+              </label>
+            </div>
+            <div v-if="limitEnabled" class="speed-limit-controls">
+              <label class="item-label" for="download-limit">下载速度上限</label>
+              <div class="speed-limit-input">
+                <input id="download-limit" v-model="downloadLimitInput" type="text" inputmode="decimal" autocomplete="off" class="dir-input" aria-describedby="download-limit-help" @input="scheduleLimitSave" @blur="handleSave" @keydown.enter="handleSave" />
+                <select v-model="limitUnit" class="form-select speed-limit-unit" aria-label="下载速度单位" @change="handleLimitUnitChange">
+                  <option value="MB">MB/s</option>
+                  <option value="KB">KB/s</option>
+                </select>
+              </div>
+              <p id="download-limit-help" class="card-subtitle">支持小数，例如 2.5 MB/s。修改后自动保存，对正在下载和后续任务生效。</p>
+              <p v-if="limitError" class="limit-error" role="alert">{{ limitError }}</p>
             </div>
           </div>
         </div>
@@ -298,19 +413,13 @@ async function handleSave() {
 
         <div class="card-body">
           <label class="toggle-item">
-            <input v-model="form.autoClipboard" type="checkbox" />
+            <input v-model="form.autoClipboard" type="checkbox" @change="savePreference('autoClipboard', form.autoClipboard)" />
             <span class="toggle-text">开启剪贴板自动感应 (切换到应用时若剪贴板为 B 站链接则自动填入并直接解析)</span>
           </label>
         </div>
       </div>
 
-      <!-- Bottom Save Action Bar -->
-      <div class="save-bar">
-        <button class="btn-primary main-save-btn" :disabled="isSaving || isSavingTheme" @click="handleSave">
-          <Save :size="15" />
-          <span>{{ isSaving ? '正在保存...' : '保存全部偏好设置' }}</span>
-        </button>
-      </div>
+      <p class="auto-save-status" role="status">{{ saveStatus }}</p>
 
       <UpdatePanel :state="updateState" />
 
@@ -461,6 +570,23 @@ async function handleSave() {
   gap: 8px;
 }
 
+.speed-limit-item { margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--border-subtle); gap: 14px; }
+.speed-limit-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.speed-limit-header .item-label { display: block; margin-bottom: 4px; }
+.speed-limit-controls { display: flex; flex-direction: column; gap: 6px; }
+.speed-limit-unit { width: 92px; flex-shrink: 0; }
+.speed-switch { position: relative; display: inline-flex; flex-shrink: 0; width: 36px; height: 21px; cursor: pointer; }
+.speed-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.speed-switch-track { width: 100%; height: 100%; border-radius: 999px; background: var(--neutral-12); pointer-events: none; transition: background .18s; }
+.speed-switch-track::after { content: ''; position: absolute; top: 3px; left: 3px; width: 15px; height: 15px; border-radius: 50%; background: var(--text-muted); transition: transform .18s, background .18s; }
+.speed-switch input:checked + .speed-switch-track { background: var(--bili-pink); }
+.speed-switch input:checked + .speed-switch-track::after { transform: translateX(15px); background: white; }
+.speed-switch input:focus-visible + .speed-switch-track { outline: 2px solid var(--bili-pink); outline-offset: 3px; }
+.speed-limit-input { display: flex; align-items: center; gap: 10px; max-width: 420px; }
+.speed-limit-input input { min-width: 0; width: 140px; flex: 1; }
+.speed-limit-input span { color: var(--text-secondary); font-size: 12px; }
+.speed-limit-item .card-subtitle { line-height: 1.6; }
+
 .dir-input {
   flex: 1;
   height: 34px;
@@ -522,18 +648,8 @@ async function handleSave() {
   height: 15px;
 }
 
-.save-bar {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 8px;
-}
-
-.main-save-btn {
-  height: 38px;
-  padding: 0 24px;
-  font-size: 13.5px;
-  box-shadow: 0 4px 16px rgba(251, 114, 153, 0.35);
-}
+.auto-save-status { color: var(--text-muted); font-size: 11.5px; text-align: right; }
+.limit-error { color: var(--danger); font-size: 11.5px; }
 
 .license-icon-box { background: rgba(16, 185, 129, 0.12); color: var(--success); }
 .license-status-badge { margin-left: auto; padding: 4px 10px; border-radius: var(--radius-full); color: var(--success); background: rgba(16, 185, 129, 0.12); font-size: 11px; font-weight: 700; }

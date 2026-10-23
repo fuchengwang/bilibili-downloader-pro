@@ -17,6 +17,7 @@ const props = defineProps<{
   userInfo: bilibili.UserInfo | null
   userInfoLoading?: boolean
   userInfoError?: boolean
+  userInfoRefreshing?: boolean
   activeTaskCount: number
   completedTaskCount?: number
   hasUpdate?: boolean
@@ -136,6 +137,9 @@ function handleAccountClick() {
           <span v-else class="login-hint">登录解锁 4K/1080P60</span>
         </div>
       </div>
+      <span v-if="userInfoRefreshing && userInfo?.isLogin" class="account-verifying" role="status" aria-label="正在校验登录状态" title="正在校验登录状态">
+        <LoaderCircle :size="12" aria-hidden="true" />
+      </span>
     </div>
   </aside>
 </template>
@@ -289,6 +293,8 @@ function handleAccountClick() {
 
 .user-card.is-loading { cursor: wait; }
 .account-spinner { animation: accountSpin 0.8s linear infinite; }
+.account-verifying { display: flex; align-items: center; flex-shrink: 0; margin-left: auto; color: var(--text-muted); opacity: 0.5; pointer-events: none; }
+.account-verifying svg { animation: accountSpin 1.3s linear infinite; }
 @keyframes accountSpin { to { transform: rotate(360deg); } }
 
 .avatar-wrap {

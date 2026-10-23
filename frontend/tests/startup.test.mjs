@@ -145,6 +145,8 @@ for (const settingsFail of [false, true]) {
         finishSettings = () => { order.push('appearance'); settingsFail ? reject(Error('settings unavailable')) : resolve() }
       }),
       loadCachedUserInfo: async () => {},
+      userInfo: ref(null),
+      refreshUserInfo: () => new Promise(() => {}),
       nextTick: async () => { order.push('vue update') },
       requestAnimationFrame: () => { throw Error('hidden WebView cannot advance animation frames') },
       EventsEmit: name => { order.push('show'); events.push(name) },
@@ -169,6 +171,30 @@ for (const settingsFail of [false, true]) {
     assert.deepEqual(order, ['appearance', 'vue update', 'show', 'account request'])
   })
 }
+
+test('an account from the initial HTML skips local IPC and refreshes while settings are still pending', async () => {
+  let onMounted, finishSettings
+  const calls = []
+  const context = vm.createContext({
+    onMounted: callback => { onMounted = callback },
+    EventsOn: () => () => {}, receiveUpdateState() {}, updateState: { value: {} },
+    GetUpdateState: () => new Promise(() => {}),
+    userInfo: ref({ isLogin: true, uname: 'Saved Account' }),
+    loadCachedUserInfo: () => { throw Error('a known initial profile must not wait for IPC') },
+    loadSettings: () => new Promise(resolve => { finishSettings = resolve }),
+    refreshUserInfo: () => { calls.push('refresh'); return new Promise(() => {}) },
+    checkLicense: async () => { calls.push('license') },
+    console: { error() {} },
+  })
+  vm.runInContext(mountedCode, context)
+  const pending = onMounted()
+  assert.equal(context.userInfo.value.uname, 'Saved Account')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(calls, ['refresh'])
+  finishSettings()
+  await pending
+  assert.deepEqual(calls, ['refresh', 'license'])
+})
 
 for (const failed of [false, true]) {
   test(`unlicensed or failed local check shows activation instead of remaining hidden (failure=${failed})`, async () => {

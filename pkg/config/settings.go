@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ type Settings struct {
 	DefaultCodec     string `json:"defaultCodec"`     // 默认编码: "auto", "AVC", "HEVC", "AV1"
 	MaxConcurrent    int    `json:"maxConcurrent"`    // 最大同时下载任务数
 	ThreadsPerTask   int    `json:"threadsPerTask"`   // 单任务并发分块数
+	DownloadLimitKB  int64  `json:"downloadLimitKB"`  // 全部媒体下载总限速，KiB/s；0 为不限速
 	AutoMerge        bool   `json:"autoMerge"`        // 是否自动合成音视频 (原生 Go 引擎)
 	DeleteTempFiles  bool   `json:"deleteTempFiles"`  // 合成后是否自动删除临时分块文件
 	AutoClipboard    bool   `json:"autoClipboard"`    // 是否自动检测剪贴板 B 站链接
@@ -36,6 +38,8 @@ var (
 	instance *ConfigManager
 	once     sync.Once
 )
+
+const MaxDownloadLimitKB int64 = 1024 * 1024
 
 const (
 	defaultMaxConcurrent  = 3
@@ -78,6 +82,9 @@ func normalizeSettings(s Settings, fallbackDownloadDir string) Settings {
 		s.ThreadsPerTask = defaultThreadsPerTask
 	} else if s.ThreadsPerTask > maxThreadsPerTask {
 		s.ThreadsPerTask = maxThreadsPerTask
+	}
+	if s.DownloadLimitKB < 0 || s.DownloadLimitKB > MaxDownloadLimitKB {
+		s.DownloadLimitKB = 0
 	}
 	if strings.TrimSpace(s.FileNameTemplate) == "" {
 		s.FileNameTemplate = "{title} - {part}"
@@ -197,14 +204,20 @@ func (m *ConfigManager) load() error {
 func (m *ConfigManager) Save(s Settings) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if s.DownloadLimitKB < 0 || s.DownloadLimitKB > MaxDownloadLimitKB {
+		return fmt.Errorf("下载限速必须为 0 到 %d 之间的整数 KB/s，0 表示不限速", MaxDownloadLimitKB)
+	}
 	s = normalizeSettings(s, m.defaultDownloadDir())
-	m.settings = s
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
 	filePath := filepath.Join(m.dir, "settings.json")
-	return utils.AtomicWriteFile(filePath, data, 0644)
+	if err := utils.AtomicWriteFile(filePath, data, 0644); err != nil {
+		return err
+	}
+	m.settings = s
+	return nil
 }
 
 func (m *ConfigManager) defaultDownloadDir() string {

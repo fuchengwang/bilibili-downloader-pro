@@ -256,6 +256,7 @@ export namespace config {
 	    defaultCodec: string;
 	    maxConcurrent: number;
 	    threadsPerTask: number;
+	    downloadLimitKB: number;
 	    autoMerge: boolean;
 	    deleteTempFiles: boolean;
 	    autoClipboard: boolean;
@@ -273,6 +274,7 @@ export namespace config {
 	        this.defaultCodec = source["defaultCodec"];
 	        this.maxConcurrent = source["maxConcurrent"];
 	        this.threadsPerTask = source["threadsPerTask"];
+	        this.downloadLimitKB = source["downloadLimitKB"];
 	        this.autoMerge = source["autoMerge"];
 	        this.deleteTempFiles = source["deleteTempFiles"];
 	        this.autoClipboard = source["autoClipboard"];

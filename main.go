@@ -87,7 +87,7 @@ func main() {
 		BackgroundColour: background,
 		AssetServer: &assetserver.Options{
 			Assets:     assets,
-			Middleware: startupThemeMiddleware(func() string { return app.cfgMgr.Get().Theme }),
+			Middleware: startupThemeMiddleware(func() string { return app.cfgMgr.Get().Theme }, app.GetCachedUserInfo),
 		},
 		OnStartup:  app.startup,
 		OnShutdown: app.shutdown,

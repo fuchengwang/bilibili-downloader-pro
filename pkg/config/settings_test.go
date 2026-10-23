@@ -98,3 +98,48 @@ func TestThemeNormalizationAndPersistence(t *testing.T) {
 		})
 	}
 }
+
+func TestDownloadLimitDefaultsPersistenceAndValidation(t *testing.T) {
+	dir := t.TempDir()
+	m := NewConfigManager(dir)
+	if m.Get().DownloadLimitKB != 0 {
+		t.Fatal("new installs must be unlimited")
+	}
+	for _, limit := range []int64{1, 2048, MaxDownloadLimitKB, 0} {
+		s := m.Get()
+		s.DownloadLimitKB = limit
+		if err := m.Save(s); err != nil {
+			t.Fatal(err)
+		}
+		if NewConfigManager(dir).Get().DownloadLimitKB != limit {
+			t.Fatal("limit did not persist across restart")
+		}
+	}
+	for _, invalid := range []int64{-1, MaxDownloadLimitKB + 1} {
+		s := m.Get()
+		s.DownloadLimitKB = invalid
+		if err := m.Save(s); err == nil {
+			t.Fatal("invalid limit was saved")
+		}
+		if m.Get().DownloadLimitKB != 0 {
+			t.Fatal("invalid save changed the live limit")
+		}
+	}
+}
+
+func TestFailedSaveDoesNotChangeLiveDownloadLimit(t *testing.T) {
+	dir := t.TempDir()
+	m := NewConfigManager(dir)
+	// A directory at the destination makes the atomic file replacement fail.
+	if err := os.Mkdir(filepath.Join(dir, "settings.json"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := m.Get()
+	s.DownloadLimitKB = 100
+	if err := m.Save(s); err == nil {
+		t.Fatal("expected save failure")
+	}
+	if m.Get().DownloadLimitKB != 0 {
+		t.Fatal("failed save applied an invisible speed limit")
+	}
+}

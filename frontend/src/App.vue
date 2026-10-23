@@ -35,14 +35,16 @@ import {
 } from '../wailsjs/go/main/App'
 import { EventsOn, EventsEmit } from '../wailsjs/runtime/runtime'
 import { theme, normalizeTheme } from './theme'
+import { readStartupAccount } from './startup-account'
 
 // State
 const activeTab = ref<'parse' | 'queue' | 'history' | 'settings'>('parse')
 const tasks = ref<downloader.DownloadTask[]>([])
 const unreadCompletedCount = ref(0)
-const userInfo = ref<bilibili.UserInfo | null>(null)
-const userInfoLoading = ref(true)
+const userInfo = ref<bilibili.UserInfo | null>(readStartupAccount())
+const userInfoLoading = ref(userInfo.value === null)
 const userInfoError = ref(false)
+const userInfoRefreshing = ref(false)
 let userInfoRequest = 0
 const settings = ref<config.Settings>({
   downloadDir: '',
@@ -50,6 +52,7 @@ const settings = ref<config.Settings>({
   defaultCodec: 'auto',
   maxConcurrent: 3,
   threadsPerTask: 4,
+  downloadLimitKB: 0,
   autoMerge: true,
   deleteTempFiles: true,
   autoClipboard: true,
@@ -122,8 +125,11 @@ async function checkAndAutoParseClipboard() {
 let taskTimer: any = null
 
 async function loadCachedUserInfo() {
+  const request = userInfoRequest
   try {
-    userInfo.value = await GetCachedUserInfo()
+    const user = await GetCachedUserInfo()
+    if (request !== userInfoRequest) return
+    userInfo.value = user
     userInfoLoading.value = userInfo.value === null
   } catch (err) {
     console.error('读取本地账号资料失败:', err)
@@ -132,12 +138,16 @@ async function loadCachedUserInfo() {
 
 async function refreshUserInfo() {
   const request = ++userInfoRequest
+  userInfoRefreshing.value = true
   userInfoLoading.value = userInfo.value === null
   userInfoError.value = false
   try {
     const user = await GetUserInfo()
     if (request !== userInfoRequest) return
     if (!user) throw new Error('账号信息为空')
+    if (userInfo.value?.isLogin && !user.isLogin) {
+      showToast('Cookie 已失效，请重新登录哔哩哔哩账号', 'error')
+    }
     userInfo.value = user
   } catch (err) {
     if (request !== userInfoRequest) return
@@ -146,22 +156,16 @@ async function refreshUserInfo() {
     userInfoError.value = userInfo.value === null
     console.error('加载用户信息失败:', err)
   } finally {
-    if (request === userInfoRequest) userInfoLoading.value = false
+    if (request === userInfoRequest) {
+      userInfoLoading.value = false
+      userInfoRefreshing.value = false
+    }
   }
 }
 
 async function initializeAuthorizedApp() {
   if (appInitialized) return
   appInitialized = true
-  // 每项初始化独立处理：B站用户信息暂时请求失败时，不能阻止本地任务队列显示。
-  try {
-    await loadSettings()
-  } catch (err) {
-    console.error('加载偏好设置失败:', err)
-  }
-
-  // Refresh remotely without holding up the local task list or its events.
-  void refreshUserInfo()
 
   try {
     const tList = await GetTasks()
@@ -310,9 +314,14 @@ onMounted(async () => {
   let receivedUpdate = false
   stopUpdateEvents = EventsOn('update:state', (state: updater.State) => { receivedUpdate = true; receiveUpdateState(state) })
   void GetUpdateState().then(state => { if (!receivedUpdate) updateState.value = state }).catch(() => {})
-  // Theme preferences are available even on the activation screen.
-  try { await loadSettings() } catch (err) { console.error('加载外观设置失败:', err) }
-  await loadCachedUserInfo()
+  // Start both local reads immediately. The initial HTML already supplies a
+  // profile in packaged builds; the IPC read also supports development builds.
+  const cachedAccount = userInfo.value === null ? loadCachedUserInfo() : Promise.resolve()
+  const appearance = loadSettings().catch(err => console.error('加载外观设置失败:', err))
+  // Old installations without a profile should not queue their first network
+  // request behind settings or licensing. Existing accounts stay visible.
+  void cachedAccount.then(() => refreshUserInfo())
+  await Promise.all([appearance, cachedAccount])
   await checkLicense()
 })
 
@@ -580,6 +589,7 @@ async function onOpenFile(path: string, task?: downloader.DownloadTask) {
 
 function handleLoginSuccess(u: bilibili.UserInfo) {
   userInfoRequest++
+  userInfoRefreshing.value = false
   userInfo.value = u
   userInfoLoading.value = false
   userInfoError.value = false
@@ -591,6 +601,7 @@ function handleLoginSuccess(u: bilibili.UserInfo) {
 
 function handleLogoutSuccess() {
   userInfoRequest++
+  userInfoRefreshing.value = false
   userInfo.value = null
   userInfoLoading.value = false
   userInfoError.value = false
@@ -617,6 +628,7 @@ function handleLicenseDeactivated(key: string) {
       :user-info="userInfo"
       :user-info-loading="userInfoLoading"
       :user-info-error="userInfoError"
+      :user-info-refreshing="userInfoRefreshing"
       :active-task-count="activeTasks.length"
       :completed-task-count="unreadCompletedCount"
       :has-update="updateState.hasUpdate"

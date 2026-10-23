@@ -39,6 +39,7 @@ type DownloadManager struct {
 	cfgMgr       *config.ConfigManager
 	workerNotify chan struct{}
 	mergeFunc    func(context.Context, string, string, string, bool) error
+	bandwidth    *bandwidthLimiter
 }
 
 var (
@@ -56,6 +57,7 @@ func NewDownloadManager(cfgMgr *config.ConfigManager) *DownloadManager {
 		workerNotify: make(chan struct{}, 50),
 		mergeFunc:    MergeAudioVideoContext,
 	}
+	m.bandwidth = &bandwidthLimiter{limit: func() int64 { return cfgMgr.Get().DownloadLimitKB * 1024 }}
 	m.loadTasks()
 	m.reconcileTaskStorage()
 	return m
@@ -864,6 +866,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 
 	// 2. 准备视频与音频下载器 (支持候选 CDN 自动故障转移与 403 自动刷新换链)
 	vDownloader := NewStreamDownloader(sel.VideoURLs, task.VideoTmpPath)
+	vDownloader.bandwidth = m.bandwidth
 	vDownloader.SetURLRefresher(func(refCtx context.Context) ([]string, error) {
 		newSel, rErr := m.biliClient.FetchStreamSelection(refCtx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, task.TargetQuality, task.TargetCodec, task.IsCheese)
 		if rErr != nil {
@@ -877,6 +880,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	var aSize int64 = 0
 	if len(sel.AudioURLs) > 0 && sel.AudioURLs[0] != "" {
 		aDownloader = NewStreamDownloader(sel.AudioURLs, task.AudioTmpPath)
+		aDownloader.bandwidth = m.bandwidth
 		aDownloader.SetURLRefresher(func(refCtx context.Context) ([]string, error) {
 			newSel, rErr := m.biliClient.FetchStreamSelection(refCtx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, task.TargetQuality, task.TargetCodec, task.IsCheese)
 			if rErr != nil {

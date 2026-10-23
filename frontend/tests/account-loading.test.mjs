@@ -17,14 +17,16 @@ const profile = { isLogin: true, uname: 'Saved Account', face: 'https://example.
 
 function harness(cached) {
   const requests = []
+  const notifications = []
   const context = vm.createContext({
     userInfo: ref(null), userInfoLoading: ref(true), userInfoError: ref(false), userInfoRequest: 0,
+    userInfoRefreshing: ref(false),
     GetCachedUserInfo: async () => cached,
     GetUserInfo: () => new Promise((resolve, reject) => requests.push({ resolve, reject })),
-    showToast() {}, quickParseRef: ref(null), console: { error() {} },
+    showToast: (...args) => notifications.push(args), quickParseRef: ref(null), console: { error() {} },
   })
   vm.runInContext(code, context)
-  return { c: context, requests }
+  return { c: context, requests, notifications }
 }
 
 test('a cached account is available before any remote request and stays visible while refreshing', async () => {
@@ -35,9 +37,11 @@ test('a cached account is available before any remote request and stays visible 
   assert.equal(c.userInfoLoading.value, false)
   const pending = c.refreshUserInfo()
   assert.equal(c.userInfoLoading.value, false)
+  assert.equal(c.userInfoRefreshing.value, true)
   requests[0].resolve({ ...profile, uname: 'Updated Account' })
   await pending
   assert.equal(c.userInfo.value.uname, 'Updated Account')
+  assert.equal(c.userInfoRefreshing.value, false)
 })
 
 test('stored credentials with no profile remain loading until the response confirms the account', async () => {
@@ -61,7 +65,7 @@ test('no local credentials are a known logged-out state without waiting for the 
 
 for (const cached of [profile, null]) {
   test(`a failed request preserves a cached account or offers retry (cache=${!!cached})`, async () => {
-    const { c, requests } = harness(cached)
+    const { c, requests, notifications } = harness(cached)
     await c.loadCachedUserInfo()
     const pending = c.refreshUserInfo()
     requests[0].reject(Error('offline'))
@@ -69,6 +73,8 @@ for (const cached of [profile, null]) {
     assert.equal(c.userInfoLoading.value, false)
     assert.equal(c.userInfoError.value, !cached)
     if (cached) assert.equal(c.userInfo.value.uname, profile.uname)
+    assert.equal(c.userInfoRefreshing.value, false)
+    assert.equal(notifications.length, 0)
   })
 }
 
@@ -87,14 +93,94 @@ test('late startup results cannot undo logout or replace a newly logged-in accou
   }
 })
 
+test('a delayed local IPC response cannot undo logout or a new login', async () => {
+  for (const switchAccount of [false, true]) {
+    const { c } = harness(profile)
+    let finishCache
+    c.GetCachedUserInfo = () => new Promise(resolve => { finishCache = resolve })
+    const pending = c.loadCachedUserInfo()
+    if (switchAccount) c.handleLoginSuccess({ ...profile, uname: 'New Account' })
+    else c.handleLogoutSuccess()
+    finishCache(profile)
+    await pending
+    assert.equal(c.userInfo.value?.uname, switchAccount ? 'New Account' : undefined)
+    assert.equal(c.userInfoLoading.value, false)
+  }
+})
+
+const startupAccountCode = ts.transpileModule(readFileSync(new URL('../src/startup-account.ts', import.meta.url), 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText
+
+test('the initial account refs contain the saved profile synchronously before any IPC or network', () => {
+  const declarations = ast.statements.filter(n => ts.isVariableStatement(n)
+    && ['userInfo', 'userInfoLoading'].includes(n.declarationList.declarations[0].name.getText(ast)))
+    .map(n => n.getText(ast)).join('\n')
+  const c = vm.createContext({
+    exports: {}, ref,
+    document: { getElementById: () => ({ textContent: JSON.stringify(profile) }) },
+  })
+  vm.runInContext(startupAccountCode, c)
+  c.readStartupAccount = c.exports.readStartupAccount
+  vm.runInContext(ts.transpileModule(declarations, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, c)
+  assert.equal(vm.runInContext('userInfo.value.uname', c), profile.uname)
+  assert.equal(vm.runInContext('userInfoLoading.value', c), false)
+})
+
+for (const source of [null, '', '{bad json', 'null', '{}']) {
+  test(`missing or corrupt initial profile safely uses local IPC fallback (${source})`, () => {
+    const c = vm.createContext({ exports: {}, document: { getElementById: () => source === null ? null : { textContent: source } } })
+    vm.runInContext(startupAccountCode, c)
+    assert.equal(c.exports.readStartupAccount(), null)
+  })
+}
+
 test('a confirmed expired login replaces a cached account with the logged-out state', async () => {
-  const { c, requests } = harness(profile)
+  const { c, requests, notifications } = harness(profile)
   await c.loadCachedUserInfo()
   const pending = c.refreshUserInfo()
   requests[0].resolve({ isLogin: false })
   await pending
   assert.equal(c.userInfo.value.isLogin, false)
   assert.equal(c.userInfoError.value, false)
+  assert.equal(c.userInfoRefreshing.value, false)
+  assert.equal(notifications.length, 1)
+  assert.match(notifications[0][0], /Cookie 已失效.*重新登录/)
+  const retry = c.refreshUserInfo()
+  requests[1].resolve({ isLogin: false })
+  await retry
+  assert.equal(notifications.length, 1)
+})
+
+test('normal logged-out startup never shows a cookie-expiry notification', async () => {
+  const { c, requests, notifications } = harness({ isLogin: false })
+  await c.loadCachedUserInfo()
+  const pending = c.refreshUserInfo()
+  requests[0].resolve({ isLogin: false })
+  await pending
+  assert.equal(notifications.length, 0)
+  assert.equal(c.userInfoRefreshing.value, false)
+})
+
+test('stale expiry cannot notify after login or logout, or stop a newer verification', async () => {
+  for (const action of ['login', 'logout', 'refresh']) {
+    const { c, requests, notifications } = harness(profile)
+    await c.loadCachedUserInfo()
+    const old = c.refreshUserInfo()
+    let latest
+    if (action === 'login') c.handleLoginSuccess(profile)
+    if (action === 'logout') c.handleLogoutSuccess()
+    if (action === 'refresh') latest = c.refreshUserInfo()
+    requests[0].resolve({ isLogin: false })
+    await old
+    assert.ok(!notifications.some(([message]) => message.includes('Cookie 已失效')))
+    assert.equal(c.userInfoRefreshing.value, action === 'refresh')
+    if (latest) {
+      requests[1].resolve(profile)
+      await latest
+      assert.equal(c.userInfoRefreshing.value, false)
+    }
+  }
 })
 
 // Render the real sidebar so the test checks visible words, not just refs.
@@ -111,6 +197,7 @@ const components = Object.fromEntries(iconNames.map(name => [name, { render() { 
 
 for (const [name, state, expected] of [
   ['cached', { userInfo: profile }, 'Saved Account'],
+  ['verifying', { userInfo: profile, userInfoRefreshing: true }, 'Saved Account'],
   ['loading', { userInfoLoading: true }, '正在加载账号'],
   ['error', { userInfoError: true }, '点击重试'],
   ['logged out', {}, '点击登录账号'],
@@ -119,11 +206,17 @@ for (const [name, state, expected] of [
     const html = await renderToString(createSSRApp({
       components, ssrRender: renderContext.exports.ssrRender,
       data: () => ({ activeTab: 'parse', activeTaskCount: 0, completedTaskCount: 0, hasUpdate: false,
-        userInfo: null, userInfoLoading: false, userInfoError: false, isVip: false, ...state }),
+        userInfo: null, userInfoLoading: false, userInfoError: false, userInfoRefreshing: false, isVip: false, ...state }),
       methods: { normalizeImg: url => url },
     }))
     assert.ok(html.includes(expected))
     if (name !== 'logged out') assert.ok(!html.includes('点击登录账号'))
     assert.equal(html.includes('account-spinner'), name === 'loading')
+    assert.equal(html.includes('account-verifying'), name === 'verifying')
+    if (name === 'verifying') {
+      assert.ok(html.includes('月度大会员'))
+      assert.ok(html.includes('正在校验登录状态'))
+      assert.ok(!html.includes('正在加载账号'))
+    }
   })
 }

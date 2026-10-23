@@ -4,11 +4,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"bilibili_downloader/pkg/bilibili"
 
 	wailsassets "github.com/wailsapp/wails/v2/pkg/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -59,5 +62,44 @@ func TestStartupHTMLUsesSavedThemeAndKeepsWailsRuntime(t *testing.T) {
 	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/"+strings.TrimPrefix(files[0], "frontend/dist/"), nil))
 	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), want) {
 		t.Fatal("theme injection changed stylesheet delivery")
+	}
+}
+
+func TestStartupAccountIsInInitialHTMLWithoutIPCAndEscapesMarkup(t *testing.T) {
+	profile := &bilibili.UserInfo{IsLogin: true, Mid: 42, Uname: `Account </script><script>alert(1)</script>`}
+	server, err := wailsassets.NewAssetServer("", assetserver.Options{
+		Assets:     assets,
+		Middleware: startupThemeMiddleware(func() string { return "dark" }, func() *bilibili.UserInfo { return profile }),
+	}, false, nil, startupTestRuntime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range []*bilibili.UserInfo{profile, nil, {IsLogin: false}} {
+		profile = account
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+		body := response.Body.String()
+		prefix := `<script id="bbdown-startup-account" type="application/json">`
+		_, data, ok := strings.Cut(body, prefix)
+		if !ok {
+			t.Fatal("initial HTML lacks the local account")
+		}
+		data, _, ok = strings.Cut(data, "</script>")
+		if !ok || strings.Contains(data, "<") {
+			t.Fatal("profile was not safely JSON escaped")
+		}
+		var got *bilibili.UserInfo
+		if err := json.Unmarshal([]byte(data), &got); err != nil {
+			t.Fatal(err)
+		}
+		if (got == nil) != (account == nil) || (got != nil && *got != *account) {
+			t.Fatalf("initial profile mismatch: %+v", got)
+		}
+		if response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatal("account HTML must never be cached")
+		}
+		if !strings.Contains(body, "/wails/runtime.js") {
+			t.Fatal("account bootstrap broke Wails")
+		}
 	}
 }

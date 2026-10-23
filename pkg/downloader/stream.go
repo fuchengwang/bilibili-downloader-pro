@@ -30,6 +30,7 @@ type StreamDownloader struct {
 	refresher          URLRefresher
 	restoredProgressFn DownloadProgressFn
 	totalSizeFn        func(int64)
+	bandwidth          *bandwidthLimiter
 }
 
 // SetURLRefresher 配置直链鉴权失效时的动态刷新器
@@ -702,7 +703,8 @@ func (s *StreamDownloader) downloadSegment(ctx context.Context, segment *streamS
 			_ = resp.Body.Close()
 			return err
 		}
-		written, copyErr := copyExactContextProgress(ctx, resp.Body, part, declaredLength, progressFn)
+		reader := bandwidthReader{ctx: ctx, reader: resp.Body, limiter: s.bandwidth}
+		written, copyErr := copyExactContextProgress(ctx, reader, part, declaredLength, progressFn)
 		closeErr := part.Close()
 		bodyCloseErr := resp.Body.Close()
 		if closeErr != nil && copyErr == nil {
@@ -1180,7 +1182,8 @@ func (s *StreamDownloader) streamToFile(ctx context.Context, body io.Reader, isA
 	}
 	defer file.Close()
 
-	readChan := make(chan readResult, 4)
+	readChan := make(chan readResult)
+	readRequests := make(chan int)
 	readCtx, cancelRead := context.WithCancel(ctx)
 	bodyCloser, _ := body.(io.Closer)
 	defer func() {
@@ -1193,13 +1196,14 @@ func (s *StreamDownloader) streamToFile(ctx context.Context, body io.Reader, isA
 	go func() {
 		tempBuf := make([]byte, 128*1024) // 128KB 高性能传输缓冲
 		for {
+			var want int
 			select {
 			case <-readCtx.Done():
 				return
-			default:
+			case want = <-readRequests:
 			}
 
-			n, rErr := body.Read(tempBuf)
+			n, rErr := body.Read(tempBuf[:want])
 			if n == 0 && rErr == nil {
 				rErr = io.ErrNoProgress
 			}
@@ -1223,13 +1227,33 @@ func (s *StreamDownloader) streamToFile(ctx context.Context, body io.Reader, isA
 
 	const readIdleTimeout = 8 * time.Second
 	idleTimer := time.NewTimer(readIdleTimeout)
+	idleTimer.Stop()
 	defer idleTimer.Stop()
 
 	for {
+		// Throttling is intentional waiting, not a stalled CDN. Only start the
+		// network idle timer after a read has been granted bandwidth.
+		want, err := s.bandwidth.acquire(ctx, 128*1024)
+		if err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case readRequests <- want:
+		}
+		idleTimer.Reset(readIdleTimeout)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case res := <-readChan:
+			s.bandwidth.refund(want - len(res.data))
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
 			if len(res.data) > 0 {
 				if wErr := writeAll(file, res.data); wErr != nil {
 					return fmt.Errorf("写入临时分块失败: %w", wErr)
@@ -1244,14 +1268,6 @@ func (s *StreamDownloader) streamToFile(ctx context.Context, body io.Reader, isA
 				}
 				return res.err
 			}
-			// 成功读取到有效数据，复用并重置空闲超时定时器
-			if !idleTimer.Stop() {
-				select {
-				case <-idleTimer.C:
-				default:
-				}
-			}
-			idleTimer.Reset(readIdleTimeout)
 		case <-idleTimer.C:
 			return fmt.Errorf("CDN数据流读取停滞(超过8秒无数据)，自动重连加速")
 		}
