@@ -1,0 +1,54 @@
+{
+  "app_id": "bbdown-pro",
+  "app_name": "BBDown Pro",
+  "github_repo": "fuchengwang/bilibili-downloader-pro",
+  "github_workflow": "release.yml",
+  "gitcode_repo": "fuchengwang/bilibili-downloader-pro",
+  "gitcode_enabled": true,
+  "gitcode_remote": "gitcode",
+  "gitcode_branch": "main",
+  "capabilities": {
+    "activation": true,
+    "updates": true
+  },
+  "packages": {
+    "windows": {
+      "file_name": "BBDown-Pro-Windows-amd64.zip",
+      "download_name": "Windows版 BBDown Pro{version}.zip",
+      "arch": "amd64",
+      "entry": "BBDown Pro.exe"
+    },
+    "darwin": {
+      "file_name": "BBDown-Pro-macOS-universal.dmg",
+      "download_name": "MacOS版 BBDown Pro{version}.dmg",
+      "arch": "universal",
+      "entry": "BBDown Pro.app"
+    }
+  },
+  "schema_version": 1,
+  "server_url": "https://47.97.111.181:8090",
+  "activation_policy": {
+    "verify_interval_hours": 24,
+    "refund_protection_days": 15
+  },
+  "update_policy": {
+    "check_on_startup": true,
+    "interval_hours": 168,
+    "periodic": false,
+    "startup_delay_seconds": 3
+  },
+  "lanzou": {
+    "enabled": true,
+    "folder_path": [
+      "闲鱼商品",
+      "B站下载器_BBDown"
+    ],
+    "folder_share_url": "https://wwbcj.lanzouu.com/b0he8ozcb",
+    "cleanup_old": true
+  },
+  "updater": {
+    "enabled": true,
+    "base_url": "https://47.97.111.181:8090",
+    "publish": true
+  }
+}
