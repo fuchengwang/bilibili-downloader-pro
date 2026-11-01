@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"bilibili_downloader/pkg/bilibili"
@@ -33,6 +34,8 @@ type StreamDownloader struct {
 	restoredProgressFn DownloadProgressFn
 	totalSizeFn        func(int64)
 	bandwidth          *bandwidthLimiter
+	slowRecoveries     atomic.Int32
+	readPolicy         *streamReadPolicy
 }
 
 func (s *StreamDownloader) recordDiagnostic(err error) {
@@ -726,7 +729,7 @@ func (s *StreamDownloader) downloadSegment(ctx context.Context, segment *streamS
 			_ = resp.Body.Close()
 			return err
 		}
-		reader := bandwidthReader{ctx: ctx, reader: resp.Body, limiter: s.bandwidth}
+		reader := bandwidthReader{ctx: ctx, reader: s.watchResponse(resp.Body, declaredLength, true), limiter: s.bandwidth}
 		written, copyErr := copyExactContextProgress(ctx, reader, part, declaredLength, progressFn)
 		closeErr := part.Close()
 		bodyCloseErr := resp.Body.Close()
@@ -1135,7 +1138,8 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 			}
 		}
 
-		downloadErr := s.streamToFile(ctx, resp.Body, isAppend, progressFn)
+		canResume := resp.StatusCode == http.StatusPartialContent || strings.EqualFold(resp.Header.Get("Accept-Ranges"), "bytes")
+		downloadErr := s.streamToFile(ctx, s.watchResponse(resp.Body, resp.ContentLength, canResume), isAppend, progressFn)
 		resp.Body.Close()
 
 		if downloadErr == nil {
