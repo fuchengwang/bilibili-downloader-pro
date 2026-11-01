@@ -26,6 +26,10 @@ export function CheckForUpdates() {
   return window['go']['main']['App']['CheckForUpdates']();
 }
 
+export function CheckHistoryFiles(arg1) {
+  return window['go']['main']['App']['CheckHistoryFiles'](arg1);
+}
+
 export function CheckLicense(arg1) {
   return window['go']['main']['App']['CheckLicense'](arg1);
 }
@@ -56,6 +60,10 @@ export function GetAvailableQualities(arg1, arg2, arg3, arg4, arg5, arg6) {
 
 export function GetCachedUserInfo() {
   return window['go']['main']['App']['GetCachedUserInfo']();
+}
+
+export function GetCollectionVideoParts(arg1) {
+  return window['go']['main']['App']['GetCollectionVideoParts'](arg1);
 }
 
 export function GetPlaybackInfo(arg1, arg2, arg3, arg4, arg5, arg6) {
@@ -116,6 +124,10 @@ export function PollQRCode(arg1) {
 
 export function ReadClipboard() {
   return window['go']['main']['App']['ReadClipboard']();
+}
+
+export function RemoveMissingHistoryRecords(arg1) {
+  return window['go']['main']['App']['RemoveMissingHistoryRecords'](arg1);
 }
 
 export function RestartForUpdate() {

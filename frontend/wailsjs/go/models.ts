@@ -13,6 +13,8 @@ export namespace bilibili {
 	    durationStr: string;
 	    cover: string;
 	    badge: string;
+	    videoTitle?: string;
+	    partCount?: number;
 
 	    static createFrom(source: any = {}) {
 	        return new EpisodeInfo(source);
@@ -32,8 +34,47 @@ export namespace bilibili {
 	        this.durationStr = source["durationStr"];
 	        this.cover = source["cover"];
 	        this.badge = source["badge"];
+	        this.videoTitle = source["videoTitle"];
+	        this.partCount = source["partCount"];
 	    }
 	}
+	export class CollectionVideo {
+	    index: number;
+	    title: string;
+	    bvid: string;
+	    parts: EpisodeInfo[];
+
+	    static createFrom(source: any = {}) {
+	        return new CollectionVideo(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.index = source["index"];
+	        this.title = source["title"];
+	        this.bvid = source["bvid"];
+	        this.parts = this.convertValues(source["parts"], EpisodeInfo);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
 	export class PlaybackError {
 	    kind: string;
 	    message: string;
@@ -194,6 +235,8 @@ export namespace bilibili {
 	    defaultPage: number;
 	    hasLinkedEpisode: boolean;
 	    collectionTitle: string;
+	    collectionId?: number;
+	    collectionIncomplete?: boolean;
 	    isDefaultPart: boolean;
 
 	    static createFrom(source: any = {}) {
@@ -224,6 +267,8 @@ export namespace bilibili {
 	        this.defaultPage = source["defaultPage"];
 	        this.hasLinkedEpisode = source["hasLinkedEpisode"];
 	        this.collectionTitle = source["collectionTitle"];
+	        this.collectionId = source["collectionId"];
+	        this.collectionIncomplete = source["collectionIncomplete"];
 	        this.isDefaultPart = source["isDefaultPart"];
 	    }
 
@@ -300,6 +345,9 @@ export namespace downloader {
 	    targetQuality: string;
 	    targetCodec: string;
 	    episodes: number[];
+	    nestedVideos?: string[];
+	    collectionId?: number;
+	    isCollection?: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new DownloadRequest(source);
@@ -319,6 +367,9 @@ export namespace downloader {
 	        this.targetQuality = source["targetQuality"];
 	        this.targetCodec = source["targetCodec"];
 	        this.episodes = source["episodes"];
+	        this.nestedVideos = source["nestedVideos"];
+	        this.collectionId = source["collectionId"];
+	        this.isCollection = source["isCollection"];
 	    }
 	}
 	export class DownloadTask {
@@ -331,6 +382,11 @@ export namespace downloader {
 	    isCheese: boolean;
 	    title: string;
 	    partTitle: string;
+	    collectionId?: number;
+	    collectionTitle?: string;
+	    videoTitle?: string;
+	    partPage?: number;
+	    partCount?: number;
 	    cover: string;
 	    sourceUrl: string;
 	    targetQuality: string;
@@ -372,6 +428,11 @@ export namespace downloader {
 	        this.isCheese = source["isCheese"];
 	        this.title = source["title"];
 	        this.partTitle = source["partTitle"];
+	        this.collectionId = source["collectionId"];
+	        this.collectionTitle = source["collectionTitle"];
+	        this.videoTitle = source["videoTitle"];
+	        this.partPage = source["partPage"];
+	        this.partCount = source["partCount"];
 	        this.cover = source["cover"];
 	        this.sourceUrl = source["sourceUrl"];
 	        this.targetQuality = source["targetQuality"];

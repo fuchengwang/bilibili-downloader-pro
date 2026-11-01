@@ -18,6 +18,8 @@ export function CheckFileExists(arg1:string):Promise<boolean>;
 
 export function CheckForUpdates():Promise<void>;
 
+export function CheckHistoryFiles(arg1:Array<string>):Promise<Record<string, string>>;
+
 export function CheckLicense(arg1:boolean):Promise<main.LicenseResult>;
 
 export function ClearCompletedTasks(arg1:boolean):Promise<void>;
@@ -33,6 +35,8 @@ export function GenerateQRCode():Promise<bilibili.QRCodeInfo>;
 export function GetAvailableQualities(arg1:string,arg2:number,arg3:number,arg4:number,arg5:boolean,arg6:boolean):Promise<Array<bilibili.QualityOption>>;
 
 export function GetCachedUserInfo():Promise<bilibili.UserInfo>;
+
+export function GetCollectionVideoParts(arg1:bilibili.EpisodeInfo):Promise<bilibili.CollectionVideo>;
 
 export function GetPlaybackInfo(arg1:string,arg2:number,arg3:number,arg4:number,arg5:boolean,arg6:boolean):Promise<bilibili.PlaybackInfo>;
 
@@ -63,6 +67,8 @@ export function PauseUpdateDownload():Promise<void>;
 export function PollQRCode(arg1:string):Promise<bilibili.QRStatus>;
 
 export function ReadClipboard():Promise<string>;
+
+export function RemoveMissingHistoryRecords(arg1:Record<string, string>):Promise<Array<string>>;
 
 export function RestartForUpdate():Promise<void>;
 

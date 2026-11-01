@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { CheckHistoryFiles, RemoveMissingHistoryRecords } from '../../wailsjs/go/main/App'
 import {
   Play,
   FolderOpen,
@@ -9,6 +10,7 @@ import {
   HardDrive,
   Clock,
   Film,
+  FileX2,
   AlertTriangle,
   X
 } from 'lucide-vue-next'
@@ -16,6 +18,7 @@ import { downloader } from '../../wailsjs/go/models'
 
 const props = defineProps<{
   tasks: downloader.DownloadTask[]
+  active: boolean
 }>()
 
 const emit = defineEmits<{
@@ -24,9 +27,51 @@ const emit = defineEmits<{
   (e: 'delete-task', id: string, deleteFile: boolean): void
   (e: 'request-delete', task: downloader.DownloadTask): void
   (e: 'clear-completed', deleteFiles?: boolean): void
+  (e: 'records-removed', ids: string[]): void
 }>()
 
 const searchKey = ref('')
+const fileStates = ref<Record<string, string>>({})
+const checking = ref(false)
+const cleaning = ref(false)
+const cleanupError = ref('')
+let checkVersion = 0
+const allCompleted = computed(() => props.tasks.filter(t => t.status === 'completed'))
+const missingTasks = computed(() => allCompleted.value.filter(t => t.outputPath && fileStates.value[t.outputPath] === 'missing'))
+
+async function checkFiles() {
+  const version = ++checkVersion
+  const paths = [...new Set(allCompleted.value.map(t => t.outputPath).filter(Boolean))]
+  checking.value = true
+  try {
+    const states = await CheckHistoryFiles(paths)
+    if (version === checkVersion) fileStates.value = states || {}
+  } catch {
+    if (version === checkVersion) fileStates.value = {}
+  } finally {
+    if (version === checkVersion) checking.value = false
+  }
+}
+watch(() => props.active ? JSON.stringify(allCompleted.value.map(t => [t.id, t.outputPath])) : '', () => {
+  if (props.active) void checkFiles()
+  else { checkVersion++; checking.value = false }
+}, { immediate: true })
+
+async function confirmMissingCleanup() {
+  cleaning.value = true
+  cleanupError.value = ''
+  const candidates = missingTasks.value.map(t => ({ id: t.id, path: t.outputPath }))
+  let removed: string[] = []
+  try {
+    removed = await RemoveMissingHistoryRecords(Object.fromEntries(candidates.map(t => [t.id, t.path]))) || []
+  } catch {
+    cleanupError.value = '清理未完成，请稍后重试。'
+  } finally {
+    if (removed.length) emit('records-removed', removed)
+    cleaning.value = false
+    void checkFiles()
+  }
+}
 
 // 单项删除弹窗状态
 const showDeleteModal = ref(false)
@@ -48,7 +93,7 @@ const completedTasks = computed(() => {
   const list = props.tasks.filter(t => t.status === 'completed')
   if (!searchKey.value.trim()) return list
   const kw = searchKey.value.toLowerCase().trim()
-  return list.filter(t => t.title.toLowerCase().includes(kw) || t.partTitle.toLowerCase().includes(kw))
+  return list.filter(t => (t.title || '').toLowerCase().includes(kw) || (t.partTitle || '').toLowerCase().includes(kw) || ((t as any).videoTitle || '').toLowerCase().includes(kw))
 })
 
 function formatCompletedDate(timestamp: number): string {
@@ -97,6 +142,9 @@ function confirmClearAll() {
 
       <div class="header-actions">
         <span class="count-text">共 {{ completedTasks.length }} 个文件</span>
+        <button v-if="missingTasks.length" class="btn-secondary clear-btn missing-clear-btn" :disabled="checking || cleaning" @click="confirmMissingCleanup" :title="cleanupError || '仅清除原位置未找到文件的记录'">
+          {{ cleaning ? '正在检查…' : `清理失效记录（${missingTasks.length}）` }}
+        </button>
         <button
           v-if="completedTasks.length > 0"
           class="btn-secondary clear-btn"
@@ -114,8 +162,10 @@ function confirmClearAll() {
         v-for="task in completedTasks"
         :key="task.id"
         class="history-card"
+        :class="{ 'is-missing': fileStates[task.outputPath] === 'missing' }"
+        :title="fileStates[task.outputPath] === 'missing' ? '原位置未找到文件' : ''"
       >
-        <div class="cover-box" @click="emit('open-file', task.outputPath, task)">
+        <div class="cover-box" @click="fileStates[task.outputPath] !== 'missing' && emit('open-file', task.outputPath, task)">
           <img
             v-if="task.cover"
             :src="normalizeImg(task.cover)"
@@ -129,20 +179,22 @@ function confirmClearAll() {
           <div class="play-overlay">
             <Play :size="18" class="play-icon" />
           </div>
+          <div v-if="fileStates[task.outputPath] === 'missing'" class="missing-cover-mark" aria-label="原位置未找到文件"><FileX2 :size="17" /></div>
           <span v-if="task.qualityLabel" class="quality-badge">{{ task.qualityLabel }}</span>
         </div>
 
         <div class="content-box">
           <div class="title-row">
-            <span class="item-title" :title="task.partTitle || task.title">{{ task.partTitle || task.title }}</span>
-            <span v-if="task.partTitle && task.partTitle !== task.title" class="part-badge" :title="task.title">
-              {{ task.title }}
+            <span class="item-title" :title="task.partTitle || task.title">{{ (task as any).partCount > 1 ? `P${(task as any).partPage} · ` : '' }}{{ task.partTitle || task.title }}</span>
+            <span v-if="task.partTitle && task.partTitle !== task.title" class="part-badge" :title="(task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? `${task.title} › ${(task as any).videoTitle}` : task.title">
+              {{ (task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? (task as any).videoTitle : task.title }}
             </span>
           </div>
 
           <div class="meta-row">
             <span class="meta-item">
-              <CheckCircle2 :size="12" class="success-icon" />
+              <AlertTriangle v-if="fileStates[task.outputPath] === 'missing'" :size="12" class="missing-icon" aria-label="原位置未找到文件" />
+              <CheckCircle2 v-else :size="12" class="success-icon" />
               <span>下载完成</span>
             </span>
 
@@ -159,7 +211,7 @@ function confirmClearAll() {
         </div>
 
         <div class="btn-group">
-          <button class="btn-primary play-btn" @click="emit('open-file', task.outputPath, task)" title="播放视频">
+          <button class="btn-primary play-btn" :disabled="fileStates[task.outputPath] === 'missing'" @click="emit('open-file', task.outputPath, task)" :title="fileStates[task.outputPath] === 'missing' ? '原位置未找到文件' : '播放视频'">
             <Play :size="13" />
             <span>播放</span>
           </button>
@@ -183,6 +235,8 @@ function confirmClearAll() {
       <h3 class="empty-title">暂无下载完成记录</h3>
       <p class="empty-desc">下载完成后的视频将在这里展示，并支持一键播放与定位</p>
     </div>
+
+    <p v-if="cleanupError" class="cleanup-error" role="alert">{{ cleanupError }}</p>
 
     <!-- 单任务删除确认模态框 -->
     <div v-if="showDeleteModal && targetTask" class="modal-overlay" @click.self="showDeleteModal = false">
@@ -347,6 +401,7 @@ function confirmClearAll() {
   padding: 0 8px;
   gap: 4px;
 }
+.missing-clear-btn { justify-content: center; padding-inline: 10px; text-align: center; }
 
 .history-list {
   display: flex;
@@ -370,6 +425,15 @@ function confirmClearAll() {
   background: var(--bg-card-hover);
   border-color: var(--neutral-12);
 }
+.history-card.is-missing .cover-box { cursor: default; }
+.history-card.is-missing .content-box { opacity: .65; }
+.missing-cover-mark { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: white; }
+.missing-cover-mark svg { box-sizing: content-box; padding: 5px; border-radius: 50%; background: rgba(28, 39, 58, .7); }
+.history-card.is-missing .cover-box:hover .play-overlay { opacity: 0; }
+.history-card.is-missing .cover-box:hover .cover-img { transform: none; }
+.history-card.is-missing .play-btn { background: var(--neutral-05); color: var(--text-muted); box-shadow: none; opacity: 1; cursor: not-allowed; }
+.missing-icon { color: #bd802e; }
+.cleanup-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
 
 .cover-box {
   position: relative;

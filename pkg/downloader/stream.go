@@ -22,6 +22,8 @@ type URLRefresher func(ctx context.Context) ([]string, error)
 
 // StreamDownloader 单个媒体流 (视频或音频) 的高可靠断点续传下载器
 type StreamDownloader struct {
+	diagnosticMu       sync.Mutex
+	diagnosticLast     error
 	client             *http.Client
 	urls               []string
 	urlIdx             int
@@ -31,6 +33,21 @@ type StreamDownloader struct {
 	restoredProgressFn DownloadProgressFn
 	totalSizeFn        func(int64)
 	bandwidth          *bandwidthLimiter
+}
+
+func (s *StreamDownloader) recordDiagnostic(err error) {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	s.diagnosticMu.Lock()
+	s.diagnosticLast = err
+	s.diagnosticMu.Unlock()
+}
+
+func (s *StreamDownloader) lastDiagnostic() error {
+	s.diagnosticMu.Lock()
+	defer s.diagnosticMu.Unlock()
+	return s.diagnosticLast
 }
 
 // SetURLRefresher 配置直链鉴权失效时的动态刷新器
@@ -185,6 +202,7 @@ func (s *StreamDownloader) GetTotalSize(ctx context.Context) (int64, error) {
 
 		resp, err := s.client.Do(req)
 		if err != nil {
+			s.recordDiagnostic(err)
 			lastErr = err
 			continue
 		}
@@ -624,6 +642,7 @@ func (s *StreamDownloader) downloadSegment(ctx context.Context, segment *streamS
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", requestStart, segment.end))
 		resp, err := s.client.Do(req)
 		if err != nil {
+			s.recordDiagnostic(err)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -635,6 +654,7 @@ func (s *StreamDownloader) downloadSegment(ctx context.Context, segment *streamS
 		}
 
 		if resp.StatusCode == http.StatusForbidden {
+			s.recordDiagnostic(fmt.Errorf("分片请求 HTTP 403"))
 			_ = resp.Body.Close()
 			if s.refresher != nil {
 				if refreshed, refreshErr := s.refresher(ctx); refreshErr == nil && len(refreshed) > 0 {
@@ -654,6 +674,7 @@ func (s *StreamDownloader) downloadSegment(ctx context.Context, segment *streamS
 			continue
 		}
 		if resp.StatusCode >= 500 {
+			s.recordDiagnostic(fmt.Errorf("分片请求 HTTP %d", resp.StatusCode))
 			_ = resp.Body.Close()
 			urlIdx = (urlIdx + 1) % len(urls)
 			if err := waitForRetry(ctx, 500*time.Millisecond); err != nil {
@@ -666,6 +687,7 @@ func (s *StreamDownloader) downloadSegment(ctx context.Context, segment *streamS
 			return errRangeUnsupported
 		}
 		if resp.StatusCode != http.StatusPartialContent {
+			s.recordDiagnostic(fmt.Errorf("分片请求 HTTP %d", resp.StatusCode))
 			_ = resp.Body.Close()
 			urlIdx = (urlIdx + 1) % len(urls)
 			if err := waitForRetry(ctx, 300*time.Millisecond); err != nil {
@@ -690,6 +712,7 @@ func (s *StreamDownloader) downloadSegment(ctx context.Context, segment *streamS
 			validRange = false
 		}
 		if !validRange {
+			s.recordDiagnostic(fmt.Errorf("分片响应范围无效"))
 			_ = resp.Body.Close()
 			urlIdx = (urlIdx + 1) % len(urls)
 			if err := waitForRetry(ctx, 300*time.Millisecond); err != nil {
@@ -714,6 +737,11 @@ func (s *StreamDownloader) downloadSegment(ctx context.Context, segment *streamS
 			copyErr = bodyCloseErr
 		}
 		if copyErr != nil || written != declaredLength {
+			if copyErr != nil {
+				s.recordDiagnostic(copyErr)
+			} else {
+				s.recordDiagnostic(fmt.Errorf("分片读取不完整: %d/%d", written, declaredLength))
+			}
 			urlIdx = (urlIdx + 1) % len(urls)
 			if err := waitForRetry(ctx, 300*time.Millisecond); err != nil {
 				return err
@@ -821,7 +849,8 @@ func removeSegmentPartFiles(targetPath string, count int) {
 }
 
 // DownloadSingleStream 核心无损连续追加断点续传（保证数据 0 空洞、0 损坏、100% 完整性）
-func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn DownloadProgressFn) error {
+func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn DownloadProgressFn) (resultErr error) {
+	defer func() { s.recordDiagnostic(resultErr) }()
 	if strings.TrimSpace(s.targetPath) == "" {
 		return fmt.Errorf("目标文件路径为空")
 	}

@@ -4,6 +4,12 @@ export type EpisodeSelection = Record<number, boolean>
 export function filterEpisodes<T extends Episode>(episodes: T[], query: string): T[] {
   const text = query.trim().toLocaleLowerCase()
   if (!text) return episodes
+  if (/^\d+$/.test(text)) return episodes.filter(ep => ep.index === Number(text) || `${ep.title} ${ep.longTitle || ''}`.toLocaleLowerCase().includes(text))
+  const sequence = text.replace(/，/g, ',')
+  if (/^\d+(?:\s*-\s*\d+)?(?:\s*,\s*\d+(?:\s*-\s*\d+)?)*$/.test(sequence)) {
+    const ranges = sequence.split(',').map(item => item.split('-').map(Number))
+    return episodes.filter(ep => ranges.some(([start, end = start]) => start <= end && ep.index >= start && ep.index <= end))
+  }
   const number = text.match(/^(?:p|第)?(\d+)(?:集|话|课|p)?$/i)
   if (number) return episodes.filter(ep => ep.index === Number(number[1]))
   const words = text.split(/\s+/)

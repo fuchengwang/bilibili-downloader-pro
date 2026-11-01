@@ -15,15 +15,20 @@ const (
 
 // DownloadTask 表示一个完整的单集/分P下载任务
 type DownloadTask struct {
-	ID              string     `json:"id"`              // 唯一 UUID
-	BVID            string     `json:"bvid"`            // 视频 BVID
-	AID             int64      `json:"aid"`             // AID
-	CID             int64      `json:"cid"`             // CID
-	EPID            int64      `json:"epid"`            // 番剧 EPID
-	IsBangumi       bool       `json:"isBangumi"`       // 是否为番剧
-	IsCheese        bool       `json:"isCheese"`        // 是否为课堂课程
-	Title           string     `json:"title"`           // 视频主标题
-	PartTitle       string     `json:"partTitle"`       // 分P/分集标题
+	ID              string     `json:"id"`        // 唯一 UUID
+	BVID            string     `json:"bvid"`      // 视频 BVID
+	AID             int64      `json:"aid"`       // AID
+	CID             int64      `json:"cid"`       // CID
+	EPID            int64      `json:"epid"`      // 番剧 EPID
+	IsBangumi       bool       `json:"isBangumi"` // 是否为番剧
+	IsCheese        bool       `json:"isCheese"`  // 是否为课堂课程
+	Title           string     `json:"title"`     // 视频主标题
+	PartTitle       string     `json:"partTitle"` // 分P/分集标题
+	CollectionID    int64      `json:"collectionId,omitempty"`
+	CollectionTitle string     `json:"collectionTitle,omitempty"`
+	VideoTitle      string     `json:"videoTitle,omitempty"`
+	PartPage        int        `json:"partPage,omitempty"`
+	PartCount       int        `json:"partCount,omitempty"`
 	Cover           string     `json:"cover"`           // 封面图 URL
 	SourceURL       string     `json:"sourceUrl"`       // 实际单集或分P的视频页
 	TargetQuality   string     `json:"targetQuality"`   // 目标画质 (e.g. "highest", "120", "80")
@@ -53,16 +58,19 @@ type DownloadTask struct {
 
 // DownloadRequest 前端发起的下载请求结构体
 type DownloadRequest struct {
-	BVID          string  `json:"bvid"`
-	AID           int64   `json:"aid"`
-	EPID          int64   `json:"epid,omitempty"`
-	SSID          int64   `json:"ssid,omitempty"`
-	Title         string  `json:"title"`
-	Cover         string  `json:"cover"`
-	SourcePage    int     `json:"sourcePage,omitempty"`
-	IsBangumi     bool    `json:"isBangumi"`
-	IsCheese      bool    `json:"isCheese"`
-	TargetQuality string  `json:"targetQuality"` // 用户选定的画质 ("highest", "120", "80", etc.)
-	TargetCodec   string  `json:"targetCodec"`   // 用户选定的编码 ("auto", "AVC", "HEVC", "AV1")
-	Episodes      []int64 `json:"episodes"`      // 选中的集数 CID 列表
+	BVID          string   `json:"bvid"`
+	AID           int64    `json:"aid"`
+	EPID          int64    `json:"epid,omitempty"`
+	SSID          int64    `json:"ssid,omitempty"`
+	Title         string   `json:"title"`
+	Cover         string   `json:"cover"`
+	SourcePage    int      `json:"sourcePage,omitempty"`
+	IsBangumi     bool     `json:"isBangumi"`
+	IsCheese      bool     `json:"isCheese"`
+	TargetQuality string   `json:"targetQuality"`          // 用户选定的画质 ("highest", "120", "80", etc.)
+	TargetCodec   string   `json:"targetCodec"`            // 用户选定的编码 ("auto", "AVC", "HEVC", "AV1")
+	Episodes      []int64  `json:"episodes"`               // 选中的集数 CID 列表
+	NestedVideos  []string `json:"nestedVideos,omitempty"` // 待验证的合集视频 BV 号
+	CollectionID  int64    `json:"collectionId,omitempty"`
+	IsCollection  bool     `json:"isCollection,omitempty"`
 }

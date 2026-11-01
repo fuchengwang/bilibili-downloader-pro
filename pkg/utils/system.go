@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 // illegalChars 匹配 Windows / macOS / Linux 文件系统非法字符及 ASCII 控制字符
@@ -268,21 +269,37 @@ func AtomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
 // EnsureSafePathLength 确保在 Windows MAX_PATH (260字符) 限制下，全路径保持在 210 字符安全阈值内，为后续临时文件或画质标签预留充分空间
 func EnsureSafePathLength(dir, filename, ext string) string {
 	const maxChars = 210
-	dirRunes := len([]rune(dir))
-	extRunes := len([]rune(ext))
+	dirRunes := WindowsPathUnits(dir)
+	extRunes := WindowsPathUnits(ext)
 
 	maxNameRunes := maxChars - dirRunes - 1 - extRunes
 	if maxNameRunes < 10 {
 		maxNameRunes = 10
 	}
 
-	runes := []rune(filename)
-	if len(runes) > maxNameRunes {
-		runes = runes[:maxNameRunes]
-		filename = strings.Trim(string(runes), " ._-")
+	if WindowsPathUnits(filename) > maxNameRunes {
+		filename = strings.Trim(TruncatePathUnits(filename, maxNameRunes), " ._-")
 		if filename == "" {
 			filename = "video"
 		}
 	}
 	return filepath.Join(dir, filename+ext)
+}
+
+// Windows measures paths in UTF-16 code units, including emoji surrogate pairs.
+func WindowsPathUnits(s string) int { return len(utf16.Encode([]rune(s))) }
+
+func TruncatePathUnits(s string, limit int) string {
+	units := 0
+	for i, r := range s {
+		size := 1
+		if r > 0xffff {
+			size = 2
+		}
+		if units+size > limit {
+			return s[:i]
+		}
+		units += size
+	}
+	return s
 }

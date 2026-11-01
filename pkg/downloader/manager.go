@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -30,16 +31,20 @@ type workerHandle struct {
 
 // DownloadManager 负责整个下载队列、并发调度与状态管理
 type DownloadManager struct {
-	mu           sync.RWMutex
-	saveMu       sync.Mutex
-	tasks        []*DownloadTask
-	workers      map[string]workerHandle
-	callback     ProgressCallback
-	biliClient   *bilibili.Client
-	cfgMgr       *config.ConfigManager
-	workerNotify chan struct{}
-	mergeFunc    func(context.Context, string, string, string, bool) error
-	bandwidth    *bandwidthLimiter
+	mu                sync.RWMutex
+	addMu             sync.Mutex
+	directoryMu       sync.Mutex
+	directoryRegistry map[string]string
+	directoryWritable bool
+	saveMu            sync.Mutex
+	tasks             []*DownloadTask
+	workers           map[string]workerHandle
+	callback          ProgressCallback
+	biliClient        *bilibili.Client
+	cfgMgr            *config.ConfigManager
+	workerNotify      chan struct{}
+	mergeFunc         func(context.Context, string, string, string, bool) error
+	bandwidth         *bandwidthLimiter
 }
 
 var (
@@ -167,17 +172,18 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 	if req == nil || ep == nil {
 		return nil, fmt.Errorf("下载任务参数不能为空")
 	}
-	m.mu.Lock()
+	m.addMu.Lock()
+	unlockAdd := sync.OnceFunc(m.addMu.Unlock)
+	defer unlockAdd()
 	cfg := m.cfgMgr.Get()
 	if strings.TrimSpace(cfg.DownloadDir) == "" {
-		m.mu.Unlock()
 		return nil, fmt.Errorf("下载目录未设置")
 	}
 	if err := os.MkdirAll(cfg.DownloadDir, 0755); err != nil {
-		m.mu.Unlock()
 		return nil, fmt.Errorf("创建下载目录失败: %w", err)
 	}
 
+	m.mu.Lock()
 	// 相同参数复用原任务；完成文件仍存在时不重复下载。
 	for _, existing := range m.tasks {
 		if existing == nil {
@@ -218,12 +224,14 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 					m.mu.Unlock()
 					return nil, err
 				}
+				unlockAdd()
 				m.notifyChange(existing)
 				m.triggerSchedule()
 				return existing, nil
 			}
 			resume := existing.Status == StatusPaused || existing.Status == StatusError || existing.Status == StatusCancelled
 			m.mu.Unlock()
+			unlockAdd()
 			if resume {
 				if err := m.ResumeTask(existing.ID); err != nil {
 					return nil, err
@@ -233,31 +241,58 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 		}
 	}
 
+	m.mu.Unlock()
+
 	// 生成规范的输出路径与文件名（支持极端特殊字符与超长标题安全降级）
 	sanitizedTitle := utils.SanitizeFilename(req.Title, "bilibili_video")
 	var outDir string
 	var baseFileName string
 
 	// 判断是否为多集/合集/多P视频
-	isMulti := len(req.Episodes) > 1 || req.IsBangumi || req.IsCheese || strings.Contains(ep.Badge, "合集") || ep.Index > 1 || (ep.Title != "" && ep.Title != req.Title)
+	isMulti := req.IsCollection || req.CollectionID > 0 || len(req.Episodes) > 1 || req.IsBangumi || req.IsCheese || strings.Contains(ep.Badge, "合集") || ep.Index > 1 || (ep.Title != "" && ep.Title != req.Title)
 
 	if isMulti {
-		// 合集/多P：保存在以合集标题 + [BVID] 命名的独立子文件夹内，彻底防止不同UP主同名合集相互覆盖
+		// 合集和多P按稳定身份复用目录；同名但不同来源的内容保持隔离。
 		collFolder := sanitizedTitle
-		if req.IsCheese && req.SSID > 0 {
+		if req.CollectionID > 0 {
+			var err error
+			outDir, err = m.collectionDir(cfg.DownloadDir, fmt.Sprintf("ugc:%d", req.CollectionID), sanitizedTitle, 2, func() []string { return m.legacyCollectionDirs(cfg.DownloadDir, req, ep, false) })
+			if err == nil && ep.PartCount > 1 {
+				outDir, err = m.collectionDir(outDir, "video:"+ep.BVID, collectionVideoName(ep.Index, ep.VideoTitle), 1, func() []string { return m.legacyCollectionDirs(outDir, req, ep, true) })
+			}
+			if err != nil {
+				return nil, fmt.Errorf("创建合集下载目录失败: %w", err)
+			}
+		} else if req.IsCheese && req.SSID > 0 {
 			collFolder = fmt.Sprintf("%s [ss%d]", sanitizedTitle, req.SSID)
-		} else if ep.BVID != "" && !strings.Contains(collFolder, ep.BVID) {
-			collFolder = fmt.Sprintf("%s [%s]", sanitizedTitle, ep.BVID)
+		} else if !req.IsBangumi && ep.BVID != "" {
+			var err error
+			outDir, err = m.collectionDir(cfg.DownloadDir, "video:"+ep.BVID, sanitizedTitle, 1, func() []string { return m.legacyCollectionDirs(cfg.DownloadDir, req, ep, false) })
+			if err != nil {
+				return nil, fmt.Errorf("创建视频下载目录失败: %w", err)
+			}
 		}
-		outDir = filepath.Join(cfg.DownloadDir, collFolder)
-		partName := formatFileNameByTemplate(cfg.FileNameTemplate, req.Title, ep.Title, ep.BVID, ep.Index)
+		if outDir == "" {
+			outDir = filepath.Join(cfg.DownloadDir, collFolder)
+		}
+		fileIndex := ep.Index
+		if req.CollectionID > 0 && ep.PartCount > 1 {
+			fileIndex = ep.Page
+		}
+		partName := formatFileNameByTemplate(cfg.FileNameTemplate, req.Title, ep.Title, ep.BVID, fileIndex)
+		if req.CollectionID > 0 && ep.VideoTitle != "" && cfg.FileNameTemplate == "{title} - {part}" {
+			if ep.PartCount > 1 {
+				partName = fmt.Sprintf("P%02d. %s", ep.Page, ep.Title)
+			} else {
+				partName = collectionVideoName(ep.Index, ep.VideoTitle)
+			}
+		}
 		fallbackPart := fmt.Sprintf("P%02d", ep.Index)
 		if ep.Index <= 0 {
 			fallbackPart = "video"
 		}
 		baseFileName = utils.SanitizeFilename(partName, fallbackPart)
 		if err := os.MkdirAll(outDir, 0755); err != nil {
-			m.mu.Unlock()
 			return nil, fmt.Errorf("创建合集下载目录失败: %w", err)
 		}
 	} else {
@@ -266,7 +301,6 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 		partName := formatFileNameByTemplate(cfg.FileNameTemplate, req.Title, ep.Title, ep.BVID, ep.Index)
 		baseFileName = utils.SanitizeFilename(partName, sanitizedTitle)
 		if err := os.MkdirAll(outDir, 0755); err != nil {
-			m.mu.Unlock()
 			return nil, fmt.Errorf("创建下载目录失败: %w", err)
 		}
 	}
@@ -288,6 +322,10 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 		IsCheese:      req.IsCheese,
 		Title:         req.Title,
 		PartTitle:     ep.Title,
+		CollectionID:  req.CollectionID,
+		VideoTitle:    ep.VideoTitle,
+		PartPage:      ep.Page,
+		PartCount:     ep.PartCount,
 		Cover:         ep.Cover,
 		SourceURL:     bilibili.EpisodeURL(ep, req.IsBangumi, req.IsCheese),
 		TargetQuality: req.TargetQuality,
@@ -302,7 +340,14 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 		VideoTmpPath:  vTmp,
 		AudioTmpPath:  aTmp,
 	}
+	if req.CollectionID > 0 {
+		task.CollectionTitle = req.Title
+		if ep.PartCount == 1 {
+			task.PartTitle = ep.VideoTitle
+		}
+	}
 
+	m.mu.Lock()
 	m.tasks = append([]*DownloadTask{task}, m.tasks...)
 	m.mu.Unlock()
 
@@ -321,6 +366,7 @@ func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.Epi
 		m.mu.Unlock()
 		return nil, fmt.Errorf("保存下载任务失败: %w", persistErr)
 	}
+	unlockAdd()
 	m.notifyChange(task)
 	m.triggerSchedule()
 	return task, nil
@@ -425,6 +471,44 @@ func (m *DownloadManager) CancelTask(id string) error {
 		return persistErr
 	}
 	return nil
+}
+
+// RemoveCompletedRecords removes matching completed records without touching files.
+func (m *DownloadManager) RemoveCompletedRecords(candidates map[string]string) ([]string, error) {
+	if len(candidates) == 0 {
+		return []string{}, nil
+	}
+	m.mu.Lock()
+	var kept, removed []*DownloadTask
+	for _, task := range m.tasks {
+		if task == nil {
+			continue
+		}
+		path, matches := candidates[task.ID]
+		if matches && task.Status == StatusCompleted && task.OutputPath == path {
+			if _, working := m.workers[task.ID]; !working {
+				removed = append(removed, task)
+				continue
+			}
+		}
+		kept = append(kept, task)
+	}
+	m.tasks = kept
+	m.mu.Unlock()
+	if len(removed) == 0 {
+		return []string{}, nil
+	}
+	if err := m.SaveTasks(); err != nil {
+		m.mu.Lock()
+		m.tasks = append(m.tasks, removed...)
+		m.mu.Unlock()
+		return nil, err
+	}
+	ids := make([]string, 0, len(removed))
+	for _, task := range removed {
+		ids = append(ids, task.ID)
+	}
+	return ids, nil
 }
 
 // DeleteTask 从列表中彻底删除任务
@@ -918,7 +1002,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		if ctx.Err() != nil {
 			return
 		}
-		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, formatFriendlyError(err))
+		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, formatFriendlyError(err), &bilibili.PlaybackError{Detail: streamFailureDetail("视频轨", err, vDownloader.lastDiagnostic())})
 		return
 	}
 
@@ -931,7 +1015,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 			if ctx.Err() != nil {
 				return
 			}
-			m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, formatFriendlyError(err))
+			m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, formatFriendlyError(err), &bilibili.PlaybackError{Detail: streamFailureDetail("音频轨", err, aDownloader.lastDiagnostic())})
 			return
 		}
 	}
@@ -1130,6 +1214,16 @@ func formatFileNameByTemplate(tmpl, mainTitle, partTitle, bvid string, index int
 // safeRemoveWithRetry 带指数退避重试的文件安全删除函数 (转调 utils.SafeRemoveWithRetry)
 func safeRemoveWithRetry(filePath string) {
 	utils.SafeRemoveWithRetry(filePath)
+}
+
+var diagnosticURLPattern = regexp.MustCompile(`https?://[^\s\"']+`)
+
+func streamFailureDetail(stage string, err, last error) string {
+	detail := stage + "下载失败: " + err.Error()
+	if last != nil && last.Error() != err.Error() {
+		detail += "; 最近一次请求: " + last.Error()
+	}
+	return diagnosticURLPattern.ReplaceAllString(detail, "[下载地址已隐藏]")
 }
 
 func formatFriendlyError(err error) string {

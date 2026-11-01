@@ -124,9 +124,9 @@ const filteredTasks = computed(() => {
 
         <div class="task-info">
           <div class="task-title-row">
-            <span class="task-title" :title="task.partTitle || task.title">{{ task.partTitle || task.title }}</span>
-            <span v-if="task.partTitle && task.partTitle !== task.title" class="part-badge" :title="task.title">
-              {{ task.title }}
+            <span class="task-title" :title="task.partTitle || task.title">{{ (task as any).partCount > 1 ? `P${(task as any).partPage} · ` : '' }}{{ task.partTitle || task.title }}</span>
+            <span v-if="task.partTitle && task.partTitle !== task.title" class="part-badge" :title="(task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? `${task.title} › ${(task as any).videoTitle}` : task.title">
+              {{ (task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? (task as any).videoTitle : task.title }}
             </span>
           </div>
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -189,6 +190,15 @@ func (a *App) ParseURL(input string) (*bilibili.VideoDetail, error) {
 	return a.biliClient.FetchVideoDetail(a.ctx, target)
 }
 
+// GetCollectionVideoParts resolves a collection entry independently so the
+// selector can report progress and failures without blocking the application.
+func (a *App) GetCollectionVideoParts(video bilibili.EpisodeInfo) (*bilibili.CollectionVideo, error) {
+	if err := a.requireLicense(); err != nil {
+		return nil, err
+	}
+	return a.biliClient.FetchCollectionVideoParts(a.ctx, video)
+}
+
 // GetAvailableQualities 获取指定分P在当前登录状态下的全部可用清晰度
 func (a *App) GetAvailableQualities(bvid string, aid, cid, epid int64, isBangumi, isCheese bool) ([]bilibili.QualityOption, error) {
 	if err := a.requireLicense(); err != nil {
@@ -211,6 +221,9 @@ func (a *App) AddDownloadTasks(req downloader.DownloadRequest) ([]*downloader.Do
 		return nil, err
 	}
 	downMgr := a.currentDownloadManager()
+	if downMgr == nil {
+		return nil, fmt.Errorf("下载管理器不可用")
+	}
 	// 先获取视频完整信息以匹配选中的 CID
 	var targetType bilibili.TargetType = bilibili.TargetNormal
 	var epidStr, ssidStr string
@@ -242,29 +255,48 @@ func (a *App) AddDownloadTasks(req downloader.DownloadRequest) ([]*downloader.Do
 	if req.IsCheese {
 		req.SSID = detail.SeasonID
 	}
+	req.CollectionID = detail.CollectionID
+	req.IsCollection = detail.IsCollection
 
 	cidMap := make(map[int64]bool)
 	for _, cid := range req.Episodes {
 		cidMap[cid] = true
 	}
 
-	var added []*downloader.DownloadTask
+	episodes := detail.Episodes
+	if len(req.NestedVideos) > 0 && detail.CollectionID == 0 {
+		return nil, fmt.Errorf("该视频不属于可识别的合集")
+	}
+	if detail.CollectionID > 0 {
+		episodes, err = collectionSelection(a.ctx, detail.Episodes, req.NestedVideos, req.Episodes, a.biliClient.FetchCollectionVideoParts)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var addedIDs []string
 	var firstAddErr error
-	for _, ep := range detail.Episodes {
+	for _, ep := range episodes {
 		if cidMap[ep.CID] {
 			t, addErr := downMgr.AddDownloadTask(&req, &ep)
 			if addErr != nil && firstAddErr == nil {
 				firstAddErr = addErr
 			}
 			if t != nil {
-				// 从管理器获取锁内快照，避免把后台 worker 仍会修改的指针直接交给 Wails 序列化。
-				for _, snapshot := range downMgr.GetTasks() {
-					if snapshot.ID == t.ID {
-						added = append(added, snapshot)
-						break
-					}
-				}
+				addedIDs = append(addedIDs, t.ID)
 			}
+		}
+	}
+	// Serialize one final locked snapshot, rather than copying the entire task
+	// history again for every selected part. Never return worker-owned pointers.
+	snapshots := make(map[string]*downloader.DownloadTask)
+	for _, task := range downMgr.GetTasks() {
+		snapshots[task.ID] = task
+	}
+	var added []*downloader.DownloadTask
+	for _, id := range addedIDs {
+		if task := snapshots[id]; task != nil {
+			added = append(added, task)
 		}
 	}
 
@@ -396,6 +428,104 @@ func (a *App) CheckFileExists(path string) bool {
 	}
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// CheckHistoryFiles leaves inaccessible locations unknown instead of treating
+// them as deleted. A missing parent directory may be an offline volume.
+var historyStatSlots = make(chan struct{}, 8)
+
+func (a *App) CheckHistoryFiles(paths []string) map[string]string {
+	unique := make(map[string]bool, len(paths))
+	var jobsPaths []string
+	for _, path := range paths {
+		if !unique[path] {
+			unique[path] = true
+			jobsPaths = append(jobsPaths, path)
+		}
+	}
+	paths = jobsPaths
+	results := make(map[string]string, len(paths))
+	if len(paths) == 0 {
+		return results
+	}
+	jobs := make(chan string, len(paths))
+	type result struct{ path, state string }
+	completed := make(chan result, len(paths))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for _, path := range paths {
+		results[path] = "unknown"
+		jobs <- path
+	}
+	close(jobs)
+	for i := 0; i < min(8, len(paths)); i++ {
+		go func() {
+			for {
+				var path string
+				select {
+				case <-ctx.Done():
+					return
+				case p, ok := <-jobs:
+					if !ok {
+						return
+					}
+					path = p
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case historyStatSlots <- struct{}{}:
+				}
+				state := "unknown"
+				if path != "" && filepath.IsAbs(path) {
+					info, err := os.Stat(path)
+					if err == nil && !info.IsDir() {
+						state = "present"
+					} else if os.IsNotExist(err) {
+						if parent, parentErr := os.Stat(filepath.Dir(path)); parentErr == nil && parent.IsDir() {
+							state = "missing"
+						}
+					}
+				}
+				<-historyStatSlots
+				select {
+				case completed <- result{path, state}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	for range paths {
+		select {
+		case r := <-completed:
+			results[r.path] = r.state
+		case <-ctx.Done():
+			return results
+		}
+	}
+	return results
+}
+
+// RemoveMissingHistoryRecords only removes confirmed missing completed records.
+// It never removes media or temporary files.
+func (a *App) RemoveMissingHistoryRecords(candidates map[string]string) ([]string, error) {
+	mgr := a.currentDownloadManager()
+	if mgr == nil {
+		return nil, fmt.Errorf("下载管理器不可用")
+	}
+	paths := make([]string, 0, len(candidates))
+	for _, path := range candidates {
+		paths = append(paths, path)
+	}
+	states := a.CheckHistoryFiles(paths)
+	confirmed := make(map[string]string)
+	for id, path := range candidates {
+		if states[path] == "missing" {
+			confirmed[id] = path
+		}
+	}
+	return mgr.RemoveCompletedRecords(confirmed)
 }
 
 // OpenFile 使用系统默认播放器打开已下载的视频文件

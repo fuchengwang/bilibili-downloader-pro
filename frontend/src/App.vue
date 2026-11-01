@@ -9,6 +9,7 @@ import DownloadQueue from './components/DownloadQueue.vue'
 import HistoryList from './components/HistoryList.vue'
 import SettingsView from './components/SettingsView.vue'
 import EpisodeSelectorModal from './components/EpisodeSelectorModal.vue'
+import CollectionSelectorModal from './components/CollectionSelectorModal.vue'
 import LoginModal from './components/LoginModal.vue'
 import Toast, { ToastItem } from './components/Toast.vue'
 
@@ -77,6 +78,7 @@ let appInitialized = false
 // Modals
 const showLoginModal = ref(false)
 const showEpisodeModal = ref(false)
+const batchSubmitting = ref(false)
 const activeEpisodeDetail = ref<bilibili.VideoDetail | null>(null)
 const activeEpisodeQuality = ref('highest')
 const activeEpisodeCodec = ref('auto')
@@ -441,8 +443,9 @@ async function handleQuickDownloadSingle(
 }
 
 // 批量提交分集下载
-async function handleEpisodeBatchSubmit(selectedCids: number[], quality: string, codec: string) {
-  if (!activeEpisodeDetail.value || selectedCids.length === 0) return
+async function handleEpisodeBatchSubmit(selectedCids: number[], quality: string, codec: string, nestedVideos?: string[]) {
+  if (!activeEpisodeDetail.value || selectedCids.length === 0 || batchSubmitting.value) return
+  batchSubmitting.value = true
 
   try {
     const detail = activeEpisodeDetail.value
@@ -460,12 +463,15 @@ async function handleEpisodeBatchSubmit(selectedCids: number[], quality: string,
       targetQuality: quality,
       targetCodec: codec,
       episodes: selectedCids,
+      nestedVideos: nestedVideos || [],
     }
     const added = await AddDownloadTasks(req)
     showEpisodeModal.value = false
     showDownloadResults(added || [])
   } catch (err: any) {
-    showToast('批量添加任务失败: ' + err.message, 'error')
+    showToast('批量添加任务失败: ' + (err?.message || String(err)), 'error')
+  } finally {
+    batchSubmitting.value = false
   }
 }
 
@@ -682,10 +688,12 @@ function handleLicenseDeactivated(key: string) {
         <div v-show="activeTab === 'history'" class="tab-view">
           <HistoryList
             :tasks="tasks"
+            :active="activeTab === 'history'"
             @open-file="onOpenFile"
             @open-dir="onOpenDir"
             @delete-task="onDeleteTask"
             @clear-completed="onClearCompleted"
+            @records-removed="tasks = tasks.filter(t => !$event.includes(t.id))"
           />
         </div>
 
@@ -705,8 +713,18 @@ function handleLicenseDeactivated(key: string) {
     </div>
 
     <!-- Modals -->
+    <CollectionSelectorModal
+      :submitting="batchSubmitting"
+      v-if="showEpisodeModal && activeEpisodeDetail && (activeEpisodeDetail as any).collectionId"
+      :detail="activeEpisodeDetail"
+      :initial-quality="activeEpisodeQuality"
+      :initial-codec="activeEpisodeCodec"
+      :user-info="userInfo"
+      @close="showEpisodeModal = false"
+      @submit="handleEpisodeBatchSubmit"
+    />
     <EpisodeSelectorModal
-      v-if="showEpisodeModal && activeEpisodeDetail"
+      v-else-if="showEpisodeModal && activeEpisodeDetail"
       :detail="activeEpisodeDetail"
       :initial-quality="activeEpisodeQuality"
       :initial-codec="activeEpisodeCodec"

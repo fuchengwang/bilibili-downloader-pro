@@ -24,33 +24,37 @@ type EpisodeInfo struct {
 	DurationStr string `json:"durationStr"` // 格式化时长 (01:20:30)
 	Cover       string `json:"cover"`       // 分集封面 (若有)
 	Badge       string `json:"badge"`       // 标签 (如 "大会员", "会员抢先", "预告")
+	VideoTitle  string `json:"videoTitle,omitempty"`
+	PartCount   int    `json:"partCount,omitempty"`
 }
 
 // VideoDetail 包含视频主体信息及全部分集列表
 type VideoDetail struct {
-	Type             TargetType    `json:"type"`             // normal / bangumi / cheese
-	SeasonID         int64         `json:"seasonId"`         // 课堂课程 ID
-	BVID             string        `json:"bvid"`             // 稿件 BVID
-	AID              int64         `json:"aid"`              // 稿件 AID
-	Title            string        `json:"title"`            // 主标题
-	Cover            string        `json:"cover"`            // 主封面
-	Description      string        `json:"description"`      // 简介
-	Duration         int           `json:"duration"`         // 总时长或主视频时长 (秒)
-	DurationStr      string        `json:"durationStr"`      // 格式化时长
-	PubDate          int64         `json:"pubDate"`          // 发布时间戳
-	OwnerName        string        `json:"ownerName"`        // UP 主昵称 / 出品方
-	OwnerFace        string        `json:"ownerFace"`        // UP 主头像
-	OwnerMid         int64         `json:"ownerMid"`         // UP 主 UID
-	ViewCount        int64         `json:"viewCount"`        // 播放量
-	LikeCount        int64         `json:"likeCount"`        // 点赞数
-	DanmakuCount     int64         `json:"danmakuCount"`     // 弹幕数
-	IsCollection     bool          `json:"isCollection"`     // 是否为多P视频/专栏合集/番剧
-	TotalParts       int           `json:"totalParts"`       // 总集数
-	Episodes         []EpisodeInfo `json:"episodes"`         // 分集列表
-	DefaultPage      int           `json:"defaultPage"`      // 用户请求定位的分P
-	HasLinkedEpisode bool          `json:"hasLinkedEpisode"` // 链接是否指向具体的一集
-	CollectionTitle  string        `json:"collectionTitle"`  // 所属合集或课程名称
-	IsDefaultPart    bool          `json:"isDefaultPart"`    // 多P链接未指定分P，展示整个稿件
+	Type                 TargetType    `json:"type"`                   // normal / bangumi / cheese
+	SeasonID             int64         `json:"seasonId"`               // 课堂课程 ID
+	BVID                 string        `json:"bvid"`                   // 稿件 BVID
+	AID                  int64         `json:"aid"`                    // 稿件 AID
+	Title                string        `json:"title"`                  // 主标题
+	Cover                string        `json:"cover"`                  // 主封面
+	Description          string        `json:"description"`            // 简介
+	Duration             int           `json:"duration"`               // 总时长或主视频时长 (秒)
+	DurationStr          string        `json:"durationStr"`            // 格式化时长
+	PubDate              int64         `json:"pubDate"`                // 发布时间戳
+	OwnerName            string        `json:"ownerName"`              // UP 主昵称 / 出品方
+	OwnerFace            string        `json:"ownerFace"`              // UP 主头像
+	OwnerMid             int64         `json:"ownerMid"`               // UP 主 UID
+	ViewCount            int64         `json:"viewCount"`              // 播放量
+	LikeCount            int64         `json:"likeCount"`              // 点赞数
+	DanmakuCount         int64         `json:"danmakuCount"`           // 弹幕数
+	IsCollection         bool          `json:"isCollection"`           // 是否为多P视频/专栏合集/番剧
+	TotalParts           int           `json:"totalParts"`             // 总集数
+	Episodes             []EpisodeInfo `json:"episodes"`               // 分集列表
+	DefaultPage          int           `json:"defaultPage"`            // 用户请求定位的分P
+	HasLinkedEpisode     bool          `json:"hasLinkedEpisode"`       // 链接是否指向具体的一集
+	CollectionTitle      string        `json:"collectionTitle"`        // 所属合集或课程名称
+	CollectionID         int64         `json:"collectionId,omitempty"` // UGC 合集标识
+	CollectionIncomplete bool          `json:"collectionIncomplete,omitempty"`
+	IsDefaultPart        bool          `json:"isDefaultPart"` // 多P链接未指定分P，展示整个稿件
 }
 
 // ---- API 响应结构体 ----
@@ -224,6 +228,7 @@ func (c *Client) fetchNormalDetail(ctx context.Context, target *ParsedTarget) (*
 	// 1. 优先检查是否属于 UGC 系列/合集 (如 UP主创建的合集视频列表)
 	if d.UgcSeason != nil && len(d.UgcSeason.Sections) > 0 {
 		detail.IsCollection = true
+		detail.CollectionID = d.UgcSeason.ID
 		detail.CollectionTitle = d.UgcSeason.Title
 		detail.DefaultPage = 0
 		idx := 1
@@ -240,6 +245,7 @@ func (c *Client) fetchNormalDetail(ctx context.Context, target *ParsedTarget) (*
 					BVID:        ep.Bvid,
 					AID:         ep.Aid,
 					Title:       title,
+					VideoTitle:  title,
 					Duration:    ep.Arc.Duration,
 					DurationStr: utils.FormatDuration(ep.Arc.Duration),
 					Cover:       ep.Arc.Pic,
@@ -247,6 +253,7 @@ func (c *Client) fetchNormalDetail(ctx context.Context, target *ParsedTarget) (*
 				idx++
 			}
 		}
+		detail.CollectionIncomplete = d.UgcSeason.EpCount > len(episodes)
 		// A collection consists of separate BVIDs. The URL refers to one of
 		// them, not necessarily the first entry in the collection.
 		for i, ep := range episodes {

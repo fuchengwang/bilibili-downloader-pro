@@ -313,3 +313,15 @@ func TestEnsureSafePathLength(t *testing.T) {
 		t.Errorf("追加画质标签截断后丢失后缀: %s", safeWithTag)
 	}
 }
+
+func TestEnsureSafePathLengthCountsEmojiAsUTF16Pairs(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), strings.Repeat("😀", 30))
+	filename := strings.Repeat("😀", 60)
+	got := EnsureSafePathLength(dir, filename, ".mp4")
+	if units := WindowsPathUnits(got); units > 210 {
+		t.Fatalf("path exceeds Windows budget: %d units", units)
+	}
+	if got := TruncatePathUnits("甲😀乙", 3); got != "甲😀" {
+		t.Fatalf("surrogate pair was split: %q", got)
+	}
+}
