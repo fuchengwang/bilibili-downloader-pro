@@ -276,18 +276,15 @@ func (a *App) AddDownloadTasks(req downloader.DownloadRequest) ([]*downloader.Do
 		}
 	}
 
-	var addedIDs []string
-	var firstAddErr error
+	var selected []bilibili.EpisodeInfo
 	for _, ep := range episodes {
 		if cidMap[ep.CID] {
-			t, addErr := downMgr.AddDownloadTask(&req, &ep)
-			if addErr != nil && firstAddErr == nil {
-				firstAddErr = addErr
-			}
-			if t != nil {
-				addedIDs = append(addedIDs, t.ID)
-			}
+			selected = append(selected, ep)
 		}
+	}
+	accepted, err := downMgr.AddDownloadTasks(&req, selected)
+	if err != nil {
+		return nil, err
 	}
 	// Serialize one final locked snapshot, rather than copying the entire task
 	// history again for every selected part. Never return worker-owned pointers.
@@ -296,15 +293,12 @@ func (a *App) AddDownloadTasks(req downloader.DownloadRequest) ([]*downloader.Do
 		snapshots[task.ID] = task
 	}
 	var added []*downloader.DownloadTask
-	for _, id := range addedIDs {
-		if task := snapshots[id]; task != nil {
+	for _, acceptedTask := range accepted {
+		if task := snapshots[acceptedTask.ID]; task != nil {
 			added = append(added, task)
 		}
 	}
 
-	if firstAddErr != nil {
-		return added, firstAddErr
-	}
 	if len(added) == 0 {
 		return nil, fmt.Errorf("未选择任何有效集数")
 	}

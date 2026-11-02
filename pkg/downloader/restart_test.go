@@ -23,7 +23,7 @@ func TestRestartRefusesMergeWithoutCancellingIt(t *testing.T) {
 		t.Fatal("merge status was changed")
 	}
 }
-func TestRestartWaitsForClosedDownloadFilesAndPersistsPausedTasks(t *testing.T) {
+func TestRestartWaitsForClosedDownloadFilesAndPreservesResumeIntent(t *testing.T) {
 	mgr := newTestManager(t)
 	workerCtx, cancel := context.WithCancel(context.Background())
 	workerDone := make(chan struct{})
@@ -54,7 +54,7 @@ func TestRestartWaitsForClosedDownloadFilesAndPersistsPausedTasks(t *testing.T) 
 		t.Fatal("restart wait hung")
 	}
 	restored := NewDownloadManager(mgr.cfgMgr)
-	if tasks := restored.GetTasks(); len(tasks) != 1 || tasks[0].Status != StatusPaused {
-		t.Fatal("paused tasks not saved", tasks)
+	if tasks := restored.GetTasks(); len(tasks) != 1 || tasks[0].Status != StatusQueued || tasks[0].ResumeOnStartup {
+		t.Fatal("update restart lost resume intent", tasks)
 	}
 }

@@ -49,11 +49,13 @@ type DownloadTask struct {
 	ErrorKind       string     `json:"errorKind,omitempty"`
 	ErrorHint       string     `json:"errorHint,omitempty"`
 	ErrorDetail     string     `json:"errorDetail,omitempty"`
-	CreatedAt       int64      `json:"createdAt"`    // 创建时间戳
-	CompletedAt     int64      `json:"completedAt"`  // 完成时间戳
-	OutputPath      string     `json:"outputPath"`   // 最终合并输出的文件绝对路径
-	VideoTmpPath    string     `json:"videoTmpPath"` // 视频临时分块文件路径
-	AudioTmpPath    string     `json:"audioTmpPath"` // 音频临时分块文件路径
+	CreatedAt       int64      `json:"createdAt"`                 // 创建时间戳
+	QueueOrder      uint64     `json:"queueOrder"`                // 持久化的启动顺序，与历史列表显示顺序独立
+	ResumeOnStartup bool       `json:"resumeOnStartup,omitempty"` // 更新重启前的临时暂停，保留继续意图
+	CompletedAt     int64      `json:"completedAt"`               // 完成时间戳
+	OutputPath      string     `json:"outputPath"`                // 最终合并输出的文件绝对路径
+	VideoTmpPath    string     `json:"videoTmpPath"`              // 视频临时分块文件路径
+	AudioTmpPath    string     `json:"audioTmpPath"`              // 音频临时分块文件路径
 }
 
 // DownloadRequest 前端发起的下载请求结构体

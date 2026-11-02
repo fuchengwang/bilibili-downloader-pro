@@ -16,6 +16,7 @@ import {
 import { downloader } from '../../wailsjs/go/models'
 import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
 import { episodeURL, isPermissionError } from '../utils/episode-selection'
+import { orderedQueueTasks } from '../utils/task-queue'
 
 const props = defineProps<{
   tasks: downloader.DownloadTask[]
@@ -51,7 +52,7 @@ function normalizeImg(url?: string) {
 }
 
 const filteredTasks = computed(() => {
-  const activeTasks = props.tasks.filter(t => t.status !== 'completed')
+  const activeTasks = orderedQueueTasks(props.tasks)
   if (currentFilter.value === 'all') return activeTasks
   if (currentFilter.value === 'downloading') return activeTasks.filter(t => t.status === 'downloading' || t.status === 'merging')
   if (currentFilter.value === 'paused') return activeTasks.filter(t => t.status === 'paused' || t.status === 'queued')
@@ -197,16 +198,16 @@ const filteredTasks = computed(() => {
         <!-- Task Actions -->
         <div class="task-btn-group">
           <button
-            v-if="task.status === 'downloading'"
+            v-if="task.status === 'downloading' || task.status === 'queued'"
             class="btn-icon task-btn"
             @click="emit('pause-task', task.id)"
-            title="暂停"
+            :title="task.status === 'queued' ? '暂停排队' : '暂停'"
           >
             <Pause :size="15" />
           </button>
 
           <button
-            v-else-if="task.status === 'paused' || task.status === 'queued'"
+            v-else-if="task.status === 'paused'"
             class="btn-icon task-btn"
             @click="emit('resume-task', task.id)"
             title="继续"

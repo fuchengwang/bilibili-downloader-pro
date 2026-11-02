@@ -118,15 +118,18 @@ func (m *DownloadManager) loadTasks() {
 			if t == nil {
 				continue
 			}
-			// 将未完成的任务重置为暂停或队列状态
-			if t.Status == StatusDownloading || t.Status == StatusMerging {
-				t.Status = StatusPaused
+			// Continue the prior running queue; an explicit user pause stays paused.
+			if t.Status == StatusDownloading || t.Status == StatusMerging || (t.Status == StatusPaused && t.ResumeOnStartup) {
+				t.Status = StatusQueued
 				t.Speed = 0
 				t.SpeedStr = "0 KB/s"
+				t.ETAStr = "--"
 			}
+			t.ResumeOnStartup = false
 			validTasks = append(validTasks, t)
 		}
 		m.tasks = validTasks
+		assignMissingQueueOrders(m.tasks)
 	}
 }
 
@@ -147,6 +150,10 @@ func (m *DownloadManager) SaveTasks() error {
 	}
 	m.mu.RUnlock()
 
+	return m.writeTaskSnapshot(tasksCopy)
+}
+
+func (m *DownloadManager) writeTaskSnapshot(tasksCopy []*DownloadTask) error {
 	tasksPath := m.cfgMgr.GetTasksPath()
 	data, err := json.MarshalIndent(tasksCopy, "", "  ")
 	if err != nil {
@@ -167,209 +174,17 @@ func newUUID() string {
 	return hex.EncodeToString(b)
 }
 
-// AddDownloadTask 添加单个下载任务 (具备重复任务去重与隔离临时路径)
+// AddDownloadTask uses the same transaction as a batch, keeping duplicate-task
+// and cache reuse behavior consistent for internal callers.
 func (m *DownloadManager) AddDownloadTask(req *DownloadRequest, ep *bilibili.EpisodeInfo) (*DownloadTask, error) {
-	if req == nil || ep == nil {
+	if ep == nil {
 		return nil, fmt.Errorf("下载任务参数不能为空")
 	}
-	m.addMu.Lock()
-	unlockAdd := sync.OnceFunc(m.addMu.Unlock)
-	defer unlockAdd()
-	cfg := m.cfgMgr.Get()
-	if strings.TrimSpace(cfg.DownloadDir) == "" {
-		return nil, fmt.Errorf("下载目录未设置")
+	tasks, err := m.AddDownloadTasks(req, []bilibili.EpisodeInfo{*ep})
+	if err != nil {
+		return nil, err
 	}
-	if err := os.MkdirAll(cfg.DownloadDir, 0755); err != nil {
-		return nil, fmt.Errorf("创建下载目录失败: %w", err)
-	}
-
-	m.mu.Lock()
-	// 相同参数复用原任务；完成文件仍存在时不重复下载。
-	for _, existing := range m.tasks {
-		if existing == nil {
-			continue
-		}
-		if existing.CID == ep.CID &&
-			existing.IsCheese == req.IsCheese &&
-			existing.IsBangumi == req.IsBangumi &&
-			existing.TargetQuality == req.TargetQuality &&
-			existing.TargetCodec == req.TargetCodec {
-			if existing.Status == StatusCompleted {
-				// Changing the destination is an explicit request for another copy.
-				if !pathWithin(cfg.DownloadDir, existing.OutputPath) {
-					continue
-				}
-				info, statErr := os.Stat(existing.OutputPath)
-				if statErr == nil && info.Mode().IsRegular() && info.Size() > 0 {
-					m.mu.Unlock()
-					return existing, nil
-				}
-				if statErr != nil && !os.IsNotExist(statErr) {
-					m.mu.Unlock()
-					return nil, fmt.Errorf("检查已下载文件失败: %w", statErr)
-				}
-				before := *existing
-				existing.Status = StatusQueued
-				existing.CompletedAt = 0
-				existing.Progress = 0
-				existing.DownloadedBytes = 0
-				existing.Speed = 0
-				existing.SpeedStr = "0 KB/s"
-				existing.SizeStr = "准备中..."
-				existing.ErrorMsg = ""
-				m.mu.Unlock()
-				if err := m.SaveTasks(); err != nil {
-					m.mu.Lock()
-					*existing = before
-					m.mu.Unlock()
-					return nil, err
-				}
-				unlockAdd()
-				m.notifyChange(existing)
-				m.triggerSchedule()
-				return existing, nil
-			}
-			resume := existing.Status == StatusPaused || existing.Status == StatusError || existing.Status == StatusCancelled
-			m.mu.Unlock()
-			unlockAdd()
-			if resume {
-				if err := m.ResumeTask(existing.ID); err != nil {
-					return nil, err
-				}
-			}
-			return existing, nil
-		}
-	}
-
-	m.mu.Unlock()
-
-	// 生成规范的输出路径与文件名（支持极端特殊字符与超长标题安全降级）
-	sanitizedTitle := utils.SanitizeFilename(req.Title, "bilibili_video")
-	var outDir string
-	var baseFileName string
-
-	// 判断是否为多集/合集/多P视频
-	isMulti := req.IsCollection || req.CollectionID > 0 || len(req.Episodes) > 1 || req.IsBangumi || req.IsCheese || strings.Contains(ep.Badge, "合集") || ep.Index > 1 || (ep.Title != "" && ep.Title != req.Title)
-
-	if isMulti {
-		// 合集和多P按稳定身份复用目录；同名但不同来源的内容保持隔离。
-		collFolder := sanitizedTitle
-		if req.CollectionID > 0 {
-			var err error
-			outDir, err = m.collectionDir(cfg.DownloadDir, fmt.Sprintf("ugc:%d", req.CollectionID), sanitizedTitle, 2, func() []string { return m.legacyCollectionDirs(cfg.DownloadDir, req, ep, false) })
-			if err == nil && ep.PartCount > 1 {
-				outDir, err = m.collectionDir(outDir, "video:"+ep.BVID, collectionVideoName(ep.Index, ep.VideoTitle), 1, func() []string { return m.legacyCollectionDirs(outDir, req, ep, true) })
-			}
-			if err != nil {
-				return nil, fmt.Errorf("创建合集下载目录失败: %w", err)
-			}
-		} else if req.IsCheese && req.SSID > 0 {
-			collFolder = fmt.Sprintf("%s [ss%d]", sanitizedTitle, req.SSID)
-		} else if !req.IsBangumi && ep.BVID != "" {
-			var err error
-			outDir, err = m.collectionDir(cfg.DownloadDir, "video:"+ep.BVID, sanitizedTitle, 1, func() []string { return m.legacyCollectionDirs(cfg.DownloadDir, req, ep, false) })
-			if err != nil {
-				return nil, fmt.Errorf("创建视频下载目录失败: %w", err)
-			}
-		}
-		if outDir == "" {
-			outDir = filepath.Join(cfg.DownloadDir, collFolder)
-		}
-		fileIndex := ep.Index
-		if req.CollectionID > 0 && ep.PartCount > 1 {
-			fileIndex = ep.Page
-		}
-		partName := formatFileNameByTemplate(cfg.FileNameTemplate, req.Title, ep.Title, ep.BVID, fileIndex)
-		if req.CollectionID > 0 && ep.VideoTitle != "" && cfg.FileNameTemplate == "{title} - {part}" {
-			if ep.PartCount > 1 {
-				partName = fmt.Sprintf("P%02d. %s", ep.Page, ep.Title)
-			} else {
-				partName = collectionVideoName(ep.Index, ep.VideoTitle)
-			}
-		}
-		fallbackPart := fmt.Sprintf("P%02d", ep.Index)
-		if ep.Index <= 0 {
-			fallbackPart = "video"
-		}
-		baseFileName = utils.SanitizeFilename(partName, fallbackPart)
-		if err := os.MkdirAll(outDir, 0755); err != nil {
-			return nil, fmt.Errorf("创建合集下载目录失败: %w", err)
-		}
-	} else {
-		// 单视频：直接保存在下载主目录
-		outDir = cfg.DownloadDir
-		partName := formatFileNameByTemplate(cfg.FileNameTemplate, req.Title, ep.Title, ep.BVID, ep.Index)
-		baseFileName = utils.SanitizeFilename(partName, sanitizedTitle)
-		if err := os.MkdirAll(outDir, 0755); err != nil {
-			return nil, fmt.Errorf("创建下载目录失败: %w", err)
-		}
-	}
-
-	// 确保在 Windows 260 字符限制下，完整输出路径保持在安全阈值内 (<= 240 字符)
-	outPath := utils.EnsureSafePathLength(outDir, baseFileName, ".mp4")
-
-	taskID := newUUID()
-	// 每个任务独占缓存子目录，下载目录只保存成品。
-	vTmp, aTmp := m.cachePaths(taskID)
-
-	task := &DownloadTask{
-		ID:            taskID,
-		BVID:          ep.BVID,
-		AID:           ep.AID,
-		CID:           ep.CID,
-		EPID:          ep.EPID,
-		IsBangumi:     req.IsBangumi,
-		IsCheese:      req.IsCheese,
-		Title:         req.Title,
-		PartTitle:     ep.Title,
-		CollectionID:  req.CollectionID,
-		VideoTitle:    ep.VideoTitle,
-		PartPage:      ep.Page,
-		PartCount:     ep.PartCount,
-		Cover:         ep.Cover,
-		SourceURL:     bilibili.EpisodeURL(ep, req.IsBangumi, req.IsCheese),
-		TargetQuality: req.TargetQuality,
-		TargetCodec:   req.TargetCodec,
-		Status:        StatusQueued,
-		Progress:      0,
-		SpeedStr:      "0 KB/s",
-		SizeStr:       "准备中...",
-		Duration:      ep.Duration,
-		CreatedAt:     time.Now().Unix(),
-		OutputPath:    outPath,
-		VideoTmpPath:  vTmp,
-		AudioTmpPath:  aTmp,
-	}
-	if req.CollectionID > 0 {
-		task.CollectionTitle = req.Title
-		if ep.PartCount == 1 {
-			task.PartTitle = ep.VideoTitle
-		}
-	}
-
-	m.mu.Lock()
-	m.tasks = append([]*DownloadTask{task}, m.tasks...)
-	m.mu.Unlock()
-
-	persistErr := m.SaveTasks()
-
-	if persistErr != nil {
-		// Save failure must not leave an in-memory task which the caller was told
-		// was not accepted and which cannot be recovered after restart.
-		m.mu.Lock()
-		for i, existing := range m.tasks {
-			if existing == task {
-				m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
-				break
-			}
-		}
-		m.mu.Unlock()
-		return nil, fmt.Errorf("保存下载任务失败: %w", persistErr)
-	}
-	unlockAdd()
-	m.notifyChange(task)
-	m.triggerSchedule()
-	return task, nil
+	return tasks[0], nil
 }
 
 // PauseTask 暂停任务 (具备 Worker 取消安全)
@@ -390,6 +205,7 @@ func (m *DownloadManager) PauseTask(id string) error {
 		}
 		if t.ID == id {
 			task = t
+			t.ResumeOnStartup = false
 			if t.Status == StatusDownloading || t.Status == StatusQueued || t.Status == StatusMerging {
 				t.Status = StatusPaused
 				t.Speed = 0
@@ -410,33 +226,8 @@ func (m *DownloadManager) PauseTask(id string) error {
 	return nil
 }
 
-// ResumeTask 恢复已暂停的任务
-func (m *DownloadManager) ResumeTask(id string) error {
-	m.mu.Lock()
-	var task *DownloadTask
-	for _, t := range m.tasks {
-		if t == nil {
-			continue
-		}
-		if t.ID == id {
-			task = t
-			if t.Status == StatusPaused || t.Status == StatusError || t.Status == StatusCancelled {
-				t.Status = StatusQueued
-				t.ErrorMsg = ""
-			}
-			break
-		}
-	}
-	m.mu.Unlock()
-
-	if task != nil {
-		persistErr := m.SaveTasks()
-		m.notifyChange(task)
-		m.triggerSchedule()
-		return persistErr
-	}
-	return nil
-}
+// ResumeTask requeues a paused/failed task at its original persisted position.
+func (m *DownloadManager) ResumeTask(id string) error { return m.resumeTasks(id, false) }
 
 // CancelTask 取消任务
 func (m *DownloadManager) CancelTask(id string) error {
@@ -456,6 +247,7 @@ func (m *DownloadManager) CancelTask(id string) error {
 		}
 		if t.ID == id {
 			task = t
+			t.ResumeOnStartup = false
 			t.Status = StatusCancelled
 			t.Speed = 0
 			t.SpeedStr = "0 KB/s"
@@ -599,13 +391,11 @@ func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 // PauseAll 暂停所有正在下载或排队的任务 (无死锁安全实现)
 func (m *DownloadManager) PauseAll() error {
 	m.mu.Lock()
-	for _, w := range m.workers {
+	for id, w := range m.workers {
 		if w.cancel != nil {
 			w.cancel()
 		}
 		w.invalidated = true
-	}
-	for id, w := range m.workers {
 		m.workers[id] = w
 	}
 
@@ -614,6 +404,7 @@ func (m *DownloadManager) PauseAll() error {
 		if t == nil {
 			continue
 		}
+		t.ResumeOnStartup = false
 		if t.Status == StatusDownloading || t.Status == StatusQueued || t.Status == StatusMerging {
 			t.Status = StatusPaused
 			t.Speed = 0
@@ -631,29 +422,8 @@ func (m *DownloadManager) PauseAll() error {
 	return persistErr
 }
 
-// ResumeAll 恢复所有已暂停的任务 (无死锁安全实现)
-func (m *DownloadManager) ResumeAll() error {
-	m.mu.Lock()
-	var modified []*DownloadTask
-	for _, t := range m.tasks {
-		if t == nil {
-			continue
-		}
-		if t.Status == StatusPaused || t.Status == StatusError {
-			t.Status = StatusQueued
-			t.ErrorMsg = ""
-			modified = append(modified, t)
-		}
-	}
-	m.mu.Unlock()
-
-	persistErr := m.SaveTasks()
-	for _, t := range modified {
-		m.notifyChange(t)
-	}
-	m.triggerSchedule()
-	return persistErr
-}
+// ResumeAll resumes paused and failed tasks without reordering the queue.
+func (m *DownloadManager) ResumeAll() error { return m.resumeTasks("", true) }
 
 // ClearCompleted 清理已完成的任务列表记录 (可选择是否同时删除本地文件)
 func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) error {
@@ -798,39 +568,45 @@ func (m *DownloadManager) checkAndSpawnTasks() {
 		return
 	}
 
-	var nextTask *DownloadTask
-	for _, t := range m.tasks {
-		if t == nil {
-			continue
-		}
-		if t.Status == StatusQueued {
-			// 确保旧 worker 已彻底退出的任务才允许拉起新 worker
+	type start struct {
+		task  *DownloadTask
+		token string
+		ctx   context.Context
+		done  chan struct{}
+	}
+	var starts []start
+	for len(m.workers) < maxCon {
+		var nextTask *DownloadTask
+		for _, t := range m.tasks {
+			if t == nil || t.Status != StatusQueued {
+				continue
+			}
+			// Keep the handle until the cancelled worker releases its files.
 			if _, running := m.workers[t.ID]; !running {
-				nextTask = t
-				break
+				if nextTask == nil || t.QueueOrder < nextTask.QueueOrder {
+					nextTask = t
+				}
 			}
 		}
+		if nextTask == nil {
+			break
+		}
+		nextTask.Status, nextTask.ErrorMsg = StatusDownloading, ""
+		token := newUUID()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		m.workers[nextTask.ID] = workerHandle{token: token, cancel: cancel, done: done}
+		starts = append(starts, start{nextTask, token, ctx, done})
 	}
-
-	if nextTask == nil {
-		m.mu.Unlock()
-		return
-	}
-
-	nextTask.Status = StatusDownloading
-	nextTask.ErrorMsg = ""
-
-	token := newUUID()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	m.workers[nextTask.ID] = workerHandle{token: token, cancel: cancel, done: done}
 	m.mu.Unlock()
 
-	m.notifyChange(nextTask)
-	go func() {
-		defer close(done)
-		m.runTask(ctx, nextTask, token)
-	}()
+	for _, s := range starts {
+		m.notifyChange(s.task)
+		go func() {
+			defer close(s.done)
+			m.runTask(s.ctx, s.task, s.token)
+		}()
+	}
 }
 
 func (m *DownloadManager) setTaskStatus(task *DownloadTask, status TaskStatus, errorMsg string) {

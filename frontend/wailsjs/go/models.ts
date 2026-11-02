@@ -408,6 +408,8 @@ export namespace downloader {
 	    errorHint?: string;
 	    errorDetail?: string;
 	    createdAt: number;
+	    queueOrder: number;
+	    resumeOnStartup?: boolean;
 	    completedAt: number;
 	    outputPath: string;
 	    videoTmpPath: string;
@@ -454,6 +456,8 @@ export namespace downloader {
 	        this.errorHint = source["errorHint"];
 	        this.errorDetail = source["errorDetail"];
 	        this.createdAt = source["createdAt"];
+	        this.queueOrder = source["queueOrder"];
+	        this.resumeOnStartup = source["resumeOnStartup"];
 	        this.completedAt = source["completedAt"];
 	        this.outputPath = source["outputPath"];
 	        this.videoTmpPath = source["videoTmpPath"];

@@ -189,6 +189,9 @@ func (s *StreamDownloader) GetTotalSize(ctx context.Context) (int64, error) {
 
 	var lastErr error
 	for i := 0; i < len(s.urls); i++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		urlToProbe := s.urls[(s.urlIdx+i)%len(s.urls)]
 		if urlToProbe == "" {
 			continue
@@ -205,6 +208,9 @@ func (s *StreamDownloader) GetTotalSize(ctx context.Context) (int64, error) {
 
 		resp, err := s.client.Do(req)
 		if err != nil {
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
 			s.recordDiagnostic(err)
 			lastErr = err
 			continue
@@ -283,7 +289,14 @@ func (s *StreamDownloader) DownloadWithConcurrency(ctx context.Context, concurre
 
 	if s.totalSize <= 0 {
 		if _, err := s.GetTotalSize(ctx); err != nil {
-			return err
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			// Range probing is an optimisation, not proof that the media is
+			// unavailable. A transient EOF or a CDN rejecting bytes=0-0 must
+			// reach the normal download's retry, failover and URL refresh path.
+			// That path still requires a verifiable complete entity length.
+			return s.DownloadSingleStream(ctx, progressFn)
 		}
 	}
 	if s.totalSize <= 0 {
@@ -650,7 +663,7 @@ func (s *StreamDownloader) downloadSegment(ctx context.Context, segment *streamS
 				return ctx.Err()
 			}
 			urlIdx = (urlIdx + 1) % len(urls)
-			if err := waitForRetry(ctx, 300*time.Millisecond); err != nil {
+			if err := waitForRetry(ctx, connectionRetryDelay(attempt)); err != nil {
 				return err
 			}
 			continue
@@ -788,6 +801,16 @@ func waitForRetry(ctx context.Context, delay time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+// Repeated connection failures often belong to the same brief outage. Give
+// the route time to recover rather than burning all fifteen tries in seconds.
+// The existing retry count remains bounded and cancellation interrupts the wait.
+func connectionRetryDelay(attempt int) time.Duration {
+	if attempt >= 4 {
+		return 3 * time.Second
+	}
+	return (300 * time.Millisecond) << max(attempt, 0)
 }
 
 func assembleSegmentParts(ctx context.Context, targetPath string, segments []streamSegment) error {
@@ -943,7 +966,7 @@ func (s *StreamDownloader) DownloadSingleStream(ctx context.Context, progressFn 
 				return ctx.Err()
 			}
 			s.rotateURL()
-			if err := waitForRetry(ctx, 300*time.Millisecond); err != nil {
+			if err := waitForRetry(ctx, connectionRetryDelay(attempt)); err != nil {
 				return err
 			}
 			continue

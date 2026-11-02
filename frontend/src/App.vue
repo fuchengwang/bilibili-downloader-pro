@@ -37,6 +37,7 @@ import {
 import { EventsOn, EventsEmit } from '../wailsjs/runtime/runtime'
 import { theme, normalizeTheme } from './theme'
 import { readStartupAccount } from './startup-account'
+import { mergeTaskSnapshots } from './utils/task-queue'
 
 // State
 const activeTab = ref<'parse' | 'queue' | 'history' | 'settings'>('parse')
@@ -169,17 +170,12 @@ async function initializeAuthorizedApp() {
   if (appInitialized) return
   appInitialized = true
 
-  try {
-    const tList = await GetTasks()
-    if (tList) {
-      tasks.value = tList
-    }
-  } catch (err) {
-    console.error('加载任务列表失败:', err)
-  }
-
-  // 4. 监听后端事件
+  // Subscribe first so a task starting during the initial read cannot be lost
+  // or replaced by an older status from the RPC snapshot.
+  let loadingTasks = true
+  const initialUpdates = new Map<string, downloader.DownloadTask>()
   EventsOn('task:update', (updatedTask: downloader.DownloadTask) => {
+    if (loadingTasks) initialUpdates.set(updatedTask.id, updatedTask)
     const idx = tasks.value.findIndex(t => t.id === updatedTask.id)
     if (idx !== -1) {
       tasks.value[idx] = updatedTask
@@ -207,6 +203,16 @@ async function initializeAuthorizedApp() {
     }
     showToast(`下载出错: ${errorTask.title} (${errorTask.errorMsg})`, 'error')
   })
+
+  try {
+    const tList = await GetTasks()
+    if (tList) tasks.value = mergeTaskSnapshots(tList, [...initialUpdates.values()])
+  } catch (err) {
+    console.error('加载任务列表失败:', err)
+  } finally {
+    loadingTasks = false
+    initialUpdates.clear()
+  }
 
   // 5. 监听窗口重新聚焦与唤醒事件，用户复制链接切回软件时毫秒级自动感应，杜绝后台无谓轮询触发系统隐私告警
   window.addEventListener('focus', checkAndAutoParseClipboard)

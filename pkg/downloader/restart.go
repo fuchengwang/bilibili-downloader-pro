@@ -31,6 +31,7 @@ func (m *DownloadManager) PrepareForRestart(ctx context.Context) error {
 	for _, task := range m.tasks {
 		if task != nil && (task.Status == StatusDownloading || task.Status == StatusQueued) {
 			task.Status = StatusPaused
+			task.ResumeOnStartup = true
 			task.Speed = 0
 			task.SpeedStr = "0 KB/s"
 			task.ETAStr = "--"
