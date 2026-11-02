@@ -9,8 +9,52 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestMacReadonlyDMGIsRejectedBeforeDownloading(t *testing.T) {
+	if os.Getenv("BBDOWN_NATIVE_UPDATE_TESTS") != "1" {
+		t.Skip("real DMG fixtures opt-in")
+	}
+	root := t.TempDir()
+	binary := buildNativeProbe(t, root, root, "1.0.1")
+	_, dmg := makeNativePackage(t, root, binary, binary)
+	mount := filepath.Join(root, "readonly mount")
+	if err := os.Mkdir(mount, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("/usr/bin/hdiutil", "attach", dmg, "-readonly", "-nobrowse", "-mountpoint", mount).CombinedOutput(); err != nil {
+		t.Fatalf("attach: %v %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("/usr/bin/hdiutil", "detach", mount, "-force").Run() })
+	c := &fakeClient{}
+	offer(c)
+	downloaded := false
+	c.download = func(context.Context, update.Release, update.DownloadOptions) (string, error) {
+		downloaded = true
+		return "", nil
+	}
+	m, err := New(Config{Directory: t.TempDir(), Executable: filepath.Join(mount, "BBDown Pro.app", "Contents", "MacOS", "BBDown Pro"), Version: "1.0.1", Client: c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	if err := m.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	m.wg.Wait()
+	if err := m.Download(context.Background()); err == nil {
+		t.Fatal("read-only image was accepted")
+	}
+	if downloaded {
+		t.Fatal("download began inside a read-only installation")
+	}
+	message := m.Snapshot().Error
+	if !strings.Contains(message, "只读") || !strings.Contains(message, "应用程序") || !strings.Contains(message, "重新打开") {
+		t.Fatal("missing recovery instructions", message)
+	}
+}
 
 func makeNativePackage(t *testing.T, root, oldBinary, newBinary string) (string, string) {
 	t.Helper()

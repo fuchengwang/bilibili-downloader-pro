@@ -61,6 +61,9 @@ func (a *App) startup(ctx context.Context) {
 	wailsRuntime.EventsOnce(ctx, "app:ready", func(...interface{}) {
 		a.windowReady.Store(true)
 		a.ShowMainWindow()
+		if a.updates != nil {
+			a.updates.MarkOpened()
+		}
 	})
 	if a.updates != nil {
 		a.updates.SetCallback(func(state updater.State) { wailsRuntime.EventsEmit(ctx, "update:state", state) })
@@ -155,7 +158,6 @@ func (a *App) domReady(ctx context.Context) {
 		if a.updates == nil {
 			return
 		}
-		a.updates.MarkOpened()
 		go func() {
 			timer := time.NewTimer(3 * time.Second)
 			defer timer.Stop()

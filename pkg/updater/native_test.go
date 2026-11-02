@@ -349,6 +349,15 @@ func TestFailedInstallIsNotPresentedAsCompletedAfterReopening(t *testing.T) {
 			if state := m.Snapshot(); state.Phase != "install_failed" || state.Error == "" || !state.HasUpdate {
 				t.Fatal("failed installation still looks completed", state)
 			}
+			previous := m.Snapshot()
+			m.CheckOnStartup(context.Background())
+			m.wg.Wait()
+			if state := m.Snapshot(); state.Phase != previous.Phase || state.Error != previous.Error {
+				t.Fatal("automatic check hid the failed installation", state)
+			}
+			if m.cfg.Client.(*fakeClient).checks.Load() != 0 {
+				t.Fatal("automatic check ran before installation recovery")
+			}
 		})
 	}
 }

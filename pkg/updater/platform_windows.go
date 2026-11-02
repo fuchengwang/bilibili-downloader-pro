@@ -29,6 +29,9 @@ func installationTarget(executable string) (string, error) {
 	}
 	return filepath.Abs(path)
 }
+func locationError(target string, err error) error {
+	return &locationProblem{message: fmt.Sprintf("无法在软件所在文件夹安装更新（%s）。请将软件完整解压到当前用户可写的文件夹，重新打开后再更新", filepath.Dir(target)), cause: err}
+}
 func preparePackage(ctx context.Context, packagePath string, release update.Release, p *Plan, directory string) error {
 	if !strings.EqualFold(filepath.Ext(packagePath), ".zip") {
 		return errors.New("Windows 更新包需要为 ZIP")

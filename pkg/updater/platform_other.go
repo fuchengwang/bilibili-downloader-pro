@@ -11,6 +11,8 @@ import (
 
 var errUnsupported = errors.New("当前系统暂不支持应用内安装更新")
 
+func locationError(string, error) error { return errUnsupported }
+
 func installationTarget(string) (string, error) { return "", errUnsupported }
 func preparePackage(context.Context, string, update.Release, *Plan, string) error {
 	return errUnsupported

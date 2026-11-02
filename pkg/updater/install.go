@@ -78,11 +78,20 @@ func validatePlan(p *Plan, directory string) error {
 	return validatePlatformPlan(p)
 }
 
-func Prepare(ctx context.Context, packagePath string, release update.Release, cfg Config) (*Plan, error) {
+func Prepare(ctx context.Context, packagePath string, release update.Release, cfg Config) (plan *Plan, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			installEvent(cfg.Directory, "prepare_failed", "%v", resultErr)
+		}
+	}()
 	target, err := installationTarget(cfg.Executable)
 	if err != nil {
 		return nil, err
 	}
+	if err := checkInstallLocation(target); err != nil {
+		return nil, err
+	}
+	installEvent(cfg.Directory, "prepare", "version=%s target=%q", release.Version, target)
 	var token [16]byte
 	if _, err := rand.Read(token[:]); err != nil {
 		return nil, err
@@ -105,6 +114,7 @@ func Prepare(ctx context.Context, packagePath string, release update.Release, cf
 		return nil, err
 	}
 	complete = true
+	installEvent(cfg.Directory, "ready", "version=%s target=%q", p.Version, p.Target)
 	return p, nil
 }
 
@@ -184,6 +194,7 @@ func LaunchInstall(directory, executable string) (resultErr error) {
 			p.Phase = "failed"
 			p.Error = "更新未能安装，可以重试：" + resultErr.Error()
 			_ = WritePlan(directory, p)
+			installEvent(directory, "schedule_failed", "%v", resultErr)
 		}
 	}()
 	if err := validatePlan(p, directory); err != nil {
@@ -194,7 +205,10 @@ func LaunchInstall(directory, executable string) (resultErr error) {
 		return err
 	}
 	if target != p.Target {
-		return errors.New("软件位置已改变，请重新下载更新")
+		return errors.New("软件位置已改变，请在当前位置重新打开软件，并重新下载更新后再安装")
+	}
+	if err := checkInstallLocation(target); err != nil {
+		return err
 	}
 	if p.Phase != "ready" && p.Phase != "failed" && p.Phase != "scheduled" {
 		return errors.New("更新已在处理中")
@@ -259,6 +273,7 @@ func LaunchInstall(directory, executable string) (resultErr error) {
 		}
 		return fmt.Errorf("更新程序未能就绪，软件未退出，请重试: %w", err)
 	}
+	installEvent(directory, "helper_ready", "version=%s target=%q parent_pid=%d helper_pid=%d", p.Version, p.Target, p.ParentPID, cmd.Process.Pid)
 	return nil
 }
 
@@ -325,11 +340,13 @@ func HandleHelperArgs(args []string) (bool, error) {
 }
 
 func applyPlan(directory string, p *Plan) error {
+	installEvent(directory, "waiting_for_exit", "parent_pid=%d version=%s target=%q", p.ParentPID, p.Version, p.Target)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if err := waitParent(ctx, p.ParentPID); err != nil {
 		return failPlan(directory, p, err)
 	}
+	installEvent(directory, "parent_exited", "parent_pid=%d", p.ParentPID)
 	if hash, err := hashFile(targetBinary(p)); err == nil && hash == p.BinaryHash {
 		p.Phase = "applied"
 		p.AutoApply = false
@@ -351,8 +368,9 @@ func applyPlan(directory string, p *Plan) error {
 	if err != nil || hash != p.BinaryHash {
 		return failPlan(directory, p, errors.New("更新文件校验失败，请重新下载"))
 	}
+	installEvent(directory, "replacing", "target=%q prepared=%q", p.Target, p.Prepared)
 	if err := replaceInstallation(p); err != nil {
-		return failPlan(directory, p, err)
+		return failPlan(directory, p, locationError(p.Target, err))
 	}
 	if hash, err := hashFile(targetBinary(p)); err != nil || hash != p.BinaryHash {
 		_ = restoreInstallation(p)
@@ -361,6 +379,7 @@ func applyPlan(directory string, p *Plan) error {
 	p.Phase = "applied"
 	p.AutoApply = false
 	p.Error = ""
+	installEvent(directory, "replaced", "version=%s target=%q", p.Version, p.Target)
 	if err := WritePlan(directory, p); err != nil {
 		_ = restoreInstallation(p)
 		return failPlan(directory, p, err)
@@ -369,6 +388,7 @@ func applyPlan(directory string, p *Plan) error {
 }
 
 func launchAndConfirm(directory string, p *Plan) error {
+	installEvent(directory, "launching", "version=%s target=%q", p.Version, p.Target)
 	cmd, err := startApplicationForUpdate(p.Target)
 	if err != nil {
 		if restoreErr := restoreInstallation(p); restoreErr != nil {
@@ -383,6 +403,7 @@ func launchAndConfirm(directory string, p *Plan) error {
 	defer cancel()
 	if err := waitApplicationStartup(ctx, directory, p, exited); err != nil {
 		if errors.Is(err, errApplicationExited) {
+			installEvent(directory, "restoring", "reason=%q", err.Error())
 			if restoreErr := restoreInstallation(p); restoreErr != nil {
 				return failPlan(directory, p, fmt.Errorf("新版启动失败，旧版备份在 %s: %w", p.Backup, restoreErr))
 			}
@@ -393,9 +414,11 @@ func launchAndConfirm(directory string, p *Plan) error {
 		// startup can still acknowledge the exact installed version and hash.
 		p.Error = "新版未能确认启动，请重新打开软件；旧版备份已保留"
 		_ = WritePlan(directory, p)
+		installEvent(directory, "startup_unconfirmed", "%v", err)
 		return fmt.Errorf("%s: %w", p.Error, err)
 	}
 	_ = os.Remove(filepath.Join(directory, "opened.json"))
+	installEvent(directory, "confirmed", "version=%s target=%q", p.Version, p.Target)
 	return nil
 }
 
@@ -464,6 +487,7 @@ func failPlan(directory string, p *Plan, err error) error {
 	p.AutoApply = false
 	p.Error = "更新未能安装，当前版本仍可使用，可以重试：" + err.Error()
 	_ = WritePlan(directory, p)
+	installEvent(directory, "failed", "version=%s target=%q error=%q", p.Version, p.Target, err.Error())
 	// If startup scheduled the installation, reopen the retained old app once.
 	_ = launchApplication(p.Target)
 	return err

@@ -40,6 +40,7 @@ func newTestManager(t *testing.T, c *fakeClient, now func() time.Time) *Manager 
 	if err != nil {
 		t.Fatal(err)
 	}
+	m.checkLocation = func(string) error { return nil }
 	t.Cleanup(m.Close)
 	return m
 }

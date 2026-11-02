@@ -57,15 +57,16 @@ type Config struct {
 }
 
 type Manager struct {
-	mu       sync.Mutex
-	cfg      Config
-	saved    savedState
-	state    State
-	callback func(State)
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	closed   bool
-	prepare  func(context.Context, string, update.Release, Config) (*Plan, error)
+	mu            sync.Mutex
+	cfg           Config
+	saved         savedState
+	state         State
+	callback      func(State)
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+	closed        bool
+	prepare       func(context.Context, string, update.Release, Config) (*Plan, error)
+	checkLocation func(string) error
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -87,7 +88,7 @@ func New(cfg Config) (*Manager, error) {
 	if err := os.MkdirAll(cfg.Directory, 0700); err != nil {
 		return nil, err
 	}
-	m := &Manager{cfg: cfg, saved: savedState{AutoCheck: true}, prepare: Prepare}
+	m := &Manager{cfg: cfg, saved: savedState{AutoCheck: true}, prepare: Prepare, checkLocation: checkExecutableLocation}
 	if raw, err := os.ReadFile(m.statePath()); err == nil {
 		if json.Unmarshal(raw, &m.saved) != nil {
 			m.saved = savedState{AutoCheck: true}
@@ -182,6 +183,12 @@ func (m *Manager) Check(ctx context.Context) error    { return m.check(ctx, fals
 func (m *Manager) check(ctx context.Context, automatic bool) error {
 	m.mu.Lock()
 	now := m.cfg.Now()
+	// Reopening after a failed installation must preserve its error and retry
+	// action. An automatic network check must not replace them with "available".
+	if automatic && m.state.Phase == "install_failed" {
+		m.mu.Unlock()
+		return nil
+	}
 	if m.closed || m.cancel != nil || m.state.Phase == "ready" || m.state.Phase == "restarting" {
 		m.mu.Unlock()
 		return nil
@@ -283,6 +290,13 @@ func (m *Manager) Download(ctx context.Context) error {
 	if !m.state.HasUpdate || m.saved.Release == nil {
 		m.mu.Unlock()
 		return errors.New("请先检查更新")
+	}
+	if err := m.checkLocation(m.cfg.Executable); err != nil {
+		m.state.Error = friendlyError(err)
+		m.mu.Unlock()
+		installEvent(m.cfg.Directory, "location_check_failed", "%v", err)
+		m.publish()
+		return err
 	}
 	m.saved.PendingDownload = true
 	if err := m.saveLocked(); err != nil {
@@ -498,6 +512,10 @@ func newerVersion(candidate, current string) bool {
 }
 
 func friendlyError(err error) string {
+	var location *locationProblem
+	if errors.As(err, &location) {
+		return location.Error()
+	}
 	if errors.Is(err, update.ErrRateLimited) {
 		return "请求较频繁，请稍后再试"
 	}

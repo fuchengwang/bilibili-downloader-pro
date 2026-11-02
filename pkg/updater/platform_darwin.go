@@ -30,9 +30,16 @@ func installationTarget(executable string) (string, error) {
 	}
 	target := filepath.Dir(filepath.Dir(filepath.Dir(path)))
 	if !strings.HasSuffix(target, ".app") || filepath.Dir(path) != filepath.Join(target, "Contents", "MacOS") {
-		return "", errors.New("请将 BBDown Pro 安装到本机后再更新")
+		return "", errors.New("请先退出软件，将完整的 BBDown Pro.app 移到本机可写文件夹（如“应用程序”或桌面），重新打开后再更新")
 	}
 	return target, nil
+}
+
+func locationError(target string, err error) error {
+	if errors.Is(err, syscall.EROFS) || strings.Contains(target, "/AppTranslocation/") {
+		return &locationProblem{message: "软件正从只读安装镜像或系统隔离位置运行，无法在原处安装更新。请先退出软件，将 BBDown Pro.app 拖到“应用程序”、桌面或其他可写文件夹，重新打开后再更新", cause: err}
+	}
+	return &locationProblem{message: fmt.Sprintf("无法在软件所在文件夹安装更新（%s）。请确认该文件夹可写，或将 BBDown Pro.app 移到“应用程序”、桌面等可写文件夹，重新打开后再更新", filepath.Dir(target)), cause: err}
 }
 
 func preparePackage(ctx context.Context, packagePath string, release update.Release, p *Plan, directory string) error {
