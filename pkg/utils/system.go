@@ -149,13 +149,22 @@ func resolveOpenDirectoryTarget(path string) (string, error) {
 	}
 
 	dir := filepath.Dir(cleanPath)
+	// Prefer this task's visible media over audio, checkpoints, or a different
+	// title sharing its prefix. This also avoids enumerating the directory.
+	for _, staged := range []string{cleanPath + ".downloading", strings.TrimSuffix(cleanPath, ".mp4") + ".audio.downloading"} {
+		if info, err := os.Stat(staged); err == nil && info.Mode().IsRegular() {
+			return staged, nil
+		} else if err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("无法访问下载中文件: %w", err)
+		}
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", fmt.Errorf("下载目录不存在或无法访问: %w", err)
 	}
 	base := strings.TrimSuffix(filepath.Base(cleanPath), ".mp4")
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasPrefix(e.Name(), base) && strings.Contains(e.Name(), ".downloading") {
+		if !e.IsDir() && !strings.HasPrefix(e.Name(), ".") && strings.HasPrefix(e.Name(), base+".") && strings.HasSuffix(e.Name(), ".downloading") {
 			return filepath.Join(dir, e.Name()), nil
 		}
 	}

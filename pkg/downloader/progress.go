@@ -3,7 +3,6 @@ package downloader
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"bilibili_downloader/pkg/utils"
@@ -12,15 +11,16 @@ import (
 // All fields are protected by manager.mu. Completion counts include resumable
 // bytes on disk; speed uses only bytes transferred during this worker's run.
 type taskDownloadProgress struct {
-	manager                *DownloadManager
-	ctx                    context.Context
-	task                   *DownloadTask
-	token                  string
-	videoSize, audioSize   int64
-	hasAudio               bool
-	received, lastReceived int64
-	lastTime               time.Time
-	speed                  int64
+	manager                      *DownloadManager
+	ctx                          context.Context
+	task                         *DownloadTask
+	token                        string
+	videoSize, audioSize         int64
+	videoEstimate, audioEstimate int64
+	hasAudio                     bool
+	received, lastReceived       int64
+	lastTime                     time.Time
+	speed                        int64
 }
 
 func newTaskDownloadProgress(ctx context.Context, m *DownloadManager, task *DownloadTask, token string, videoSize, audioSize int64, hasAudio bool) *taskDownloadProgress {
@@ -38,10 +38,7 @@ func newTaskDownloadProgress(ctx context.Context, m *DownloadManager, task *Down
 }
 
 func existingStreamSize(path string) int64 {
-	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-		return info.Size()
-	}
-	return 0
+	return resumableStreamSize(path)
 }
 
 func (p *taskDownloadProgress) activeLocked() bool {
@@ -78,12 +75,35 @@ func (p *taskDownloadProgress) setSize(video bool, size int64) {
 	p.updateDisplayLocked()
 }
 
+func (p *taskDownloadProgress) setEstimatedSizes(video, audio int64) {
+	p.manager.mu.Lock()
+	defer p.manager.mu.Unlock()
+	if !p.activeLocked() {
+		return
+	}
+	p.videoEstimate, p.audioEstimate = video, audio
+	p.updateDisplayLocked()
+}
+
 func (p *taskDownloadProgress) updateDisplayLocked() {
 	t := p.task
 	// A missing audio/video length must not make an incomplete task look 100% done.
+	video, audio := p.videoSize, p.audioSize
+	estimated := false
+	if video <= 0 && p.videoEstimate > 0 {
+		video = p.videoEstimate
+		estimated = true
+	}
+	if p.hasAudio && audio <= 0 && p.audioEstimate > 0 {
+		audio = p.audioEstimate
+		estimated = true
+	}
 	t.TotalBytes = 0
-	if p.videoSize > 0 && (!p.hasAudio || p.audioSize > 0) {
-		t.TotalBytes = p.videoSize + p.audioSize
+	if video > 0 && (!p.hasAudio || audio > 0) {
+		t.TotalBytes = video
+		if p.hasAudio {
+			t.TotalBytes += audio
+		}
 	}
 	t.Speed, t.SpeedStr = p.speed, utils.FormatSpeed(p.speed)
 	t.Progress, t.ETAStr = 0, "--"
@@ -96,11 +116,18 @@ func (p *taskDownloadProgress) updateDisplayLocked() {
 		t.Progress = 100
 	}
 	t.SizeStr = fmt.Sprintf("%s / %s", utils.FormatBytes(t.DownloadedBytes), utils.FormatBytes(t.TotalBytes))
+	if estimated {
+		t.Progress = min(t.Progress, 99.9)
+		t.SizeStr = fmt.Sprintf("%s / 约 %s", utils.FormatBytes(t.DownloadedBytes), utils.FormatBytes(t.TotalBytes))
+	}
 	remaining := t.TotalBytes - t.DownloadedBytes
 	if remaining <= 0 {
 		t.ETAStr = "完成中"
 	} else if p.speed > 0 {
 		t.ETAStr = utils.FormatDuration(int(remaining / p.speed))
+		if estimated {
+			t.ETAStr = "约 " + t.ETAStr
+		}
 	}
 }
 

@@ -1,5 +1,6 @@
 # Binaries & Builds
 build/bin/
+build/qa/
 bilibili_downloader
 *.exe
 *.app

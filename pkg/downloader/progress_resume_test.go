@@ -28,20 +28,17 @@ func TestResumeReportsCachedPartsWithoutNetworkTraffic(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			target := filepath.Join(t.TempDir(), "video.downloading")
-			for part := 0; part < threads; part++ {
-				if err := os.WriteFile(streamSegmentPath(target, part), bytes.Repeat([]byte{0x42}, savedPerPart), 0644); err != nil {
-					t.Fatal(err)
-				}
-			}
+			seedRangeRecord(t, target, total, threads, savedPerPart)
 			dl := NewStreamDownloader([]string{server.URL}, target)
 			dl.totalSize = total
-			var restored, network int64
+			restored := existingStreamSize(target)
+			var network int64
 			dl.SetRestoredProgressCallback(func(delta int64) { atomic.AddInt64(&restored, delta) })
 			done := make(chan error, 1)
 			go func() {
 				done <- dl.DownloadWithConcurrency(ctx, threads, func(delta int64) { atomic.AddInt64(&network, delta) })
 			}()
-			for part := 0; part < threads; part++ {
+			for part := 0; part < 1; part++ {
 				select {
 				case <-requests:
 				case <-time.After(3 * time.Second):
@@ -106,9 +103,7 @@ func TestRepeatedPauseResumeCountsEachByteOnce(t *testing.T) {
 				dl := NewStreamDownloader([]string{server.URL}, target)
 				dl.totalSize = int64(len(data))
 				var restored, network int64
-				if info, err := os.Stat(target); err == nil {
-					restored = info.Size()
-				}
+				restored = existingStreamSize(target)
 				dl.SetRestoredProgressCallback(func(delta int64) { atomic.AddInt64(&restored, delta) })
 				done := make(chan error, 1)
 				go func() {
@@ -178,11 +173,7 @@ func TestManagerReportsLiveProgressWhileRangesAreUnfinished(t *testing.T) {
 	m, task, _ := progressFixture(t, ctx, false)
 	target := filepath.Join(t.TempDir(), "video.downloading")
 	task.VideoTmpPath = target
-	for part := 0; part < threads; part++ {
-		if err := os.WriteFile(streamSegmentPath(target, part), bytes.Repeat([]byte{0x42}, savedPerPart), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	seedRangeRecord(t, target, total, threads, savedPerPart)
 	p := newTaskDownloadProgress(ctx, m, task, "worker-1", total, 0, false)
 	dl := NewStreamDownloader([]string{server.URL}, target)
 	dl.totalSize = total

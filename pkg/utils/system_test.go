@@ -13,7 +13,7 @@ func TestResolveOpenDirectoryTarget(t *testing.T) {
 	dir := t.TempDir()
 	video := filepath.Join(dir, "已完成的视频.mp4")
 	partial := filepath.Join(dir, "下载中的视频.mp4.downloading")
-	for _, path := range []string{video, partial} {
+	for _, path := range []string{video, partial, filepath.Join(dir, "下载中的视频.audio.downloading"), partial + ".ranges.json", filepath.Join(dir, ".下载中的视频.mp4.downloading.ranges"), filepath.Join(dir, "已删除的视频续集.mp4.downloading")} {
 		if err := os.WriteFile(path, nil, 0600); err != nil {
 			t.Fatal(err)
 		}

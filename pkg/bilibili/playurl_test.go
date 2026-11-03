@@ -2,7 +2,6 @@ package bilibili
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 )
@@ -185,37 +184,16 @@ func TestPickAudioStream_BackupURLOnly(t *testing.T) {
 	}
 }
 
-func TestCollectSortedCDNs_BackbonePriorityAndPCDNDemotion(t *testing.T) {
-	baseURL := "https://upos-tf-all-mcdn.bilivideo.com/upgcxcode/test.m4s" // PCDN / 边缘节点
-	backupURLs := []string{
-		"https://112.25.12.3:8443/upgcxcode/test.m4s",                // 带显式端口的 PCDN
-		"https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/test.m4s", // 顶级腾讯云骨干 CDN
-		"https://upos-sz-mirrorali.bilivideo.com/upgcxcode/test.m4s", // 顶级阿里云骨干 CDN
-		"https://cn-gdgz-cmcc.bilivideo.com/upgcxcode/test.m4s",      // 普通 CDN
+func TestCollectSortedCDNsPreservesAPISourceAndNeverFabricatesHosts(t *testing.T) {
+	primary := "https://upos-hz-mirrorakam.akamaized.net/media.m4s?signature=primary"
+	backup := "https://upos-sz-mirrorcosov.bilivideo.com/media.m4s?signature=backup"
+	got := collectSortedCDNs(primary, []string{backup, primary, "", " " + backup + " "})
+	if len(got) != 2 || got[0] != primary || got[1] != backup {
+		t.Fatalf("regional API source was replaced/reordered: %v", got)
 	}
-
-	sorted := collectSortedCDNs(baseURL, backupURLs)
-	if len(sorted) != 5 {
-		t.Fatalf("Expected 5 unique candidates, got %d: %+v", len(sorted), sorted)
-	}
-
-	// 顶级骨干网必须排在最前
-	if !strings.Contains(sorted[0], "upos-sz-mirrorcos") {
-		t.Errorf("First CDN should be mirrorcos, got %s", sorted[0])
-	}
-	if !strings.Contains(sorted[1], "upos-sz-mirrorali") {
-		t.Errorf("Second CDN should be mirrorali, got %s", sorted[1])
-	}
-
-	// 普通 CDN 排在中间
-	if !strings.Contains(sorted[2], "cn-gdgz-cmcc") {
-		t.Errorf("Third CDN should be regular CDN, got %s", sorted[2])
-	}
-
-	// PCDN / 显式端口必须沉底排在最后
-	lastTwo := strings.Join(sorted[3:], " ")
-	if !strings.Contains(lastTwo, "mcdn") || !strings.Contains(lastTwo, ":8443") {
-		t.Errorf("PCDN and port URLs should be demoted to end, got %+v", sorted[3:])
+	single := collectSortedCDNs(primary, nil)
+	if len(single) != 1 || single[0] != primary {
+		t.Fatalf("fabricated an unsigned/unreturned host: %v", single)
 	}
 }
 
