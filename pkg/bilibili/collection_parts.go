@@ -55,10 +55,11 @@ func (c *Client) FetchCollectionVideoParts(ctx context.Context, video EpisodeInf
 			return nil, fmt.Errorf("视频 %s 的分P信息不完整", video.BVID)
 		}
 		seenCID[p.Cid], seenPage[p.Page] = true, true
-		cover := p.FirstPic
-		if cover == "" {
-			cover = video.Cover
+		poster := resp.Data.Pic
+		if poster == "" {
+			poster = video.Cover
 		}
+		cover := videoPartCover(poster, p.FirstPic, len(resp.Data.Pages))
 		title := p.Part
 		if title == "" {
 			title = fmt.Sprintf("P%d", p.Page)

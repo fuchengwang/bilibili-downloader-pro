@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -247,9 +248,7 @@ func TestBandwidthTruncatedResponseRetriesWithoutCorruption(t *testing.T) {
 			report := func(n int64) { progress += n }
 			var err error
 			if segmented {
-				path = streamSegmentPath(dl.targetPath, 0)
-				segment := streamSegment{start: 0, end: int64(len(data) - 1), path: path}
-				err = dl.downloadSegment(ctx, &segment, report)
+				err = dl.DownloadWithConcurrency(ctx, 2, report)
 			} else {
 				err = dl.DownloadSingleStream(ctx, report)
 			}
@@ -277,7 +276,9 @@ func TestBandwidthSlowSharedStreamsDoNotTriggerNetworkIdleTimeout(t *testing.T) 
 	for range 90 {
 		dl := NewStreamDownloader(nil, filepath.Join(t.TempDir(), "slow"))
 		dl.bandwidth = limiter
-		go func() { done <- dl.streamToFile(ctx, bytes.NewReader(bytes.Repeat([]byte("x"), 102)), false, nil) }()
+		go func() {
+			done <- copyTestBody(ctx, dl, io.NopCloser(bytes.NewReader(bytes.Repeat([]byte("x"), 102))), 102)
+		}()
 	}
 	start := time.Now()
 	for range 90 {

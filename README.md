@@ -1,5 +1,9 @@
 # README
 
+## Go 动态范围下载内核
+
+下载器使用参考 Ghost Downloader 4 调度原理实现的 Go 媒体传输层：动态范围接管、单文件位置写入、测量驱动的自动扩容、共享连接预算与全局限速、合并换链及独立断点记录。Bilibili 主源保留接口顺序，音视频同时下载，实际响应确认总大小。现有界面和队列操作沿用。原理对照、缓存兼容、同文件性能记录和测试命令见 [内核说明](docs/ghost-download-core.md)。
+
 ## About
 
 This is the official Wails Vue-TS template.

@@ -57,6 +57,18 @@ type VideoDetail struct {
 	IsDefaultPart        bool          `json:"isDefaultPart"` // 多P链接未指定分P，展示整个稿件
 }
 
+// A single-part video's cover is its published poster. Its first frame may be
+// a fade-in or a black screen; use frame thumbnails only for individual parts.
+func videoPartCover(poster, firstFrame string, parts int) string {
+	if poster != "" && parts <= 1 {
+		return poster
+	}
+	if firstFrame != "" {
+		return firstFrame
+	}
+	return poster
+}
+
 // ---- API 响应结构体 ----
 
 type viewResponse struct {
@@ -301,10 +313,7 @@ func (c *Client) fetchNormalDetail(ctx context.Context, target *ParsedTarget) (*
 			if partTitle == "" {
 				partTitle = fmt.Sprintf("P%d", p.Page)
 			}
-			cover := p.FirstPic
-			if cover == "" {
-				cover = d.Pic
-			}
+			cover := videoPartCover(d.Pic, p.FirstPic, len(d.Pages))
 			episodes = append(episodes, EpisodeInfo{
 				Index:       p.Page,
 				Page:        p.Page,

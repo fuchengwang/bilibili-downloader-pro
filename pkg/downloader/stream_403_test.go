@@ -38,20 +38,20 @@ func TestStreamDownloader_403_Loop_Prevention(t *testing.T) {
 
 	err := s.DownloadSingleStream(ctx, nil)
 
-	// Because the URL is identical, attempt should NOT be reset to 0.
-	// It should reach maxRetries (15) and fail with "URL auth expired" or "HTTP error".
+	// Source cooldown and refresh coalescing bound request frequency, even
+	// before the continuous-failure budget is exhausted.
 	if err == nil {
 		t.Fatal("Expected error after 15 retries, got nil")
 	}
 
-	// Should attempt maxRetries times (around 15)
-	if requestCount < 10 || requestCount > 20 {
-		t.Errorf("Expected around 15 HTTP requests, got %d", requestCount)
+	// A two-second deadline must not produce a tight HTTP retry loop.
+	if requestCount < 2 || requestCount > 8 {
+		t.Errorf("Expected bounded HTTP requests, got %d", requestCount)
 	}
 
-	// Should refresh multiple times
-	if refreshCount < 10 || refreshCount > 20 {
-		t.Errorf("Expected around 15 refreshes, got %d", refreshCount)
+	// Simultaneous failures must not multiply refreshes.
+	if refreshCount < 1 || refreshCount > requestCount {
+		t.Errorf("Expected coalesced refreshes, got %d", refreshCount)
 	}
 }
 

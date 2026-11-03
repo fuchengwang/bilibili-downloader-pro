@@ -61,7 +61,7 @@ func TestStreamDownloader_RejectsHTMLAsMediaResponse(t *testing.T) {
 
 func TestStreamDownloader_StreamToFileRejectsNoProgressReader(t *testing.T) {
 	dl := NewStreamDownloader([]string{"https://cdn.invalid/media"}, filepath.Join(t.TempDir(), "no-progress"))
-	err := dl.streamToFile(context.Background(), noProgressReader{}, false, nil)
+	err := copyTestBody(context.Background(), dl, io.NopCloser(noProgressReader{}), 1)
 	if !errors.Is(err, io.ErrNoProgress) {
 		t.Fatalf("无进展 Reader 应立即失败，err=%v", err)
 	}
@@ -639,8 +639,8 @@ func TestStreamDownloader_SegmentProgressAcrossRetry(t *testing.T) {
 	const firstSize = 32 * 1024
 	var requests int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		start, end := 0, 0
-		if _, err := fmt.Sscanf(req.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+		start, end := 0, len(data)-1
+		if _, err := fmt.Sscanf(req.Header.Get("Range"), "bytes=%d-%d", &start, &end); req.Header.Get("Range") != "" && err != nil {
 			http.Error(w, "invalid range", http.StatusBadRequest)
 			return
 		}
@@ -662,9 +662,8 @@ func TestStreamDownloader_SegmentProgressAcrossRetry(t *testing.T) {
 	defer ts.Close()
 	dl := NewStreamDownloader([]string{ts.URL}, filepath.Join(t.TempDir(), "retry.downloading"))
 	dl.totalSize = int64(len(data))
-	segment := streamSegment{start: 0, end: int64(len(data) - 1), path: streamSegmentPath(dl.targetPath, 0)}
 	var progress int64
-	if err := dl.downloadSegment(context.Background(), &segment, func(delta int64) {
+	if err := dl.DownloadSingleStream(context.Background(), func(delta int64) {
 		progress += delta
 	}); err != nil {
 		t.Fatal(err)
@@ -672,7 +671,7 @@ func TestStreamDownloader_SegmentProgressAcrossRetry(t *testing.T) {
 	if got := atomic.LoadInt32(&requests); got != 2 || progress != int64(len(data)) {
 		t.Fatalf("retry progress mismatch: requests %d, bytes %d, want %d", got, progress, len(data))
 	}
-	actual, err := os.ReadFile(segment.path)
+	actual, err := os.ReadFile(dl.targetPath)
 	if err != nil || !bytes.Equal(actual, data) {
 		t.Fatalf("retried segment content mismatch: %v", err)
 	}
@@ -685,6 +684,7 @@ func TestStreamDownloader_ConcurrentRangeDownloadAndCleanup(t *testing.T) {
 	}
 
 	var active, maxActive, rangeRequests int32
+	secondRangeStarted := make(chan struct{})
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		rangeHeader := req.Header.Get("Range")
 		if rangeHeader == "bytes=0-0" {
@@ -714,7 +714,10 @@ func TestStreamDownloader_ConcurrentRangeDownloadAndCleanup(t *testing.T) {
 			return
 		}
 
-		atomic.AddInt32(&rangeRequests, 1)
+		requestNumber := atomic.AddInt32(&rangeRequests, 1)
+		if requestNumber == 2 {
+			close(secondRangeStarted)
+		}
 		current := atomic.AddInt32(&active, 1)
 		for {
 			oldMax := atomic.LoadInt32(&maxActive)
@@ -726,6 +729,14 @@ func TestStreamDownloader_ConcurrentRangeDownloadAndCleanup(t *testing.T) {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
 		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 		w.WriteHeader(http.StatusPartialContent)
+		if requestNumber == 1 {
+			w.(http.Flusher).Flush()
+			select {
+			case <-secondRangeStarted:
+			case <-req.Context().Done():
+				return
+			}
+		}
 		_, _ = w.Write(data[start : end+1])
 		atomic.AddInt32(&active, -1)
 	}))
@@ -747,8 +758,8 @@ func TestStreamDownloader_ConcurrentRangeDownloadAndCleanup(t *testing.T) {
 	if !bytes.Equal(actual, data) {
 		t.Fatal("并发分片合并后的文件内容不一致")
 	}
-	if got := atomic.LoadInt32(&rangeRequests); got != 4 {
-		t.Fatalf("预期每个分片各请求一次，实际 Range 请求 %d 次", got)
+	if got := atomic.LoadInt32(&rangeRequests); got < 2 || got > 32 {
+		t.Fatalf("动态范围请求数量异常: %d", got)
 	}
 	if got := atomic.LoadInt32(&maxActive); got < 2 {
 		t.Fatalf("预期至少两个分片并行下载，最大并发数仅为 %d", got)

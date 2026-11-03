@@ -364,6 +364,12 @@ func (c *Client) FetchStreamSelection(ctx context.Context, bvid string, aid, cid
 		Width:        video.Width,
 		Height:       video.Height,
 		Duration:     dash.Duration,
+		// Initial size estimates, as used by Ghost's Bilibili parser. They are
+		// display hints only; the transfer validates real response lengths.
+		VideoSize: video.Bandwidth * int64(dash.Duration) / 8,
+	}
+	if audio != nil {
+		selection.AudioSize = audio.Bandwidth * int64(dash.Duration) / 8
 	}
 	if len(cheese) > 0 && cheese[0] && resp.Data != nil && bool(resp.Data.IsDRM) {
 		var uris []string
@@ -722,7 +728,7 @@ var BackboneCDNs = []string{
 
 var reExplicitPort = regexp.MustCompile(`https?://[^/]+:\d+`)
 
-// chooseBestCDN 挑选最优质稳定的官方骨干 CDN 节点 (彻底规避 PCDN 与限速边缘节点)
+// chooseBestCDN preserves the regional source selected by the playback API.
 func chooseBestCDN(baseURL string, backupURLs []string) string {
 	sorted := collectSortedCDNs(baseURL, backupURLs)
 	if len(sorted) > 0 {
@@ -731,70 +737,20 @@ func chooseBestCDN(baseURL string, backupURLs []string) string {
 	return baseURL
 }
 
-// collectSortedCDNs 收集并排序所有可用 CDN 节点（顶级骨干网优先，规避 PCDN，保留备用节点供故障转移）
+// collectSortedCDNs retains the API's primary CDN and backup ordering.
+// A hostname is not a throughput measurement: forcing mainland "backbones"
+// ahead of the selected regional CDN made overseas downloads much slower.
+// Only return URLs actually supplied by Bilibili; signatures may bind a host.
 func collectSortedCDNs(baseURL string, backupURLs []string) []string {
-	var rawCandidates []string
-	if baseURL != "" {
-		rawCandidates = append(rawCandidates, baseURL)
-	}
-	rawCandidates = append(rawCandidates, backupURLs...)
-
-	// 去重
+	candidates := append([]string{baseURL}, backupURLs...)
 	seen := make(map[string]bool)
-	var candidates []string
-	for _, u := range rawCandidates {
-		u = strings.TrimSpace(u)
-		if u != "" && !seen[u] {
-			seen[u] = true
-			candidates = append(candidates, u)
+	result := make([]string, 0, len(candidates))
+	for _, raw := range candidates {
+		candidate := strings.TrimSpace(raw)
+		if candidate != "" && !seen[candidate] {
+			result = append(result, candidate)
+			seen[candidate] = true
 		}
 	}
-
-	if len(candidates) == 0 {
-		return nil
-	}
-
-	var tier1Backbone []string // 顶级骨干网
-	var tier2Regular []string  // 普通正规 CDN
-	var tier3Other []string    // PCDN 或其他
-
-	for _, u := range candidates {
-		isPCDN := strings.Contains(u, "mcdn.bilivideo") || strings.Contains(u, "upos-tf-all") || reExplicitPort.MatchString(u)
-		if isPCDN {
-			tier3Other = append(tier3Other, u)
-			continue
-		}
-
-		isBackbone := strings.Contains(u, "upos-sz-mirrorcos") ||
-			strings.Contains(u, "upos-sz-mirrorali") ||
-			strings.Contains(u, "upos-sz-mirrorbos") ||
-			strings.Contains(u, "upos-sz-upcdnbwc")
-		if isBackbone {
-			tier1Backbone = append(tier1Backbone, u)
-		} else {
-			tier2Regular = append(tier2Regular, u)
-		}
-	}
-
-	var result []string
-	result = append(result, tier1Backbone...)
-	result = append(result, tier2Regular...)
-
-	// 如果没有原生骨干网，构造腾讯云骨干 CDN 备用节点作为候选追加在后，绝不覆盖置顶原生有效节点
-	if len(tier1Backbone) == 0 && len(candidates) > 0 {
-		boosted := ReplaceCDNServer(candidates[0], "upos-sz-mirrorcos.bilivideo.com")
-		if !seen[boosted] {
-			seen[boosted] = true
-			result = append(result, boosted)
-		}
-	}
-
-	// 最后追加兜底的其他候选 (如 PCDN 边缘节点)
-	result = append(result, tier3Other...)
-
-	if len(result) == 0 {
-		result = append(result, baseURL)
-	}
-
 	return result
 }

@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ func writeStorageFixture(t *testing.T, path string, data []byte) {
 	}
 }
 
-func TestRepeatedDownloadReusesTaskAndCache(t *testing.T) {
+func TestRepeatedDownloadReusesTaskAndInProgressFiles(t *testing.T) {
 	for _, status := range []TaskStatus{StatusQueued, StatusPaused, StatusError, StatusCancelled, StatusCompleted} {
 		t.Run(string(status), func(t *testing.T) {
 			m := newTestManager(t)
@@ -32,8 +33,9 @@ func TestRepeatedDownloadReusesTaskAndCache(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !pathWithin(m.cfgMgr.GetDownloadCacheDir(), first.VideoTmpPath) || pathWithin(m.cfgMgr.Get().DownloadDir, first.VideoTmpPath) {
-				t.Fatalf("temporary file must be inside cache, got %s", first.VideoTmpPath)
+			video, audio := downloadPaths(first.OutputPath)
+			if first.VideoTmpPath != video || first.AudioTmpPath != audio || filepath.Dir(video) != m.cfgMgr.Get().DownloadDir {
+				t.Fatalf("in-progress tracks must be next to output: %s %s", first.VideoTmpPath, first.AudioTmpPath)
 			}
 			first.Status = status
 			if status == StatusCompleted {
@@ -92,7 +94,7 @@ func TestStorageRecoveryMigratesPartsDeduplicatesHistoryAndCleansOrphans(t *test
 	output := filepath.Join(dir, "finished.mp4")
 	writeStorageFixture(t, output, []byte("finished"))
 	m.tasks = []*DownloadTask{
-		{ID: "paused", Status: StatusPaused, VideoTmpPath: old},
+		{ID: "paused", Status: StatusPaused, VideoTmpPath: old, OutputPath: filepath.Join(dir, "video [1080P].mp4")},
 		{ID: "older", Status: StatusCompleted, OutputPath: output, CompletedAt: 1},
 		{ID: "newer", Status: StatusCompleted, OutputPath: output, CompletedAt: 2},
 	}
@@ -103,6 +105,16 @@ func TestStorageRecoveryMigratesPartsDeduplicatesHistoryAndCleansOrphans(t *test
 	tasks := loaded.GetTasks()
 	if len(tasks) != 2 || tasks[1].ID != "newer" {
 		t.Fatalf("history was not deduplicated: %+v", tasks)
+	}
+	if tasks[0].VideoTmpPath != old {
+		t.Fatal("startup must defer migration until the owning worker resumes")
+	}
+	if err := loaded.relocateTaskStreams(context.Background(), loaded.tasks[0]); err != nil {
+		t.Fatal(err)
+	}
+	tasks = loaded.GetTasks()
+	if tasks[0].VideoTmpPath != tasks[0].OutputPath+".downloading" {
+		t.Fatal("resumed task did not move into the download directory")
 	}
 	for path, want := range map[string]string{tasks[0].VideoTmpPath: "prefix", streamSegmentPath(tasks[0].VideoTmpPath, 7): "remaining", unrelated: "keep", output: "finished"} {
 		got, err := os.ReadFile(path)
@@ -127,9 +139,12 @@ func TestStorageMigrationFailurePreservesResumableParts(t *testing.T) {
 	old := filepath.Join(m.cfgMgr.Get().DownloadDir, "video.12345678.video.downloading")
 	part := streamSegmentPath(old, 0)
 	writeStorageFixture(t, part, []byte("resume me"))
-	writeStorageFixture(t, m.cfgMgr.GetDownloadCacheDir(), []byte("blocks cache directory"))
-	m.tasks = []*DownloadTask{{ID: "paused", Status: StatusPaused, VideoTmpPath: old}}
-	m.reconcileTaskStorage()
+	blocked := filepath.Join(m.cfgMgr.Get().DownloadDir, "blocked")
+	writeStorageFixture(t, blocked, []byte("blocks destination directory"))
+	m.tasks = []*DownloadTask{{ID: "paused", Status: StatusPaused, VideoTmpPath: old, OutputPath: filepath.Join(blocked, "video.mp4")}}
+	if err := m.relocateTaskStreams(context.Background(), m.tasks[0]); err == nil {
+		t.Fatal("expected migration failure")
+	}
 	data, err := os.ReadFile(part)
 	if err != nil || string(data) != "resume me" || m.tasks[0].VideoTmpPath != old {
 		t.Fatalf("failed migration lost resumable data: %v", err)
@@ -170,15 +185,21 @@ func TestStoragePersistenceFailureKeepsOriginalFilesAndPaths(t *testing.T) {
 	m := newTestManager(t)
 	old := filepath.Join(m.cfgMgr.Get().DownloadDir, "video.12345678.video.downloading")
 	writeStorageFixture(t, streamSegmentPath(old, 0), []byte("original"))
-	m.tasks = []*DownloadTask{{ID: newUUID(), Status: StatusPaused, VideoTmpPath: old}}
+	output := filepath.Join(m.cfgMgr.Get().DownloadDir, "video.mp4")
+	m.tasks = []*DownloadTask{{ID: newUUID(), Status: StatusPaused, VideoTmpPath: old, OutputPath: output}}
 	// A directory at tasks.json forces persistence to fail after copying files.
 	if err := os.Mkdir(m.cfgMgr.GetTasksPath(), 0755); err != nil {
 		t.Fatal(err)
 	}
-	m.reconcileTaskStorage()
+	if err := m.relocateTaskStreams(context.Background(), m.tasks[0]); err == nil {
+		t.Fatal("expected persistence failure")
+	}
 	data, err := os.ReadFile(streamSegmentPath(old, 0))
 	if err != nil || string(data) != "original" || m.tasks[0].VideoTmpPath != old {
 		t.Fatalf("failed persistence lost original data or changed paths: %v", err)
+	}
+	if _, err := os.Stat(streamSegmentPath(output+".downloading", 0)); !os.IsNotExist(err) {
+		t.Fatal("failed migration left a copied part behind")
 	}
 }
 
@@ -199,5 +220,98 @@ func TestCacheCleanupPreservesPendingTasksAndUnrelatedFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(orphanVideo)); !os.IsNotExist(err) {
 		t.Fatal("orphan cache not cleaned")
+	}
+}
+
+func TestVisibleStorageMigratesRangeCheckpointAndSurvivesRestart(t *testing.T) {
+	m := newTestManager(t)
+	oldVideo, oldAudio := m.cachePaths(newUUID())
+	data := []byte("partial raw media bytes")
+	writeStorageFixture(t, oldVideo, data)
+	writeStorageFixture(t, oldAudio, []byte("audio prefix"))
+	record := rangeRecord{Version: 1, Total: 100, ETag: "media-version", Ranges: []byteRange{{Start: 0, Position: int64(len(data)), End: 100}}}
+	// Exercise records written by the earlier version with visible sidecars.
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeStorageFixture(t, oldVideo+".ranges.json", encoded)
+	writeStorageFixture(t, oldVideo+".ranges", []byte("bbdown-ranges-v1\n"))
+	task := &DownloadTask{ID: newUUID(), Status: StatusPaused, OutputPath: filepath.Join(m.cfgMgr.Get().DownloadDir, "title [1080P].mp4"), VideoTmpPath: oldVideo, AudioTmpPath: oldAudio}
+	m.tasks = []*DownloadTask{task}
+	if err := m.relocateTaskStreams(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(task.VideoTmpPath); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("migration changed raw media: %v", err)
+	}
+	got, err := readRangeRecord(task.VideoTmpPath)
+	if err != nil || got.received() != int64(len(data)) || got.ETag != record.ETag {
+		t.Fatalf("checkpoint lost: %+v %v", got, err)
+	}
+	if !strings.HasPrefix(filepath.Base(rangeRecordPath(task.VideoTmpPath)), ".") {
+		t.Fatal("new checkpoint should be hidden")
+	}
+	if _, err := os.Stat(task.OutputPath); !os.IsNotExist(err) {
+		t.Fatal("unfinished download created a final MP4")
+	}
+	for _, path := range []string{oldVideo, oldAudio, oldVideo + ".ranges", oldVideo + ".ranges.json"} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("committed legacy artifact remains: %s", path)
+		}
+	}
+	loaded := NewDownloadManager(m.cfgMgr).GetTasks()
+	if len(loaded) != 1 || loaded[0].VideoTmpPath != task.VideoTmpPath || loaded[0].Status != StatusPaused {
+		t.Fatal("restart lost migrated path or pause state")
+	}
+	cleanupStreamArtifacts(task.VideoTmpPath)
+	cleanupStreamArtifacts(task.AudioTmpPath)
+	entries, err := os.ReadDir(filepath.Dir(task.OutputPath))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("track cleanup left artifacts: %v %v", entries, err)
+	}
+}
+
+func TestVisibleStoragePreservesForeignStagedFiles(t *testing.T) {
+	m := newTestManager(t)
+	output := filepath.Join(m.cfgMgr.Get().DownloadDir, "title.mp4")
+	staged, _ := downloadPaths(output)
+	writeStorageFixture(t, staged, []byte("someone else's download"))
+	reserved, err := m.availableOutputPathLocked(output, "new")
+	if err != nil || !strings.HasSuffix(reserved, " (1).mp4") {
+		t.Fatalf("staged collision ignored: %s %v", reserved, err)
+	}
+	old, _ := m.cachePaths(newUUID())
+	writeStorageFixture(t, old, []byte("my download"))
+	task := &DownloadTask{ID: "new", OutputPath: output, VideoTmpPath: old}
+	m.tasks = []*DownloadTask{task}
+	if err := m.relocateTaskStreams(context.Background(), task); err == nil {
+		t.Fatal("migration overwrote foreign destination")
+	}
+	for path, want := range map[string]string{staged: "someone else's download", old: "my download"} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != want {
+			t.Fatalf("collision damaged %s: %v", path, err)
+		}
+	}
+}
+
+func TestVisibleStorageCancellationPreservesSource(t *testing.T) {
+	m := newTestManager(t)
+	old, _ := m.cachePaths(newUUID())
+	writeStorageFixture(t, old, []byte("resume me"))
+	task := &DownloadTask{ID: newUUID(), OutputPath: filepath.Join(m.cfgMgr.Get().DownloadDir, "title.mp4"), VideoTmpPath: old}
+	m.tasks = []*DownloadTask{task}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := m.relocateTaskStreams(ctx, task); err == nil {
+		t.Fatal("cancelled migration succeeded")
+	}
+	got, err := os.ReadFile(old)
+	if err != nil || string(got) != "resume me" || task.VideoTmpPath != old {
+		t.Fatal("cancelled migration lost source")
+	}
+	if _, err := os.Stat(task.OutputPath + ".downloading"); !os.IsNotExist(err) {
+		t.Fatal("cancelled migration left destination")
 	}
 }

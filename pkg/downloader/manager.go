@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,7 @@ type DownloadManager struct {
 	workerNotify      chan struct{}
 	mergeFunc         func(context.Context, string, string, string, bool) error
 	bandwidth         *bandwidthLimiter
+	streamFactory     func([]string, string) *StreamDownloader // isolated transport/acceptance tests
 }
 
 var (
@@ -722,40 +724,55 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, pathErr.Error())
 		return
 	}
-	m.persistTasks()
+	if err := m.relocateTaskStreams(ctx, task); err != nil {
+		if ctx.Err() == nil {
+			m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, fmt.Sprintf("准备下载中文件失败: %v", err))
+		}
+		return
+	}
 
-	// 2. 准备视频与音频下载器 (支持候选 CDN 自动故障转移与 403 自动刷新换链)
-	vDownloader := NewStreamDownloader(sel.VideoURLs, task.VideoTmpPath)
+	// Media transport is independent of the Bilibili parser and uses one
+	// coalesced refresh for the exact representation selected for this task.
+	refresh := playbackRefresher(sel, func(refCtx context.Context) (*bilibili.StreamSelection, error) {
+		return m.biliClient.FetchStreamSelection(refCtx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, strconv.Itoa(sel.QualityID), sel.Codec, task.IsCheese)
+	})
+	factory := m.streamFactory
+	if factory == nil {
+		factory = NewStreamDownloader
+	}
+	vDownloader := factory(sel.VideoURLs, task.VideoTmpPath)
+	vDownloader.sizeHint = sel.VideoSize
+	vDownloader.skipSizeProbe = true
 	vDownloader.bandwidth = m.bandwidth
 	vDownloader.SetURLRefresher(func(refCtx context.Context) ([]string, error) {
-		newSel, rErr := m.biliClient.FetchStreamSelection(refCtx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, task.TargetQuality, task.TargetCodec, task.IsCheese)
-		if rErr != nil {
-			return nil, rErr
+		fresh, err := refresh(refCtx)
+		if err != nil {
+			return nil, err
 		}
-		return newSel.VideoURLs, nil
+		return fresh.VideoURLs, nil
 	})
-	vSize, _ := vDownloader.GetTotalSize(ctx)
-
 	var aDownloader *StreamDownloader
-	var aSize int64 = 0
-	if len(sel.AudioURLs) > 0 && sel.AudioURLs[0] != "" {
-		aDownloader = NewStreamDownloader(sel.AudioURLs, task.AudioTmpPath)
+	if len(filterStreamURLs(sel.AudioURLs)) > 0 {
+		aDownloader = factory(sel.AudioURLs, task.AudioTmpPath)
+		aDownloader.sizeHint = sel.AudioSize
+		aDownloader.skipSizeProbe = true
 		aDownloader.bandwidth = m.bandwidth
 		aDownloader.SetURLRefresher(func(refCtx context.Context) ([]string, error) {
-			newSel, rErr := m.biliClient.FetchStreamSelection(refCtx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, task.TargetQuality, task.TargetCodec, task.IsCheese)
-			if rErr != nil {
-				return nil, rErr
+			fresh, err := refresh(refCtx)
+			if err != nil {
+				return nil, err
 			}
-			return newSel.AudioURLs, nil
+			return fresh.AudioURLs, nil
 		})
-		aSize, _ = aDownloader.GetTotalSize(ctx)
 	}
 
 	// 3. Keep restored disk bytes separate from this run's network traffic.
-	progress := newTaskDownloadProgress(ctx, m, task, token, vSize, aSize, aDownloader != nil)
+	progress := newTaskDownloadProgress(ctx, m, task, token, 0, 0, aDownloader != nil)
+	progress.setEstimatedSizes(sel.VideoSize, sel.AudioSize)
 	vDownloader.SetRestoredProgressCallback(func(delta int64) { progress.record(delta, false) })
 	vDownloader.SetTotalSizeCallback(func(size int64) { progress.setSize(true, size) })
 	if aDownloader != nil {
+		aDownloader.SetRestoredProgressCallback(func(delta int64) { progress.record(delta, false) })
 		aDownloader.SetTotalSizeCallback(func(size int64) { progress.setSize(false, size) })
 	}
 	stopProgress := progress.start()
@@ -770,31 +787,15 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		threads = 8
 	}
 
-	// 4. 下载视频轨 (大体积媒体流，使用多线程分片加速，带自动降级保护)
-	err = vDownloader.DownloadWithConcurrency(ctx, threads, func(delta int64) {
-		progress.record(delta, true)
-	})
-	if err != nil {
+	// Both media headers contribute to accurate progress from startup.
+	if failure := downloadMediaTracks(ctx, vDownloader, aDownloader, threads, func(delta int64) { progress.record(delta, true) }); failure != nil {
 		if ctx.Err() != nil {
 			return
 		}
-		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, formatFriendlyError(err), &bilibili.PlaybackError{Detail: streamFailureDetail("视频轨", err, vDownloader.lastDiagnostic())})
+		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, formatFriendlyError(failure.err), &bilibili.PlaybackError{Detail: streamFailureDetail(failure.label, failure.err, failure.stream.lastDiagnostic())})
 		return
 	}
 
-	// 5. 下载音频轨 (小体积媒体流，使用单流平稳下载)
-	if aDownloader != nil {
-		err = aDownloader.DownloadSingleStream(ctx, func(delta int64) {
-			progress.record(delta, true)
-		})
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, formatFriendlyError(err), &bilibili.PlaybackError{Detail: streamFailureDetail("音频轨", err, aDownloader.lastDiagnostic())})
-			return
-		}
-	}
 	// 6. 合成音视频
 	stopProgress()
 	if !m.setWorkerTaskStatus(task, token, StatusDownloading, StatusMerging, "") {

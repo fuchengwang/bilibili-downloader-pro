@@ -3,12 +3,42 @@ package bilibili
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"bilibili_downloader/pkg/utils"
 )
+
+func TestSinglePartUsesPublishedCoverInsteadOfDarkFirstFrame(t *testing.T) {
+	for _, tc := range []struct {
+		name, poster, frame, want string
+	}{
+		{"published poster", "https://cover.test/published.jpg", "https://cover.test/dark-first-frame.jpg", "https://cover.test/published.jpg"},
+		{"frame fallback", "", "https://cover.test/frame.jpg", "https://cover.test/frame.jpg"},
+		{"no frame", "https://cover.test/published.jpg", "", "https://cover.test/published.jpg"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"code":0,"data":{"bvid":"BVexample","aid":20,"pic":%q,"pages":[{"cid":200,"page":1,"first_frame":%q}]}}`, tc.poster, tc.frame)
+			c := playurlClient(t, body, nil)
+			detail, err := c.FetchVideoDetail(context.Background(), &ParsedTarget{Type: TargetNormal, BVID: "BVexample", Page: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if detail.Episodes[0].Cover != tc.want {
+				t.Fatalf("normal video cover = %s, want %s", detail.Episodes[0].Cover, tc.want)
+			}
+			parts, err := c.FetchCollectionVideoParts(context.Background(), EpisodeInfo{BVID: "BVexample"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parts.Parts[0].Cover != tc.want {
+				t.Fatalf("collection video cover = %s, want %s", parts.Parts[0].Cover, tc.want)
+			}
+		})
+	}
+}
 
 // TestBangumiDurationConversion 复现并验证番剧接口返回的毫秒时长转换为秒
 // 在修复前：ep.Duration 为 1440000 毫秒，FormatDuration 计算为 400:00:00

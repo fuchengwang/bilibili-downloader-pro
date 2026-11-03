@@ -300,8 +300,8 @@ func (m *DownloadManager) prepareDownloadTask(req *DownloadRequest, ep *bilibili
 	outPath := utils.EnsureSafePathLength(outDir, baseFileName, ".mp4")
 
 	taskID := newUUID()
-	// 每个任务独占缓存子目录，下载目录只保存成品。
-	vTmp, aTmp := m.cachePaths(taskID)
+	// The worker reserves the final quality/collision suffix before writing.
+	vTmp, aTmp := downloadPaths(outPath)
 
 	task := &DownloadTask{
 		ID:            taskID,

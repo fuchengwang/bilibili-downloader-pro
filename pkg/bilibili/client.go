@@ -207,19 +207,7 @@ func (c *Client) GetBytes(ctx context.Context, reqURL string, extraHeaders map[s
 		req.Header.Set(k, v)
 	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	c.UpdateClockOffset(resp.Header.Get("Date"))
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("HTTP error: %s", resp.Status)
-	}
-
-	return io.ReadAll(resp.Body)
+	return c.getBytesWithRetry(ctx, req)
 }
 
 // UpdateClockOffset 根据 HTTP 响应头中的 Date 字段动态校准本地与 B 站服务器时钟偏差
