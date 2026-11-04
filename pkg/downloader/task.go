@@ -54,6 +54,8 @@ type DownloadTask struct {
 	ResumeOnStartup bool       `json:"resumeOnStartup,omitempty"` // 更新重启前的临时暂停，保留继续意图
 	CompletedAt     int64      `json:"completedAt"`               // 完成时间戳
 	OutputPath      string     `json:"outputPath"`                // 最终合并输出的文件绝对路径
+	DownloadRoot    string     `json:"downloadRoot,omitempty"`    // 创建任务时的下载根目录，清理时不得删除
+	CollectionDir   string     `json:"collectionDir,omitempty"`   // 本任务所属的最上层合集目录
 	VideoTmpPath    string     `json:"videoTmpPath"`              // 目标目录中的下载中视频轨
 	AudioTmpPath    string     `json:"audioTmpPath"`              // 目标目录中的下载中音频轨
 }

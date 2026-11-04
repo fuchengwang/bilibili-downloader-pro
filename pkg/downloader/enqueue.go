@@ -237,6 +237,7 @@ func (m *DownloadManager) prepareDownloadTask(req *DownloadRequest, ep *bilibili
 	// 生成规范的输出路径与文件名（支持极端特殊字符与超长标题安全降级）
 	sanitizedTitle := utils.SanitizeFilename(req.Title, "bilibili_video")
 	var outDir string
+	var collectionDir string
 	var baseFileName string
 
 	// 判断是否为多集/合集/多P视频
@@ -286,6 +287,10 @@ func (m *DownloadManager) prepareDownloadTask(req *DownloadRequest, ep *bilibili
 		if err := os.MkdirAll(outDir, 0755); err != nil {
 			return nil, fmt.Errorf("创建合集下载目录失败: %w", err)
 		}
+		collectionDir = outDir
+		if req.CollectionID > 0 && ep.PartCount > 1 {
+			collectionDir = filepath.Dir(outDir)
+		}
 	} else {
 		// 单视频：直接保存在下载主目录
 		outDir = cfg.DownloadDir
@@ -328,6 +333,8 @@ func (m *DownloadManager) prepareDownloadTask(req *DownloadRequest, ep *bilibili
 		Duration:      ep.Duration,
 		CreatedAt:     time.Now().Unix(),
 		OutputPath:    outPath,
+		DownloadRoot:  cfg.DownloadDir,
+		CollectionDir: collectionDir,
 		VideoTmpPath:  vTmp,
 		AudioTmpPath:  aTmp,
 	}

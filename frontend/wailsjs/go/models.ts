@@ -412,6 +412,8 @@ export namespace downloader {
 	    resumeOnStartup?: boolean;
 	    completedAt: number;
 	    outputPath: string;
+	    downloadRoot?: string;
+	    collectionDir?: string;
 	    videoTmpPath: string;
 	    audioTmpPath: string;
 
@@ -460,6 +462,8 @@ export namespace downloader {
 	        this.resumeOnStartup = source["resumeOnStartup"];
 	        this.completedAt = source["completedAt"];
 	        this.outputPath = source["outputPath"];
+	        this.downloadRoot = source["downloadRoot"];
+	        this.collectionDir = source["collectionDir"];
 	        this.videoTmpPath = source["videoTmpPath"];
 	        this.audioTmpPath = source["audioTmpPath"];
 	    }

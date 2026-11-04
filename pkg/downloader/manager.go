@@ -320,10 +320,12 @@ func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 
 	var newTasks []*DownloadTask
 	var target *DownloadTask
+	var cleanupTask DownloadTask
 	targetIndex := -1
 	for i, t := range m.tasks {
 		if t.ID == id {
 			target = t
+			cleanupTask = *t
 			targetIndex = i
 		} else {
 			newTasks = append(newTasks, t)
@@ -365,25 +367,20 @@ func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 		}
 
 		// 异步安全清理临时文件，带指数退避重试确保 Windows 句柄释放后成功清理 (杜绝 EACCES 权限泄漏)
-		go func(vTmp, aTmp, outPath string, delFile bool) {
+		go func(task DownloadTask) {
 			if workerDone != nil {
 				<-workerDone
 			}
-			cleanupStreamArtifacts(vTmp)
-			cleanupStreamArtifacts(aTmp)
-			if delFile && outPath != "" {
-				safeRemoveWithRetry(outPath)
-				// 如果所在目录是合集子目录且已经为空，顺便清理空文件夹 (严格排除主下载目录)
-				dir := filepath.Dir(outPath)
-				rootDir := filepath.Clean(m.cfgMgr.Get().DownloadDir)
-				if dir != "" && dir != "." && filepath.Clean(dir) != rootDir {
-					entries, err := os.ReadDir(dir)
-					if err == nil && len(entries) == 0 {
-						_ = os.Remove(dir)
-					}
-				}
+			cleanupStreamArtifacts(task.VideoTmpPath)
+			cleanupStreamArtifacts(task.AudioTmpPath)
+			if deleteFile && task.OutputPath != "" {
+				safeRemoveWithRetry(task.OutputPath)
 			}
-		}(target.VideoTmpPath, target.AudioTmpPath, target.OutputPath, deleteFile)
+			// Only removing records keeps the user's folder, even when empty.
+			if deleteFile {
+				m.cleanupEmptyCollectionDirs([]*DownloadTask{&task})
+			}
+		}(cleanupTask)
 		m.triggerSchedule()
 		return persistErr
 	}
@@ -495,27 +492,12 @@ func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) error {
 		cleanupStreamArtifacts(t.AudioTmpPath)
 	}
 	if deleteFile {
-
-		dirsToCheck := make(map[string]bool)
 		for _, t := range removed {
 			if t.OutputPath != "" {
 				safeRemoveWithRetry(t.OutputPath)
-				dir := filepath.Dir(t.OutputPath)
-				if dir != "" && dir != "." {
-					dirsToCheck[dir] = true
-				}
 			}
 		}
-		// 顺便清理可能残留的空合集目录 (严格排除主下载目录)
-		rootDir := filepath.Clean(m.cfgMgr.Get().DownloadDir)
-		for dir := range dirsToCheck {
-			if filepath.Clean(dir) != rootDir {
-				entries, err := os.ReadDir(dir)
-				if err == nil && len(entries) == 0 {
-					_ = os.Remove(dir)
-				}
-			}
-		}
+		m.cleanupEmptyCollectionDirs(removed)
 	}
 
 	return nil
