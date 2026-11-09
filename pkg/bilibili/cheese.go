@@ -45,7 +45,7 @@ type cheeseSeasonResponse struct {
 			Avatar string `json:"avatar"`
 		} `json:"up_info"`
 		UserStatus struct {
-			Payed     int  `json:"payed"`
+			Payed     *int `json:"payed"`
 			IsExpired bool `json:"is_expired"`
 		} `json:"user_status"`
 	} `json:"data"`
@@ -111,7 +111,7 @@ func (c *Client) fetchCheeseDetail(ctx context.Context, target *ParsedTarget) (*
 		badge := "付费"
 		if ep.Status == 1 {
 			badge = "免费"
-		} else if d.UserStatus.Payed == 1 && !d.UserStatus.IsExpired {
+		} else if d.UserStatus.Payed != nil && *d.UserStatus.Payed == 1 && !d.UserStatus.IsExpired {
 			badge = "已购买"
 		}
 		detail.Episodes = append(detail.Episodes, EpisodeInfo{
@@ -195,15 +195,47 @@ func (c *Client) requestCheesePlayURL(ctx context.Context, aid, cid, epid int64)
 		return nil, fmt.Errorf("请求课堂媒体流失败: %w", err)
 	}
 	if resp.Code != 0 {
-		return nil, playbackAPIError(resp.Code, resp.Message)
+		err := playbackAPIError(resp.Code, resp.Message)
+		if err.Kind == "unavailable" {
+			return nil, c.explainCheesePlaybackFailure(ctx, epid, err)
+		}
+		return nil, err
 	}
 	if resp.isPreview() {
 		err := playbackError("preview_only", "课堂接口仅返回试看内容")
 		err.Hint = "请登录已购买该课程且课程未过期的账号后重试。"
 		return nil, err
 	}
-	if resp.getDash() == nil {
-		return nil, playbackError("unavailable", "课堂接口未返回可下载的视频流")
+	if dash := resp.getDash(); dash == nil || len(dash.Video) == 0 {
+		return nil, c.explainCheesePlaybackFailure(ctx, epid, playbackError("unavailable", "课堂接口未返回可下载的视频流"))
 	}
 	return &resp, nil
+}
+
+// The course player can return a generic 403. Only turn it into a purchase
+// restriction when the course API confirms the requested lesson is paid.
+func (c *Client) explainCheesePlaybackFailure(ctx context.Context, epid int64, failure *PlaybackError) *PlaybackError {
+	var resp cheeseSeasonResponse
+	endpoint := "https://api.bilibili.com/pugv/view/web/season?ep_id=" + strconv.FormatInt(epid, 10)
+	if err := c.GetJSON(ctx, endpoint, &resp); err != nil || resp.Code != 0 || resp.Data.SeasonID <= 0 {
+		return failure
+	}
+	status := resp.Data.UserStatus
+	for _, ep := range resp.Data.Episodes {
+		if ep.ID != epid || ep.Status != 2 {
+			continue
+		}
+		if status.IsExpired {
+			err := playbackError("purchase_required", failure.Detail)
+			err.Message = "当前账号的课程观看权益已过期，付费课时无法下载"
+			return err
+		}
+		if status.Payed != nil && *status.Payed == 0 {
+			err := playbackError("purchase_required", failure.Detail)
+			err.Message = "当前账号尚未购买该课程，付费课时无法下载"
+			return err
+		}
+		break
+	}
+	return failure
 }

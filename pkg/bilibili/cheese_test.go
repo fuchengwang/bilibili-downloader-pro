@@ -115,3 +115,31 @@ func TestCheesePlayerRejectsPreviewAndPermissionErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestCheeseGeneric403UsesConfirmedCourseRights(t *testing.T) {
+	for _, tc := range []struct {
+		name, status, lesson, want string
+	}{
+		{"unpaid", `{"payed":0}`, `{"id":102,"status":2}`, "purchase_required"},
+		{"expired", `{"payed":1,"is_expired":true}`, `{"id":102,"status":2}`, "purchase_required"},
+		{"purchased", `{"payed":1}`, `{"id":102,"status":2}`, "unavailable"},
+		{"unknown", `{}`, `{"id":102,"status":2}`, "unavailable"},
+		{"free", `{"payed":0}`, `{"id":102,"status":1}`, "unavailable"},
+		{"different lesson", `{"payed":0}`, `{"id":101,"status":2}`, "unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := playurlClient(t, "", nil)
+			c.httpClient.Transport = playurlTransport(func(r *http.Request) (*http.Response, error) {
+				body := `{"code":-403,"message":"访问权限不足"}`
+				if r.URL.Path == "/pugv/view/web/season" {
+					body = fmt.Sprintf(`{"code":0,"data":{"season_id":44,"user_status":%s,"episodes":[%s]}}`, tc.status, tc.lesson)
+				}
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+			})
+			info := c.GetPlaybackInfo(context.Background(), "", 202, 302, 102, false, true)
+			if info.Error == nil || info.Error.Kind != tc.want {
+				t.Fatalf("want %s, got %+v", tc.want, info.Error)
+			}
+		})
+	}
+}

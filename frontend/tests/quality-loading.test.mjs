@@ -9,7 +9,7 @@ import { ref, toRaw, computed } from 'vue'
 const component = readFileSync(new URL('../src/components/QuickParse.vue', import.meta.url), 'utf8')
 const script = component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
 const ast = ts.createSourceFile('QuickParse.ts', script, ts.ScriptTarget.Latest, true)
-const functionNames = new Set(['fetchQualities', 'handleClear', 'currentEpisode'])
+const functionNames = new Set(['fetchQualities', 'handleClear', 'currentEpisode', 'episodeForPlaybackCheck'])
 const functions = ast.statements
   .filter(node => ts.isFunctionDeclaration(node) && functionNames.has(node.name.text))
   .map(node => node.getText(ast)).join('\n')
@@ -75,6 +75,33 @@ test('classroom quality lookup preserves the purchased lesson and source type', 
   requests[0].resolve(qualities)
   await pending
   assert.deepEqual(toRaw(c.availableQualities.value), qualities)
+})
+
+test('classroom overview checks a paid lesson without treating it as the current lesson', async () => {
+  const { context: c, requests } = harness()
+  const raw = { type: 'cheese', hasLinkedEpisode: false, defaultPage: 1, episodes: [
+    { aid: 11, cid: 101, epid: 1001, badge: '免费' },
+    { aid: 22, cid: 202, epid: 2002, badge: '付费' },
+  ] }
+  c.parsedDetail.value = raw
+  assert.equal(c.currentEpisode(raw), undefined)
+  const pending = c.fetchQualities(raw, c.episodeForPlaybackCheck(raw))
+  assert.equal(requests[0].args[3], 2002)
+  requests[0].resolveInfo({ error: { kind: 'purchase_required' } })
+  await pending
+  assert.equal(c.playbackError.value.kind, 'purchase_required')
+  assert.equal(c.availableQualities.value.length, 0)
+})
+
+test('bangumi overview checks a member episode rather than a free episode or trailer', () => {
+  const { context: c } = harness()
+  const raw = { type: 'bangumi', hasLinkedEpisode: false, episodes: [
+    { epid: 1, cid: 10, badge: '' },
+    { epid: 2, cid: 20, badge: '预告' },
+    { epid: 3, cid: 30, badge: '会员' },
+  ] }
+  assert.equal(c.episodeForPlaybackCheck(raw).epid, 3)
+  assert.equal(c.currentEpisode(raw), undefined)
 })
 
 test('login refresh accepts proxy detail and ignores previous request', async () => {

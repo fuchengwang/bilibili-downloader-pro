@@ -14,8 +14,7 @@ import {
   Check,
   Calendar,
   AlertCircle,
-  UserRound,
-  ExternalLink
+  UserRound
 } from 'lucide-vue-next'
 import { bilibili } from '../../wailsjs/go/models'
 import { ParseURL, GetPlaybackInfo, ReadClipboard } from '../../wailsjs/go/main/App'
@@ -49,6 +48,17 @@ function currentEpisode(detail: bilibili.VideoDetail) {
   if (detail.hasLinkedEpisode === false) return undefined
   return detail.episodes[Math.max(0, (detail.defaultPage || 1) - 1)]
 }
+function episodeForPlaybackCheck(detail: bilibili.VideoDetail) {
+  if (detail.type === 'cheese' && detail.hasLinkedEpisode === false) {
+    // A free lesson cannot confirm access to the course's paid lessons.
+    return detail.episodes.find(ep => ep.badge === '付费' || ep.badge === '已购买')
+  }
+  if (detail.type === 'bangumi' && detail.hasLinkedEpisode === false) {
+    return detail.episodes.find(ep => ep.epid > 0 && ep.cid > 0 &&
+      (ep.badge === '会员' || ep.badge === '大会员' || ep.badge === '付费'))
+  }
+  return currentEpisode(detail)
+}
 const linkedEpisode = computed(() => parsedDetail.value ? currentEpisode(parsedDetail.value) : undefined)
 const displayTitle = computed(() => linkedEpisode.value && (parsedDetail.value?.isCollection || parsedDetail.value?.type !== 'normal') ? linkedEpisode.value.title : parsedDetail.value?.title)
 const displayCover = computed(() => linkedEpisode.value?.cover || parsedDetail.value?.cover)
@@ -56,14 +66,20 @@ const displayDuration = computed(() => linkedEpisode.value?.durationStr || parse
 const singleDownloadBlocked = computed(() => isParsing.value || isFetchingQualities.value || isPermissionError(playbackError.value?.kind))
 const sourceURL = computed(() => linkedEpisode.value && parsedDetail.value ? episodeURL(linkedEpisode.value, parsedDetail.value.type) : '')
 const isGuest = computed(() => !props.userInfo?.isLogin && !props.userInfoLoading && !props.userInfoError)
-const showGuestPrompt = computed(() => isGuest.value && !isPermissionError(playbackError.value?.kind))
-const guestLoginDescription = computed(() => parsedDetail.value?.type === 'cheese'
-  ? '请用购买课程的账号登录。'
-  : '已购课程或充电视频请用对应账号登录，公开视频可直接下载。')
-const playbackHint = computed(() => {
-  if (isGuest.value && playbackError.value?.kind === 'charge_required') return '如果已充电，请登录已充电的 B 站账号。'
-  if (isGuest.value && playbackError.value?.kind === 'purchase_required') return '如果已购买，请登录购买时使用的 B 站账号。'
-  return playbackError.value?.hint
+const accountRestricted = computed(() =>
+  isPermissionError(playbackError.value?.kind) && playbackError.value?.kind !== 'region_restricted'
+)
+const inlinePlaybackError = computed(() => {
+  const error = playbackError.value
+  if (accountRestricted.value && !props.userInfo?.isLogin) return null
+  // An inconclusive sample does not describe access to the whole course or season.
+  if (parsedDetail.value?.hasLinkedEpisode === false && !isPermissionError(error?.kind)) return null
+  return error
+})
+const guestLoginDescription = computed(() => {
+  if (parsedDetail.value?.type === 'cheese') return '请用购买课程的账号登录。'
+  if (accountRestricted.value) return '请登录有完整观看权限的 B 站账号。'
+  return '已购课程或充电视频请用对应账号登录，公开视频可直接下载。'
 })
 const automaticQualityLabel = computed(() => {
   if (isFetchingQualities.value) return '正在检查可用画质…'
@@ -82,12 +98,7 @@ watch(() => props.defaultQuality, (val) => {
 })
 
 // 监听登录状态变更，自动刷新当前已解析视频的清晰度权限
-watch(() => props.userInfo, () => {
-  if (parsedDetail.value && parsedDetail.value.episodes && parsedDetail.value.episodes.length > 0) {
-    const ep = currentEpisode(parsedDetail.value)
-    if (ep) fetchQualities(parsedDetail.value, ep)
-  }
-})
+watch(() => props.userInfo, refreshQualities)
 
 function normalizeImg(url?: string) {
   if (!url) return ''
@@ -142,11 +153,7 @@ async function handleParse() {
     parsedDetail.value = res
     emit('show-toast', '解析成功！', 'success')
 
-    // 获取可用画质列表
-    if (res.episodes && res.episodes.length > 0) {
-      const ep = currentEpisode(res)
-      if (ep) fetchQualities(res, ep)
-    }
+    refreshQualities()
   } catch (err: any) {
     emit('show-toast', err?.message || '解析失败，请检查链接是否正确', 'error')
   } finally {
@@ -172,13 +179,12 @@ async function fetchQualities(detail: bilibili.VideoDetail, ep: bilibili.Episode
     // ref wraps details in a reactive proxy; compare the underlying objects so
     // the response to the initial parse is not mistaken for a stale request.
     if (request !== qualityRequest || toRaw(parsedDetail.value) !== toRaw(detail)) return
-    const qList = info?.qualities || []
     playbackError.value = info?.error || null
-    availableQualities.value = qList || []
-
+    if (detail.hasLinkedEpisode !== false) availableQualities.value = info?.qualities || []
   } catch (err: any) {
     if (request === qualityRequest && toRaw(parsedDetail.value) === toRaw(detail)) {
       availableQualities.value = []
+      if (detail.hasLinkedEpisode === false) return
       const message = String(err?.message || err || '暂时无法检查播放权限')
       playbackError.value = { kind: 'unavailable', message, hint: '请稍后重新检查。' }
       emit('show-toast', message, 'error')
@@ -224,7 +230,7 @@ function formatPubDate(ts: number): string {
 
 function refreshQualities() {
   if (parsedDetail.value && parsedDetail.value.episodes && parsedDetail.value.episodes.length > 0) {
-    const ep = currentEpisode(parsedDetail.value)
+    const ep = episodeForPlaybackCheck(parsedDetail.value)
     if (ep) fetchQualities(parsedDetail.value, ep)
   }
 }
@@ -337,15 +343,18 @@ defineExpose({
           {{ parsedDetail.description || '暂无简介' }}
         </div>
 
-        <div v-if="playbackError" class="playback-notice" role="status">
-          <div class="notice-message"><AlertCircle :size="14" /><span>{{ playbackError.message }}</span></div>
-          <p>{{ playbackHint }}</p>
-          <div class="notice-actions">
-            <button v-if="sourceURL" class="notice-link" @click="BrowserOpenURL(sourceURL)"><ExternalLink :size="12" />在B站打开</button>
-            <button v-if="isPermissionError(playbackError.kind)" class="notice-link" @click="emit('open-login')">{{ isGuest ? '登录 B 站账号' : '登录 / 重新登录' }}</button>
-            <button class="notice-link" :disabled="isFetchingQualities" @click="refreshQualities">重新检查</button>
+        <div v-if="inlinePlaybackError" class="playback-notice">
+          <div class="notice-message" role="status">
+            <AlertCircle :size="14" aria-hidden="true" />
+            <span>{{ parsedDetail.type === 'bangumi' && !linkedEpisode ? '受限分集：' : '' }}{{ inlinePlaybackError.message }}</span>
           </div>
-          <details v-if="playbackError.detail"><summary>详细信息</summary>{{ playbackError.detail }}</details>
+          <button v-if="accountRestricted" type="button" class="guest-login" @click="emit('open-login')">
+            切换 B 站账号
+          </button>
+          <button v-else-if="inlinePlaybackError.kind === 'region_restricted' && sourceURL" type="button" class="guest-login" @click="BrowserOpenURL(sourceURL)">
+            在 B 站查看
+          </button>
+          <button v-else type="button" class="guest-login" @click="refreshQualities">重新检查</button>
         </div>
 
         <!-- Download Action & Options Area -->
@@ -388,7 +397,7 @@ defineExpose({
         </div>
       </div>
     </div>
-    <div v-if="parsedDetail && showGuestPrompt" class="guest-notice">
+    <div v-if="parsedDetail && isGuest" class="guest-notice">
       <div class="guest-copy">
         <UserRound :size="15" aria-hidden="true" />
         <strong>未登录 B 站</strong>
@@ -584,15 +593,9 @@ defineExpose({
 
 .collection-context { display: flex; flex-wrap: wrap; gap: 5px 10px; margin-top: 6px; color: var(--text-muted); font-size: 11.5px; }
 .current-episode-label { color: var(--bili-pink); flex-shrink: 0; }
-.playback-notice { margin: 10px 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--neutral-05); font-size: 12px; color: var(--text-secondary); }
-.notice-message { display: flex; align-items: flex-start; gap: 6px; color: var(--warning); font-weight: 600; }
+.playback-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 10px; padding: 6px 10px; border-radius: var(--radius-sm); background: var(--neutral-05); font-size: 12px; }
+.notice-message { display: flex; align-items: flex-start; gap: 6px; color: var(--guest-accent); font-weight: 600; }
 .notice-message svg { flex-shrink: 0; margin-top: 2px; }
-.playback-notice p { margin-top: 5px; line-height: 1.5; }
-.notice-actions { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 7px; }
-.notice-link { display: inline-flex; align-items: center; gap: 4px; color: var(--bili-pink); font-size: 11.5px; background: transparent; }
-.notice-link:disabled { opacity: .5; cursor: default; }
-.playback-notice details { margin-top: 7px; color: var(--text-muted); font-size: 11px; }
-.playback-notice summary { cursor: pointer; }
 
 .guest-notice {
   display: flex;
