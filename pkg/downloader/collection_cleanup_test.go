@@ -142,7 +142,7 @@ func TestCollectionCleanupProtectsQueuedTaskWithoutFiles(t *testing.T) {
 	if _, err := os.Stat(filepath.Dir(tasks[1].OutputPath)); err != nil {
 		t.Fatal("pending task directory was removed")
 	}
-	if err := m.DeleteTask(tasks[1].ID, true); err != nil {
+	if err := m.DeleteTask(tasks[1].ID, false); err != nil {
 		t.Fatal(err)
 	}
 	waitCollectionCleanup(t, func() bool { return pathIsGone(top) })
@@ -154,17 +154,40 @@ func TestCollectionCleanupWaitsForDeletedWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Recreate one task and model its still-running file writer.
+	tasks[0].Status = StatusDownloading
 	writeStorageFixture(t, tasks[0].VideoTmpPath, []byte("still writing"))
 	m.tasks = []*DownloadTask{tasks[0]}
 	done := make(chan struct{})
 	m.workers[tasks[0].ID] = workerHandle{done: done, cancel: func() {}}
-	if err := m.DeleteTask(tasks[0].ID, true); err != nil {
+	if err := m.DeleteTask(tasks[0].ID, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(tasks[0].VideoTmpPath); err != nil {
 		t.Fatal("cleanup ran before worker exit")
 	}
 	close(done)
+	waitCollectionCleanup(t, func() bool { return pathIsGone(top) })
+}
+
+func TestCollectionCleanupPreservesAnotherDownloadInSameFolder(t *testing.T) {
+	m, tasks, top := cleanupCollectionFixture(t, true)
+	for _, task := range tasks {
+		task.Status = StatusDownloading
+		if err := os.Remove(task.OutputPath); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := m.DeleteTask(tasks[0].ID, false); err != nil {
+		t.Fatal(err)
+	}
+	waitCollectionCleanup(t, func() bool { return pathIsGone(rangeMarkerPath(tasks[0].VideoTmpPath)) })
+	got, err := os.ReadFile(tasks[1].VideoTmpPath)
+	if err != nil || string(got) != "retained video" {
+		t.Fatalf("remaining download was damaged: %q, %v", got, err)
+	}
+	if err := m.DeleteTask(tasks[1].ID, false); err != nil {
+		t.Fatal(err)
+	}
 	waitCollectionCleanup(t, func() bool { return pathIsGone(top) })
 }
 

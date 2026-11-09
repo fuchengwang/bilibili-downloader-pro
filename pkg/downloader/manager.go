@@ -376,8 +376,9 @@ func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 			if deleteFile && task.OutputPath != "" {
 				safeRemoveWithRetry(task.OutputPath)
 			}
-			// Only removing records keeps the user's folder, even when empty.
-			if deleteFile {
+			// Removing an unfinished task discards its temporary files. Clean
+			// up its collection too, while preserving history-only deletions.
+			if deleteFile || task.Status != StatusCompleted {
 				m.cleanupEmptyCollectionDirs([]*DownloadTask{&task})
 			}
 		}(cleanupTask)
