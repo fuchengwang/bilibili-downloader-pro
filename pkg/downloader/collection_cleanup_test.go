@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,6 +25,9 @@ func cleanupCollectionFixture(t *testing.T, nested bool) (*DownloadManager, []*D
 		}
 		task, err := m.AddDownloadTask(req, ep)
 		if err != nil {
+			t.Fatal(err)
+		}
+		if err := m.relocateTaskStreams(context.Background(), task); err != nil {
 			t.Fatal(err)
 		}
 		task.Status = StatusCompleted

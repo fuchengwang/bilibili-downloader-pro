@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,6 +49,53 @@ func TestNestedCollectionDirectoryAndHistory(t *testing.T) {
 	if err != nil || filepath.Dir(same.OutputPath) != filepath.Join(root, "01. 第一册") {
 		t.Fatalf("directory identity lost after clearing history: %v %+v", err, same)
 	}
+}
+
+func TestCollectionDirectoryIdentitySurvivesEmptyCleanupAndRestart(t *testing.T) {
+	m := newTestManager(t)
+	add := func(collection int64) *DownloadTask {
+		t.Helper()
+		task, err := m.AddDownloadTask(&DownloadRequest{Title: "同名合集", CollectionID: collection},
+			&bilibili.EpisodeInfo{BVID: "BVentry", CID: collection, Index: 1, Title: "分集"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	first := add(1)
+	if err := m.DeleteTask(first.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	waitCollectionCleanup(t, func() bool { return pathIsGone(first.CollectionDir) })
+	m = NewDownloadManager(m.cfgMgr)
+	second := add(2)
+	again := add(1)
+	if again.CollectionDir != first.CollectionDir || again.CollectionDir == second.CollectionDir {
+		t.Fatalf("directories lost stable ownership: %q, %q, %q", first.CollectionDir, second.CollectionDir, again.CollectionDir)
+	}
+}
+
+func TestCollectionDirectoryRepairsExistingDuplicateMapping(t *testing.T) {
+	m := newTestManager(t)
+	root := m.cfgMgr.Get().DownloadDir
+	path := filepath.Join(root, "same")
+	file := filepath.Join(path, "existing.mp4")
+	writeStorageFixture(t, file, []byte("existing"))
+	index := filepath.Join(filepath.Dir(m.cfgMgr.GetTasksPath()), "collection-directories.json")
+	data, err := json.Marshal(map[string]string{pathKey(root) + "|ugc:1": path, pathKey(root) + "|ugc:2": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeStorageFixture(t, index, data)
+	first, err := m.collectionDir(root, "ugc:1", "same", 2, func() []string { return []string{path} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.collectionDir(root, "ugc:2", "same", 2, nil)
+	if err != nil || first == second || second != path {
+		t.Fatalf("duplicate ownership was not repaired: %q, %q, %v", first, second, err)
+	}
+	assertMediaBytes(t, file, []byte("existing"))
 }
 
 func TestCollectionRegistryRecoversMalformedAndNullData(t *testing.T) {

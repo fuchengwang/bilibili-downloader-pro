@@ -38,6 +38,8 @@ type StreamDownloader struct {
 	probed                   bool
 	skipSizeProbe            bool // Bilibili transfers discover lengths from actual range responses
 	probeETag, probeModified string
+	probeValidatorKey        string
+	representation           string
 }
 
 func (s *StreamDownloader) recordDiagnostic(err error) {
@@ -164,6 +166,11 @@ func (s *StreamDownloader) GetTotalSize(ctx context.Context) (int64, error) {
 	if s.totalSize > 0 {
 		return s.totalSize, nil
 	}
+	return s.probeTotalSize(ctx)
+}
+
+// A completed cache must get fresh headers, even if its size is already known.
+func (s *StreamDownloader) probeTotalSize(ctx context.Context) (int64, error) {
 	s.probed = true
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
@@ -199,6 +206,11 @@ func (s *StreamDownloader) GetTotalSize(ctx context.Context) (int64, error) {
 			lastErr = err
 			continue
 		}
+		if encoding := resp.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+			_ = resp.Body.Close()
+			lastErr = fmt.Errorf("探测响应使用了不支持的内容编码")
+			continue
+		}
 
 		// 处理 206 Partial Content：必须严格依赖 Content-Range 头计算文件总大小，严禁读取仅代表分片大小的 Content-Length
 		if resp.StatusCode == http.StatusPartialContent {
@@ -211,7 +223,7 @@ func (s *StreamDownloader) GetTotalSize(ctx context.Context) (int64, error) {
 			first, last, total, pErr := parseContentRange(cr)
 			if pErr == nil && first == 0 && last == 0 && total > 0 && (resp.ContentLength < 0 || resp.ContentLength == 1) {
 				_ = resp.Body.Close()
-				s.probeETag, s.probeModified = resp.Header.Get("ETag"), resp.Header.Get("Last-Modified")
+				s.rememberProbeValidators(resp)
 				s.setTotalSize(total)
 				s.preferProbeURL(i)
 				return total, nil
@@ -234,7 +246,7 @@ func (s *StreamDownloader) GetTotalSize(ctx context.Context) (int64, error) {
 			}
 			if resp.ContentLength > 0 {
 				_ = resp.Body.Close()
-				s.probeETag, s.probeModified = resp.Header.Get("ETag"), resp.Header.Get("Last-Modified")
+				s.rememberProbeValidators(resp)
 				s.setTotalSize(resp.ContentLength)
 				s.preferProbeURL(i)
 				return resp.ContentLength, nil
@@ -253,6 +265,14 @@ func (s *StreamDownloader) GetTotalSize(ctx context.Context) (int64, error) {
 		return 0, lastErr
 	}
 	return 0, fmt.Errorf("无有效下载 URL")
+}
+
+func (s *StreamDownloader) rememberProbeValidators(resp *http.Response) {
+	s.probeETag, s.probeModified = resp.Header.Get("ETag"), resp.Header.Get("Last-Modified")
+	s.probeValidatorKey = ""
+	if resp.Request != nil {
+		s.probeValidatorKey = mediaValidatorKey(resp.Request.URL.String())
+	}
 }
 
 func (s *StreamDownloader) preferProbeURL(index int) {

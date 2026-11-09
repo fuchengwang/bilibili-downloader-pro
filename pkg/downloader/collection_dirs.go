@@ -42,8 +42,14 @@ func (m *DownloadManager) collectionDir(parent, identity, name string, levels in
 	}
 	registry := m.directoryRegistry
 	key := pathKey(parent) + "|" + identity
+	claimed := make(map[string]bool)
+	for other, path := range registry {
+		if other != key {
+			claimed[storagePathKey(path)] = true
+		}
+	}
 	if path, ok := registry[key]; ok {
-		if filepath.Dir(pathKey(path)) == pathKey(parent) {
+		if filepath.Dir(pathKey(path)) == pathKey(parent) && !claimed[storagePathKey(path)] {
 			if err := os.MkdirAll(path, 0755); err != nil {
 				return "", err
 			}
@@ -76,14 +82,7 @@ func (m *DownloadManager) collectionDir(parent, identity, name string, levels in
 		if filepath.Dir(pathKey(path)) != pathKey(parent) {
 			continue
 		}
-		claimed := false
-		for other, registered := range registry {
-			if other != key && pathKey(registered) == pathKey(path) {
-				claimed = true
-				break
-			}
-		}
-		if claimed {
+		if claimed[storagePathKey(path)] {
 			continue
 		}
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
@@ -114,6 +113,10 @@ func (m *DownloadManager) collectionDir(parent, identity, name string, levels in
 			candidate = fmt.Sprintf("%s (%d)", name, i+1)
 		}
 		path := filepath.Join(parent, candidate)
+		// Empty folders may have been removed without releasing their identity.
+		if claimed[storagePathKey(path)] {
+			continue
+		}
 		if err := os.Mkdir(path, 0755); err != nil {
 			if os.IsExist(err) {
 				continue

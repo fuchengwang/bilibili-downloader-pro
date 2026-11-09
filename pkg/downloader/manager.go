@@ -40,6 +40,7 @@ type DownloadManager struct {
 	saveMu            sync.Mutex
 	tasks             []*DownloadTask
 	workers           map[string]workerHandle
+	retiringPaths     map[string]int // reserved until background storage cleanup finishes
 	callback          ProgressCallback
 	biliClient        *bilibili.Client
 	cfgMgr            *config.ConfigManager
@@ -307,84 +308,24 @@ func (m *DownloadManager) RemoveCompletedRecords(candidates map[string]string) (
 
 // DeleteTask 从列表中彻底删除任务
 func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
-	m.mu.Lock()
-	var workerDone <-chan struct{}
-	if w, ok := m.workers[id]; ok {
-		workerDone = w.done
-		if w.cancel != nil {
-			w.cancel()
-		}
-		w.invalidated = true
-		m.workers[id] = w
+	cleanup, err := m.removeTasksForCleanup(func(task *DownloadTask) bool { return task.ID == id }, deleteFile)
+	if err != nil || len(cleanup) == 0 {
+		return err
 	}
-
-	var newTasks []*DownloadTask
-	var target *DownloadTask
-	var cleanupTask DownloadTask
-	targetIndex := -1
-	for i, t := range m.tasks {
-		if t.ID == id {
-			target = t
-			cleanupTask = *t
-			targetIndex = i
-		} else {
-			newTasks = append(newTasks, t)
-		}
-	}
-	m.tasks = newTasks
-	m.mu.Unlock()
-
-	if target != nil {
-		persistErr := m.SaveTasks()
-		if persistErr != nil {
-			// 持久化失败时恢复内存中的任务，避免前端已经看到错误但当前进程
-			// 却把任务删掉；文件清理也必须延后到持久化成功之后。
-			m.mu.Lock()
-			present := false
-			for _, existing := range m.tasks {
-				if existing != nil && existing.ID == target.ID {
-					present = true
-					break
-				}
-			}
-			if !present {
-				idx := targetIndex
-				if idx < 0 || idx > len(m.tasks) {
-					idx = len(m.tasks)
-				}
-				m.tasks = append(m.tasks, nil)
-				copy(m.tasks[idx+1:], m.tasks[idx:])
-				m.tasks[idx] = target
-			}
-			if target.Status == StatusDownloading || target.Status == StatusMerging {
-				target.Status = StatusPaused
-				target.Speed = 0
-				target.SpeedStr = "0 KB/s"
-				target.ETAStr = "--"
-			}
-			m.mu.Unlock()
-			return persistErr
-		}
-
-		// 异步安全清理临时文件，带指数退避重试确保 Windows 句柄释放后成功清理 (杜绝 EACCES 权限泄漏)
-		go func(task DownloadTask) {
-			if workerDone != nil {
-				<-workerDone
-			}
-			cleanupStreamArtifacts(task.VideoTmpPath)
-			cleanupStreamArtifacts(task.AudioTmpPath)
-			if deleteFile && task.OutputPath != "" {
-				safeRemoveWithRetry(task.OutputPath)
-			}
-			// Removing an unfinished task discards its temporary files. Clean
-			// up its collection too, while preserving history-only deletions.
+	go func() {
+		var directories []*DownloadTask
+		for i := range cleanup {
+			task := &cleanup[i]
+			m.cleanReservedTaskFiles(task)
 			if deleteFile || task.Status != StatusCompleted {
-				m.cleanupEmptyCollectionDirs([]*DownloadTask{&task})
+				directories = append(directories, &task.DownloadTask)
 			}
-		}(cleanupTask)
-		m.triggerSchedule()
-		return persistErr
-	}
+		}
+		if len(directories) > 0 {
+			m.cleanupEmptyCollectionDirs(directories)
+		}
+	}()
+	m.triggerSchedule()
 	return nil
 }
 
@@ -427,80 +368,24 @@ func (m *DownloadManager) ResumeAll() error { return m.resumeTasks("", true) }
 
 // ClearCompleted 清理已完成的任务列表记录 (可选择是否同时删除本地文件)
 func (m *DownloadManager) ClearCompleted(deleteFiles ...bool) error {
-	deleteFile := false
-	if len(deleteFiles) > 0 {
-		deleteFile = deleteFiles[0]
+	deleteFile := len(deleteFiles) > 0 && deleteFiles[0]
+	cleanup, err := m.removeTasksForCleanup(func(task *DownloadTask) bool {
+		return task.Status == StatusCompleted || task.Status == StatusCancelled
+	}, deleteFile)
+	if err != nil || len(cleanup) == 0 {
+		return err
 	}
-
-	m.mu.Lock()
-	var remaining []*DownloadTask
-	var removed []*DownloadTask
-	workerDone := make(map[string]<-chan struct{})
-	for _, t := range m.tasks {
-		if t == nil {
-			continue
-		}
-		if t.Status != StatusCompleted && t.Status != StatusCancelled {
-			remaining = append(remaining, t)
-		} else {
-			removed = append(removed, t)
-			if w, ok := m.workers[t.ID]; ok {
-				workerDone[t.ID] = w.done
-				if w.cancel != nil {
-					w.cancel()
-				}
-				w.invalidated = true
-				m.workers[t.ID] = w
-			}
+	var directories []*DownloadTask
+	for i := range cleanup {
+		task := &cleanup[i]
+		m.cleanReservedTaskFiles(task)
+		if deleteFile {
+			directories = append(directories, &task.DownloadTask)
 		}
 	}
-	m.tasks = remaining
-	m.mu.Unlock()
-
-	// 文件删除必须在任务列表成功落盘后进行；否则持久化失败时重启会
-	// 重新加载指向已被删除文件的“已完成”记录，造成不可逆的数据丢失。
-	persistErr := m.SaveTasks()
-	if persistErr != nil {
-		m.mu.Lock()
-		for _, removedTask := range removed {
-			present := false
-			for _, existing := range m.tasks {
-				if existing != nil && existing.ID == removedTask.ID {
-					present = true
-					break
-				}
-			}
-			if present {
-				continue
-			}
-			m.tasks = append([]*DownloadTask{removedTask}, m.tasks...)
-			if removedTask.Status == StatusDownloading || removedTask.Status == StatusMerging {
-				removedTask.Status = StatusPaused
-				removedTask.Speed = 0
-				removedTask.SpeedStr = "0 KB/s"
-				removedTask.ETAStr = "--"
-			}
-		}
-		m.mu.Unlock()
-		return persistErr
+	if len(directories) > 0 {
+		m.cleanupEmptyCollectionDirs(directories)
 	}
-
-	for _, t := range removed {
-		if done := workerDone[t.ID]; done != nil {
-			<-done
-		}
-		cleanupStreamArtifacts(t.VideoTmpPath)
-		cleanupStreamArtifacts(t.AudioTmpPath)
-	}
-	if deleteFile {
-		for _, t := range removed {
-			if t.OutputPath != "" {
-				safeRemoveWithRetry(t.OutputPath)
-			}
-		}
-		m.cleanupEmptyCollectionDirs(removed)
-	}
-
 	return nil
 }
 
@@ -724,6 +609,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		factory = NewStreamDownloader
 	}
 	vDownloader := factory(sel.VideoURLs, task.VideoTmpPath)
+	vDownloader.representation = mediaRepresentationKey(sel.VideoURLs)
 	vDownloader.sizeHint = sel.VideoSize
 	vDownloader.skipSizeProbe = true
 	vDownloader.bandwidth = m.bandwidth
@@ -737,6 +623,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	var aDownloader *StreamDownloader
 	if len(filterStreamURLs(sel.AudioURLs)) > 0 {
 		aDownloader = factory(sel.AudioURLs, task.AudioTmpPath)
+		aDownloader.representation = mediaRepresentationKey(sel.AudioURLs)
 		aDownloader.sizeHint = sel.AudioSize
 		aDownloader.skipSizeProbe = true
 		aDownloader.bandwidth = m.bandwidth

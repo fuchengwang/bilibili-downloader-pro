@@ -66,7 +66,20 @@ func (s *StreamDownloader) downloadCore(ctx context.Context, threads int, progre
 	}
 	threads = max(1, min(threads, 8))
 	initial := resumableStreamSize(s.targetPath)
-	if s.totalSize <= 0 && s.sizeHint <= 0 && !s.probed && !s.skipSizeProbe {
+	record, recordErr := readRangeRecord(s.targetPath)
+	if recordErr == nil && initial > 0 && !s.representationChanged(record) &&
+		(initial == record.Total || s.representation != "" && record.Representation == "") {
+		release, err := s.connections.acquire(ctx)
+		if err != nil {
+			return err
+		}
+		_, err = s.probeTotalSize(ctx)
+		release()
+		if err != nil {
+			// A temporary connection failure is not evidence of different media.
+			return fmt.Errorf("暂时无法校验下载断点，已保留缓存: %w", err)
+		}
+	} else if s.totalSize <= 0 && s.sizeHint <= 0 && !s.probed && !s.skipSizeProbe {
 		_, _ = s.GetTotalSize(ctx)
 	}
 	if err := ctx.Err(); err != nil {
@@ -102,7 +115,7 @@ func (s *StreamDownloader) downloadCore(ctx context.Context, threads int, progre
 			// Persist the zero progress marker BEFORE truncating a sparse file.
 			// A crash between these operations can only repeat bytes, never skip.
 			if s.totalSize > 0 {
-				if saveErr := writeRangeRecord(s.targetPath, rangeRecord{Version: 1, Total: s.totalSize, Ranges: []byteRange{{End: s.totalSize}}}); saveErr != nil {
+				if saveErr := writeRangeRecord(s.targetPath, rangeRecord{Version: 1, Total: s.totalSize, Representation: s.representation, Ranges: []byteRange{{End: s.totalSize}}}); saveErr != nil {
 					return saveErr
 				}
 			}
@@ -147,15 +160,23 @@ func (s *StreamDownloader) prepareTransfer(pool *sourcePool, threads int, sequen
 	}
 	reset := hasRecord && recordErr != nil
 	if recordErr == nil {
-		reset = (s.totalSize > 0 && r.Total != s.totalSize) || validatorChanged(r.ETag, r.LastModified, s.probeETag, s.probeModified)
-		if !reset {
-			e.total = r.Total
-			e.etag = r.ETag
-			e.modified = r.LastModified
-			e.validatorKey = r.ValidatorKey
-			for _, b := range r.Ranges {
-				e.ranges = append(e.ranges, &byteRange{Start: b.Start, Position: b.Position, End: b.End})
-			}
+		sameSource := r.ValidatorKey == "" || r.ValidatorKey == s.probeValidatorKey
+		reset = s.representationChanged(r) || (s.totalSize > 0 && r.Total != s.totalSize) ||
+			(sameSource && validatorChanged(r.ETag, r.LastModified, s.probeETag, s.probeModified))
+		if r.received() == r.Total || (r.received() > 0 && s.representation != "" && r.Representation == "") {
+			reset = reset || !s.confirmsCachedEntity(r)
+		}
+	} else if s.representation != "" {
+		// Legacy raw prefixes have neither a track identity nor an HTTP validator.
+		reset = true
+	}
+	if recordErr == nil && !reset {
+		e.total = r.Total
+		e.etag = r.ETag
+		e.modified = r.LastModified
+		e.validatorKey = r.ValidatorKey
+		for _, b := range r.Ranges {
+			e.ranges = append(e.ranges, &byteRange{Start: b.Start, Position: b.Position, End: b.End})
 		}
 	}
 	file, err := os.OpenFile(s.targetPath, os.O_CREATE|os.O_RDWR, 0644)
@@ -170,7 +191,8 @@ func (s *StreamDownloader) prepareTransfer(pool *sourcePool, threads int, sequen
 			return nil, err
 		}
 		prefix := info.Size()
-		if reset || (e.total > 0 && prefix > e.total) {
+		// A legacy contiguous prefix has no durable proof of completion.
+		if reset || (e.total > 0 && prefix >= e.total) {
 			prefix = 0
 		}
 		end := e.total
@@ -180,6 +202,7 @@ func (s *StreamDownloader) prepareTransfer(pool *sourcePool, threads int, sequen
 		e.ranges = []*byteRange{{Position: prefix, End: end}}
 		e.etag = s.probeETag
 		e.modified = s.probeModified
+		e.validatorKey = s.probeValidatorKey
 		if e.total > 0 {
 			// From here on the manifest, rather than file length, owns progress.
 			if err := e.checkpoint(); err != nil {
@@ -202,6 +225,18 @@ func (s *StreamDownloader) prepareTransfer(pool *sourcePool, threads int, sequen
 		s.setTotalSize(e.total)
 	}
 	return e, nil
+}
+
+func (s *StreamDownloader) representationChanged(r rangeRecord) bool {
+	return r.Representation != "" && s.representation != "" && r.Representation != s.representation
+}
+
+func (s *StreamDownloader) confirmsCachedEntity(r rangeRecord) bool {
+	// Length alone (or a weak validator) cannot prove equal bytes. ETags
+	// are only comparable for the resource which issued them.
+	tag := r.ETag
+	return r.Total == s.totalSize && r.ValidatorKey != "" && r.ValidatorKey == s.probeValidatorKey &&
+		len(tag) >= 2 && tag[0] == '"' && tag[len(tag)-1] == '"' && tag == s.probeETag
 }
 
 func validatorChanged(oldTag, oldDate, newTag, newDate string) bool {
@@ -239,7 +274,7 @@ func (e *rangeTransfer) checkpoint() error {
 	if err := e.file.Sync(); err != nil {
 		return fmt.Errorf("保存媒体数据失败: %w", err)
 	}
-	r := rangeRecord{Version: 1, Total: e.total, ETag: e.etag, LastModified: e.modified, ValidatorKey: e.validatorKey}
+	r := rangeRecord{Version: 1, Total: e.total, ETag: e.etag, LastModified: e.modified, ValidatorKey: e.validatorKey, Representation: e.s.representation}
 	for _, b := range e.ranges {
 		r.Ranges = append(r.Ranges, byteRange{Start: b.Start, Position: b.Position, End: b.End})
 	}
@@ -488,6 +523,11 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 			if status == 416 {
 				return errEntityChanged
 			}
+			if status == http.StatusNotFound {
+				e.pool.notFound(url)
+				failures++
+				continue
+			}
 			if status == 429 || status == 503 {
 				e.pool.failed(url, retryAfter(resp.Header))
 			} else {
@@ -498,7 +538,7 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 					e.s.recordDiagnostic(err)
 				}
 			}
-			if status == 400 || status == 404 || status == 405 || status == 451 {
+			if status == 400 || status == 405 || status == 451 {
 				return last
 			}
 			failures++
@@ -566,7 +606,6 @@ func mediaValidatorKey(raw string) string {
 
 func (e *rangeTransfer) acceptResponse(resp *http.Response, b *byteRange, start int64, ranged bool) error {
 	e.mu.Lock()
-	expectedTotal := e.total
 	key := ""
 	if resp.Request != nil {
 		key = mediaValidatorKey(resp.Request.URL.String())
@@ -584,7 +623,7 @@ func (e *rangeTransfer) acceptResponse(resp *http.Response, b *byteRange, start 
 	canRange := strings.EqualFold(resp.Header.Get("Accept-Ranges"), "bytes")
 	if resp.StatusCode == 206 {
 		first, last, size, err := parseContentRange(resp.Header.Get("Content-Range"))
-		if err != nil || first != start || size <= 0 || last < first || (expectedTotal > 0 && last >= expectedTotal) || (resp.ContentLength >= 0 && resp.ContentLength != last-first+1) {
+		if err != nil || first != start || size <= 0 || last < first || (resp.ContentLength >= 0 && resp.ContentLength != last-first+1) {
 			return errRangeUnsupported
 		}
 		total = size
@@ -597,8 +636,7 @@ func (e *rangeTransfer) acceptResponse(resp *http.Response, b *byteRange, start 
 		if total > 0 {
 			e.s.setTotalSize(total)
 		}
-		e.s.probeETag = resp.Header.Get("ETag")
-		e.s.probeModified = resp.Header.Get("Last-Modified")
+		e.s.rememberProbeValidators(resp)
 		e.mu.Unlock()
 		return errEntityChanged
 	}

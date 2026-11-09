@@ -33,6 +33,9 @@ func TestRepeatedDownloadReusesTaskAndInProgressFiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if err := m.relocateTaskStreams(context.Background(), first); err != nil {
+				t.Fatal(err)
+			}
 			video, audio := downloadPaths(first.OutputPath)
 			if first.VideoTmpPath != video || first.AudioTmpPath != audio || filepath.Dir(video) != m.cfgMgr.Get().DownloadDir {
 				t.Fatalf("in-progress tracks must be next to output: %s %s", first.VideoTmpPath, first.AudioTmpPath)
@@ -77,6 +80,169 @@ func TestOutputPathReservationPreservesExistingFilesAndTasks(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if string(data) != "keep original" {
 		t.Fatal("existing file changed")
+	}
+}
+
+func TestDeletingQueuedSameNameTaskPreservesVisibleDownload(t *testing.T) {
+	m := newTestManager(t)
+	req := &DownloadRequest{Title: "same title [1080P]", TargetQuality: "80"}
+	first, err := m.AddDownloadTask(req, &bilibili.EpisodeInfo{CID: 1, Title: req.Title})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.relocateTaskStreams(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	writeStorageFixture(t, first.VideoTmpPath, []byte("first task"))
+	if err := ensureRangeMarker(first.VideoTmpPath); err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.AddDownloadTask(req, &bilibili.EpisodeInfo{CID: 2, Title: req.Title})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.OutputPath != second.OutputPath || first.VideoTmpPath == second.VideoTmpPath {
+		t.Fatal("queued task claimed the first task's visible temporary path")
+	}
+	writeStorageFixture(t, second.VideoTmpPath, []byte("second task"))
+	if err := m.DeleteTask(second.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	waitCollectionCleanup(t, func() bool { return pathIsGone(second.VideoTmpPath) })
+	assertMediaBytes(t, first.VideoTmpPath, []byte("first task"))
+	if pathIsGone(rangeMarkerPath(first.VideoTmpPath)) {
+		t.Fatal("the first task's range marker was deleted")
+	}
+}
+
+func TestDeletedWorkerKeepsOutputReservedUntilCleanup(t *testing.T) {
+	m := newTestManager(t)
+	req := &DownloadRequest{Title: "same title"}
+	task, err := m.AddDownloadTask(req, &bilibili.EpisodeInfo{CID: 1, Title: req.Title})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	m.workers[task.ID] = workerHandle{done: done}
+	task.Status = StatusDownloading
+	if err := m.DeleteTask(task.ID, false); err != nil {
+		close(done)
+		t.Fatal(err)
+	}
+	reserve := func() string {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		path, err := m.availableOutputPathLocked(task.OutputPath, "replacement")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	reserved := reserve()
+	close(done)
+	if reserved == task.OutputPath {
+		t.Fatal("new worker could reuse a path still owned by a deleted worker")
+	}
+	waitCollectionCleanup(t, func() bool { return reserve() == task.OutputPath })
+}
+
+func TestDeletePersistenceFailureDoesNotCancelActiveWorker(t *testing.T) {
+	m := newTestManager(t)
+	req := &DownloadRequest{Title: "active"}
+	task, err := m.AddDownloadTask(req, &bilibili.EpisodeInfo{CID: 1, Title: req.Title})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.Status = StatusDownloading
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.workers[task.ID] = workerHandle{cancel: cancel}
+	tasksPath := m.cfgMgr.GetTasksPath()
+	if err := os.Remove(tasksPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(tasksPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.DeleteTask(task.ID, false); err == nil {
+		t.Fatal("deletion succeeded without a durable task snapshot")
+	}
+	if ctx.Err() != nil || m.workers[task.ID].invalidated || len(m.GetTasks()) != 1 || task.Status != StatusDownloading {
+		t.Fatal("failed deletion changed a running task")
+	}
+}
+
+func TestStorageRecoveryDetachesSharedLegacyTracks(t *testing.T) {
+	m := newTestManager(t)
+	output := filepath.Join(m.cfgMgr.Get().DownloadDir, "shared.mp4")
+	video, _ := downloadPaths(output)
+	writeStorageFixture(t, video, []byte("ownership unknown"))
+	if err := ensureRangeMarker(video); err != nil {
+		t.Fatal(err)
+	}
+	_, uniqueAudio := m.cachePaths(newUUID())
+	writeStorageFixture(t, uniqueAudio, []byte("ownership known"))
+	m.tasks = []*DownloadTask{
+		{ID: "first", OutputPath: output, Status: StatusPaused, VideoTmpPath: video, AudioTmpPath: uniqueAudio},
+		{ID: "second", OutputPath: output, Status: StatusPaused, VideoTmpPath: video},
+	}
+	if err := m.SaveTasks(); err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewDownloadManager(m.cfgMgr)
+	tasks := restarted.GetTasks()
+	if len(tasks) != 2 || tasks[0].VideoTmpPath != "" || tasks[1].VideoTmpPath != "" || tasks[0].AudioTmpPath != uniqueAudio {
+		t.Fatalf("shared and exclusive tracks were not distinguished: %+v", tasks)
+	}
+	reserved, err := restarted.availableOutputPathLocked(output, "second")
+	if err != nil || reserved == output {
+		t.Fatalf("unclaimed file may be reused: %q %v", reserved, err)
+	}
+	assertMediaBytes(t, video, []byte("ownership unknown"))
+	assertMediaBytes(t, uniqueAudio, []byte("ownership known"))
+}
+
+func TestClearCompletedPreservesUnownedCancelledOutput(t *testing.T) {
+	m := newTestManager(t)
+	req := &DownloadRequest{Title: "existing"}
+	task, err := m.AddDownloadTask(req, &bilibili.EpisodeInfo{CID: 1, Title: req.Title})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeStorageFixture(t, task.OutputPath, []byte("user file"))
+	if err := m.CancelTask(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ClearCompleted(true); err != nil {
+		t.Fatal(err)
+	}
+	assertMediaBytes(t, task.OutputPath, []byte("user file"))
+}
+
+func TestClearCompletedDeletesOwnedFileWithSameNameQueuedTask(t *testing.T) {
+	m := newTestManager(t)
+	req := &DownloadRequest{Title: "same title"}
+	add := func(cid int64) *DownloadTask {
+		t.Helper()
+		task, err := m.AddDownloadTask(req, &bilibili.EpisodeInfo{CID: cid, Title: req.Title})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	completed := add(1)
+	completed.Status = StatusCompleted
+	writeStorageFixture(t, completed.OutputPath, []byte("finished media"))
+	cancelled := add(2)
+	if err := m.CancelTask(cancelled.ID); err != nil {
+		t.Fatal(err)
+	}
+	queued := add(3)
+	if err := m.ClearCompleted(true); err != nil {
+		t.Fatal(err)
+	}
+	if !pathIsGone(completed.OutputPath) || len(m.GetTasks()) != 1 || m.GetTasks()[0].ID != queued.ID {
+		t.Fatal("proposed filenames interfered with deleting the completed file")
 	}
 }
 
@@ -212,7 +378,7 @@ func TestCacheCleanupPreservesPendingTasksAndUnrelatedFiles(t *testing.T) {
 	unrelated := filepath.Join(m.cfgMgr.GetDownloadCacheDir(), "personal", "notes.txt")
 	writeStorageFixture(t, unrelated, []byte("notes"))
 	m.tasks = []*DownloadTask{{ID: "pending", Status: StatusPaused, VideoTmpPath: video, AudioTmpPath: audio}}
-	m.cleanupCacheOrphans()
+	m.cleanupCacheOrphans(nil)
 	for _, path := range []string{streamSegmentPath(video, 0), unrelated} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("protected file deleted: %s", path)

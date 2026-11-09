@@ -22,12 +22,13 @@ type byteRange struct {
 }
 
 type rangeRecord struct {
-	Version      int         `json:"version"`
-	Total        int64       `json:"total"`
-	ETag         string      `json:"etag,omitempty"`
-	LastModified string      `json:"lastModified,omitempty"`
-	ValidatorKey string      `json:"validatorKey,omitempty"` // hash of origin/path, never a signed URL
-	Ranges       []byteRange `json:"ranges"`
+	Version        int         `json:"version"`
+	Total          int64       `json:"total"`
+	ETag           string      `json:"etag,omitempty"`
+	LastModified   string      `json:"lastModified,omitempty"`
+	ValidatorKey   string      `json:"validatorKey,omitempty"`   // hash of origin/path, never a signed URL
+	Representation string      `json:"representation,omitempty"` // hash of the selected track's media path
+	Ranges         []byteRange `json:"ranges"`
 }
 
 func rangeSidecarPath(path, suffix string) string {
@@ -92,6 +93,9 @@ func readRangeRecord(path string) (rangeRecord, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return r, fmt.Errorf("下载目标不是普通文件")
+	}
+	if info.Size() > r.Total {
+		return r, fmt.Errorf("下载文件大于进度记录的总长度")
 	}
 	for _, b := range r.Ranges {
 		if b.Position > b.Start && b.Position > info.Size() {

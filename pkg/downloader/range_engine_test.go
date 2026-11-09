@@ -375,6 +375,145 @@ func TestRangeEngineChangedETagRestartsSameSizeFile(t *testing.T) {
 	}
 }
 
+func TestRangeEngineValidatesCompletedTrackBeforeReuse(t *testing.T) {
+	for _, mode := range []string{"unchanged", "changed", "weak", "missing", "offline"} {
+		t.Run(mode, func(t *testing.T) {
+			old, fresh := []byte("old track"), []byte("new track")
+			var resumed atomic.Bool
+			var probes, transfers atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				data, tag := old, `"old"`
+				if resumed.Load() {
+					if r.Header.Get("Range") == "bytes=0-0" {
+						probes.Add(1)
+					} else {
+						transfers.Add(1)
+					}
+					switch mode {
+					case "changed":
+						data, tag = fresh, `"new"`
+					case "weak", "missing":
+						data = fresh
+					case "offline":
+						w.WriteHeader(http.StatusServiceUnavailable)
+						return
+					}
+				}
+				switch mode {
+				case "weak":
+					w.Header().Set("ETag", `W/"old"`)
+				case "missing":
+				default:
+					w.Header().Set("ETag", tag)
+				}
+				http.ServeContent(w, r, "media", time.Time{}, bytes.NewReader(data))
+			}))
+			defer server.Close()
+
+			path := filepath.Join(t.TempDir(), "media")
+			start := func(query string) error {
+				urls := []string{server.URL + "/media?" + query}
+				s := NewStreamDownloader(urls, path)
+				s.representation = mediaRepresentationKey(urls)
+				s.skipSizeProbe = true
+				return s.DownloadWithConcurrency(context.Background(), 2, nil)
+			}
+			if err := start("signature=first"); err != nil {
+				t.Fatal(err)
+			}
+			resumed.Store(true)
+			err := start("signature=second")
+			if probes.Load() != 1 {
+				t.Fatalf("expected one verification request, got %d", probes.Load())
+			}
+			if mode == "offline" {
+				if err == nil || transfers.Load() != 0 {
+					t.Fatalf("probe failure must preserve the completed checkpoint: %v", err)
+				}
+				record, recordErr := readRangeRecord(path)
+				if recordErr != nil || record.received() != int64(len(old)) {
+					t.Fatalf("probe failure changed checkpoint: %v %+v", recordErr, record)
+				}
+				assertMediaBytes(t, path, old)
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "unchanged" {
+				if transfers.Load() != 0 {
+					t.Fatal("matching strong validator should avoid downloading the same bytes")
+				}
+				assertMediaBytes(t, path, old)
+			} else {
+				if transfers.Load() == 0 {
+					t.Fatal("unverified media was treated as completed")
+				}
+				assertMediaBytes(t, path, fresh)
+			}
+		})
+	}
+}
+
+func TestRangeEngineChangedTrackPathDiscardsPartialBytes(t *testing.T) {
+	old, fresh := []byte("old track"), []byte("new track")
+	path := filepath.Join(t.TempDir(), "media")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "media", time.Time{}, bytes.NewReader(fresh))
+	}))
+	defer server.Close()
+	writeStorageFixture(t, path, old[:4])
+	if err := writeRangeRecord(path, rangeRecord{Version: 1, Total: int64(len(old)),
+		Representation: mediaRepresentationKey([]string{server.URL + "/old"}),
+		Ranges:         []byteRange{{Position: 4, End: int64(len(old))}}}); err != nil {
+		t.Fatal(err)
+	}
+	urls := []string{server.URL + "/new"}
+	s := NewStreamDownloader(urls, path)
+	s.representation, s.skipSizeProbe = mediaRepresentationKey(urls), true
+	if err := s.DownloadWithConcurrency(context.Background(), 2, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertMediaBytes(t, path, fresh)
+}
+
+func TestRangeEngine404TriesRemainingSourcesAndStopsWhenExhausted(t *testing.T) {
+	for _, backupAvailable := range []bool{true, false} {
+		t.Run(strconv.FormatBool(backupAvailable), func(t *testing.T) {
+			data := []byte("media")
+			var primary, backup atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/primary" {
+					primary.Add(1)
+					http.NotFound(w, r)
+					return
+				}
+				backup.Add(1)
+				if !backupAvailable {
+					http.NotFound(w, r)
+					return
+				}
+				http.ServeContent(w, r, "media", time.Time{}, bytes.NewReader(data))
+			}))
+			defer server.Close()
+			s := NewStreamDownloader([]string{server.URL + "/primary", server.URL + "/backup"}, filepath.Join(t.TempDir(), "media"))
+			s.skipSizeProbe = true
+			err := s.DownloadWithConcurrency(context.Background(), 4, nil)
+			if primary.Load() != 1 || backup.Load() != 1 {
+				t.Fatalf("incorrect 404 fallback: primary=%d backup=%d error=%v", primary.Load(), backup.Load(), err)
+			}
+			if backupAvailable {
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertMediaBytes(t, s.targetPath, data)
+			} else if err == nil || !strings.Contains(err.Error(), "404") {
+				t.Fatalf("missing source error: %v", err)
+			}
+		})
+	}
+}
+
 func TestRangeEngineMissingRecordCannotCompleteSparseFile(t *testing.T) {
 	data := engineData(256 * 1024)
 	path := filepath.Join(t.TempDir(), "media")
@@ -588,6 +727,29 @@ func TestPlaybackRefreshRejectsRepresentationChange(t *testing.T) {
 	})
 	if _, err := refresh(context.Background()); err == nil {
 		t.Fatal("mixed media representations could be resumed")
+	}
+}
+
+func TestPlaybackRefreshAcceptsNewSignatureButRejectsDifferentAudio(t *testing.T) {
+	original := &bilibili.StreamSelection{
+		QualityID: 80, Codec: "AVC",
+		VideoURLs: []string{"https://cdn.example/video.m4s?token=old"},
+		AudioURLs: []string{"https://cdn.example/audio.m4s?token=old"},
+	}
+	fresh := *original
+	fresh.VideoURLs = []string{"https://backup.example/video.m4s?token=new"}
+	fresh.AudioURLs = []string{"https://backup.example/audio.m4s?token=new"}
+	try := func() error {
+		refresh := playbackRefresher(original, func(context.Context) (*bilibili.StreamSelection, error) { return &fresh, nil })
+		_, err := refresh(context.Background())
+		return err
+	}
+	if err := try(); err != nil {
+		t.Fatal(err)
+	}
+	fresh.AudioURLs = []string{"https://backup.example/other-audio.m4s?token=new"}
+	if err := try(); err == nil {
+		t.Fatal("audio track changed without changing the video quality or codec")
 	}
 }
 

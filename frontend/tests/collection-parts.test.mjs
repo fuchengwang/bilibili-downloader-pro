@@ -97,6 +97,45 @@ test('clearing one video leaves selections from other videos intact', () => {
   assert.deepEqual(Object.keys(messages.at(-1)[1]), ['999'])
 })
 
+test('range selection waits for playback checks without losing the input or existing picks', () => {
+  let checking = true
+  const { run, messages } = harness('CollectionPartsPanel', {
+    video: video(3),
+    selection: { 999: true },
+    canSelect: cid => cid === 100 || !checking,
+    accessFor: () => ({ state: checking ? 'checking' : 'available' }),
+  })
+  run("range.value = '1-3'; applyRange()")
+  assert.equal(messages.length, 0)
+  assert.equal(run('range.value'), '1-3')
+  assert.match(run('rangeError.value'), /P2.*正在检查/)
+
+  checking = false
+  run('applyRange()')
+  assert.deepEqual(Object.keys(messages.at(-1)[1]), ['100', '101', '102', '999'])
+  assert.equal(run('range.value'), '')
+  assert.equal(run('rangeError.value'), '')
+})
+
+test('range selection explains a blocked or missing part and avoids partial selection', () => {
+  const blocked = harness('CollectionPartsPanel', {
+    video: video(3),
+    selection: {},
+    canSelect: cid => cid !== 101,
+    accessFor: () => ({ state: 'blocked', reason: '需要大会员' }),
+  })
+  blocked.run("range.value = '1-3'; applyRange()")
+  assert.equal(blocked.messages.length, 0)
+  assert.match(blocked.run('rangeError.value'), /P2.*需要大会员/)
+
+  const sparse = video(4)
+  sparse.parts.splice(1, 1)
+  const missing = harness('CollectionPartsPanel', { video: sparse, selection: {} })
+  missing.run("range.value = '1-3'; applyRange()")
+  assert.equal(missing.messages.length, 0)
+  assert.match(missing.run('rangeError.value'), /缺少 P2/)
+})
+
 test('collection-level selection includes all nested parts in the submitted request', async () => {
   const first = video(100), second = { ...video(2), bvid: 'BVsecond', index: 2, parts: [{ cid: 900, page: 1, index: 2, title: 'A' }, { cid: 901, page: 2, index: 2, title: 'B' }] }
   const groups = { BVfirst: first, BVsecond: second }

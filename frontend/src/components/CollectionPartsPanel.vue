@@ -62,9 +62,26 @@ function applyRange() {
       rangeError.value = '范围超出当前视频的分 P 序号，请检查后重试'
       return
     }
-    for (let i = start; i <= end; i++) if (pages.has(i)) requested.add(i)
+    for (let i = start; i <= end; i++) {
+      if (!pages.has(i)) {
+        rangeError.value = `当前视频缺少 P${i}，请调整范围`
+        return
+      }
+      requested.add(i)
+    }
   }
-  emit('select', selectEpisodes(props.selection, props.video.parts.filter(p => requested.has(p.page) && props.canSelect(p.cid))))
+  const parts = props.video.parts.filter(p => requested.has(p.page))
+  const unavailable = parts.filter(p => !props.canSelect(p.cid))
+  if (unavailable.length) {
+    const first = unavailable[0]
+    const access = props.accessFor(first.cid)
+    const label = unavailable.length === 1 ? `P${first.page}` : `P${first.page} 等 ${unavailable.length} 个分 P`
+    rangeError.value = access.state === 'checking'
+      ? `${label} 正在检查观看权限，请稍后重试`
+      : `${label} 暂不可选。 ${access.reason || '请调整范围后重试'}`
+    return
+  }
+  emit('select', selectEpisodes(props.selection, parts))
   range.value = ''; rangeError.value = ''
 }
 </script>

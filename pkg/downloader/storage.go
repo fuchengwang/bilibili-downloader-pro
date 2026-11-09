@@ -37,7 +37,7 @@ func downloadPaths(output string) (string, string) {
 	return output + ".downloading", strings.TrimSuffix(output, ".mp4") + ".audio.downloading"
 }
 
-// Legacy cache locations are retained only for recovering older tasks.
+// Also supplies private paths for queued tasks before the output name is reserved.
 func (m *DownloadManager) cachePaths(id string) (string, string) {
 	// IDs from persisted data must never escape the cache root.
 	if !taskIDPattern.MatchString(id) {
@@ -45,6 +45,138 @@ func (m *DownloadManager) cachePaths(id string) (string, string) {
 	}
 	dir := filepath.Join(m.cfgMgr.GetDownloadCacheDir(), id)
 	return filepath.Join(dir, "video.downloading"), filepath.Join(dir, "audio.downloading")
+}
+
+func storagePathKey(path string) string {
+	// Default macOS volumes are case insensitive. Conservatively reserve case
+	// variants even on case-sensitive volumes.
+	if runtime.GOOS == "darwin" {
+		return strings.ToLower(pathKey(path))
+	}
+	return pathKey(path)
+}
+
+func (m *DownloadManager) holdStoragePathsLocked(paths ...string) {
+	if m.retiringPaths == nil {
+		m.retiringPaths = make(map[string]int)
+	}
+	for _, path := range paths {
+		if path != "" {
+			m.retiringPaths[storagePathKey(path)]++
+		}
+	}
+}
+
+func (m *DownloadManager) releaseStoragePaths(paths ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		key := storagePathKey(path)
+		if m.retiringPaths[key] > 1 {
+			m.retiringPaths[key]--
+		} else {
+			delete(m.retiringPaths, key)
+		}
+	}
+}
+
+// Reserve the paths we are going to remove before publishing the removal of
+// the task. They stay unavailable until its worker and filesystem cleanup end.
+type taskStorageCleanup struct {
+	DownloadTask
+	deleteOutput bool
+	workerDone   <-chan struct{}
+}
+
+func (m *DownloadManager) removeTasksForCleanup(match func(*DownloadTask) bool, deleteFile bool) ([]taskStorageCleanup, error) {
+	// Publish removal and reserve its paths in the same transaction. A failed
+	// save must leave the tasks and their active workers in place.
+	m.saveMu.Lock()
+	defer m.saveMu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	remaining := make([]*DownloadTask, 0, len(m.tasks))
+	var removed []*DownloadTask
+	for _, task := range m.tasks {
+		if task == nil {
+			continue
+		}
+		if match(task) {
+			removed = append(removed, task)
+		} else {
+			remaining = append(remaining, task)
+		}
+	}
+	if len(removed) == 0 {
+		return nil, nil
+	}
+	if err := m.writeTaskSnapshot(remaining); err != nil {
+		return nil, err
+	}
+	m.tasks = remaining
+	occupied := make(map[string]bool)
+	for _, task := range remaining {
+		for _, path := range []string{task.VideoTmpPath, task.AudioTmpPath} {
+			if path != "" {
+				occupied[storagePathKey(path)] = true
+			}
+		}
+		// A proposed filename on a queued task is not ownership of a
+		// completed file left by another task.
+		if task.OutputPath != "" && (task.Status == StatusCompleted || task.Status == StatusMerging) {
+			occupied[storagePathKey(task.OutputPath)] = true
+		}
+	}
+	cleanup := make([]taskStorageCleanup, 0, len(removed))
+	for _, task := range removed {
+		plan := m.reserveTaskCleanupLocked(task, deleteFile, occupied)
+		if worker, ok := m.workers[task.ID]; ok {
+			plan.workerDone = worker.done
+			if worker.cancel != nil {
+				worker.cancel()
+			}
+			worker.invalidated = true
+			m.workers[task.ID] = worker
+		}
+		cleanup = append(cleanup, plan)
+	}
+	return cleanup, nil
+}
+
+func (m *DownloadManager) reserveTaskCleanupLocked(task *DownloadTask, deleteFile bool, occupied map[string]bool) taskStorageCleanup {
+	exclusive := func(path string) bool {
+		key := storagePathKey(path)
+		return path != "" && m.retiringPaths[key] == 0 && !occupied[key]
+	}
+	cleanup := taskStorageCleanup{
+		DownloadTask: *task,
+		deleteOutput: deleteFile && task.Status == StatusCompleted && task.OutputPath != "" && !occupied[storagePathKey(task.OutputPath)],
+	}
+	if !exclusive(task.VideoTmpPath) {
+		cleanup.VideoTmpPath = ""
+	}
+	if !exclusive(task.AudioTmpPath) {
+		cleanup.AudioTmpPath = ""
+	}
+	// Also reserve the output of a removed worker which may still be rolling
+	// back a migration into the output directory.
+	m.holdStoragePathsLocked(cleanup.VideoTmpPath, cleanup.AudioTmpPath, cleanup.OutputPath)
+	return cleanup
+}
+
+func (m *DownloadManager) cleanReservedTaskFiles(task *taskStorageCleanup) {
+	defer m.releaseStoragePaths(task.VideoTmpPath, task.AudioTmpPath, task.OutputPath)
+	if task.workerDone != nil {
+		<-task.workerDone
+	}
+	cleanupStreamArtifacts(task.VideoTmpPath)
+	cleanupStreamArtifacts(task.AudioTmpPath)
+	if task.deleteOutput {
+		safeRemoveWithRetry(task.OutputPath)
+	}
 }
 
 func cleanupStreamArtifacts(path string) {
@@ -70,42 +202,60 @@ func cleanupStreamArtifacts(path string) {
 func (m *DownloadManager) availableOutputPathLocked(path, taskID string) (string, error) {
 	dir := filepath.Dir(path)
 	base := strings.TrimSuffix(filepath.Base(path), ".mp4")
+	occupiedPaths := make(map[string]bool)
+	ownedStreams := make(map[string]bool, 2)
+	for key := range m.retiringPaths {
+		occupiedPaths[key] = true
+	}
+	for _, task := range m.tasks {
+		if task == nil {
+			continue
+		}
+		if task.ID == taskID {
+			ownedStreams[storagePathKey(task.VideoTmpPath)] = task.VideoTmpPath != ""
+			ownedStreams[storagePathKey(task.AudioTmpPath)] = task.AudioTmpPath != ""
+			continue
+		}
+		for _, path := range []string{task.OutputPath, task.VideoTmpPath, task.AudioTmpPath} {
+			if path != "" {
+				occupiedPaths[storagePathKey(path)] = true
+			}
+		}
+	}
 	for i := 0; i < 10000; i++ {
 		candidate := path
 		if i > 0 {
 			candidate = utils.EnsureSafePathLength(dir, base, fmt.Sprintf(" (%d).mp4", i))
 		}
+		video, audio := downloadPaths(candidate)
+		if occupiedPaths[storagePathKey(candidate)] || occupiedPaths[storagePathKey(video)] || occupiedPaths[storagePathKey(audio)] {
+			continue
+		}
 		occupied := false
-		for _, t := range m.tasks {
-			if t != nil && t.ID != taskID && pathKey(t.OutputPath) == pathKey(candidate) {
-				occupied = true
+		for _, staged := range []string{video, audio} {
+			if ownedStreams[storagePathKey(staged)] {
+				continue
+			}
+			artifacts := []string{staged, rangeRecordPath(staged), rangeMarkerPath(staged)}
+			for i := 0; i < 8; i++ {
+				artifacts = append(artifacts, streamSegmentPath(staged, i))
+			}
+			for _, artifact := range artifacts {
+				if _, err := os.Lstat(artifact); err == nil {
+					occupied = true
+					break
+				} else if !os.IsNotExist(err) {
+					return "", fmt.Errorf("检查下载中文件失败: %w", err)
+				}
+			}
+			if occupied {
 				break
 			}
 		}
 		if occupied {
 			continue
 		}
-		video, audio := downloadPaths(candidate)
-		for _, staged := range []string{video, audio} {
-			owned := false
-			for _, t := range m.tasks {
-				if t != nil && t.ID == taskID && (pathKey(t.VideoTmpPath) == pathKey(staged) || pathKey(t.AudioTmpPath) == pathKey(staged)) {
-					owned = true
-					break
-				}
-			}
-			if !owned {
-				if _, err := os.Stat(staged); err == nil {
-					occupied = true
-				} else if !os.IsNotExist(err) {
-					return "", fmt.Errorf("检查下载中文件失败: %w", err)
-				}
-			}
-		}
-		if occupied {
-			continue
-		}
-		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
 			return candidate, nil
 		} else if err != nil {
 			return "", fmt.Errorf("检查输出文件失败: %w", err)
@@ -245,6 +395,12 @@ func (m *DownloadManager) relocateTaskStreams(ctx context.Context, task *Downloa
 	err := m.writeTaskSnapshot(m.tasks)
 	if err != nil {
 		task.VideoTmpPath, task.AudioTmpPath = pairs[0].old, pairs[1].old
+	} else {
+		for _, pair := range pairs {
+			if pair.old != pair.next {
+				m.holdStoragePathsLocked(pair.old)
+			}
+		}
 	}
 	m.mu.Unlock()
 	m.saveMu.Unlock()
@@ -255,6 +411,7 @@ func (m *DownloadManager) relocateTaskStreams(ctx context.Context, task *Downloa
 	for _, pair := range pairs {
 		if pair.old != pair.next {
 			cleanupStreamArtifacts(pair.old)
+			m.releaseStoragePaths(pair.old)
 		}
 	}
 	return nil
@@ -265,14 +422,32 @@ func (m *DownloadManager) relocateTaskStreams(ctx context.Context, task *Downloa
 func (m *DownloadManager) reconcileTaskStorage() {
 	original := m.tasks
 	if len(original) == 0 {
-		m.cleanupLegacyParts(nil)
-		m.cleanupCacheOrphans()
+		m.cleanupLegacyParts(nil, nil)
+		m.cleanupCacheOrphans(nil)
 		return
 	}
 	var normalized []*DownloadTask
 	completed := make(map[string]*DownloadTask)
+	streamRefs := make(map[string]int)
+	for _, task := range original {
+		for _, path := range []string{task.VideoTmpPath, task.AudioTmpPath} {
+			if path != "" {
+				streamRefs[storagePathKey(path)]++
+			}
+		}
+	}
+	detachSharedStreams := func(task *DownloadTask) {
+		for _, path := range []*string{&task.VideoTmpPath, &task.AudioTmpPath} {
+			if streamRefs[storagePathKey(*path)] > 1 {
+				*path = ""
+			}
+		}
+	}
 	for _, task := range original {
 		t := *task
+		// Old queued tasks could inherit another task's filename before it
+		// reserved the path. Neither record proves which bytes are its own.
+		detachSharedStreams(&t)
 		if t.Status == StatusCompleted && t.OutputPath != "" {
 			key := pathKey(t.OutputPath)
 			if kept := completed[key]; kept != nil {
@@ -290,19 +465,27 @@ func (m *DownloadManager) reconcileTaskStorage() {
 	m.tasks = normalized
 	if err := m.SaveTasks(); err != nil {
 		m.tasks = original
+		for _, task := range original {
+			detachSharedStreams(task)
+		}
 		log.Printf("保存任务整理结果失败，保留原文件: %v", err)
 		return
 	}
-	m.cleanupLegacyParts(original)
-	m.cleanupCacheOrphans()
+	m.cleanupLegacyParts(original, streamRefs)
+	m.cleanupCacheOrphans(streamRefs)
 }
 
-func (m *DownloadManager) cleanupCacheOrphans() {
+func (m *DownloadManager) cleanupCacheOrphans(streamRefs map[string]int) {
 	root := m.cfgMgr.GetDownloadCacheDir()
 	protected := make(map[string]bool)
 	for _, task := range m.tasks {
-		protected[pathKey(filepath.Dir(task.VideoTmpPath))] = true
-		protected[pathKey(filepath.Dir(task.AudioTmpPath))] = true
+		protected[storagePathKey(filepath.Dir(task.VideoTmpPath))] = true
+		protected[storagePathKey(filepath.Dir(task.AudioTmpPath))] = true
+	}
+	for path, count := range streamRefs {
+		if count > 1 {
+			protected[filepath.Dir(path)] = true
+		}
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -313,7 +496,7 @@ func (m *DownloadManager) cleanupCacheOrphans() {
 			continue
 		}
 		dir := filepath.Join(root, entry.Name())
-		if protected[pathKey(dir)] {
+		if protected[storagePathKey(dir)] {
 			continue
 		}
 		cleanupStreamArtifacts(filepath.Join(dir, "video.downloading"))
@@ -323,7 +506,7 @@ func (m *DownloadManager) cleanupCacheOrphans() {
 
 var legacyPartName = regexp.MustCompile(`\.[0-9a-f]{8}\.(video|audio)\.downloading\.part-0[0-7]$`)
 
-func (m *DownloadManager) cleanupLegacyParts(original []*DownloadTask) {
+func (m *DownloadManager) cleanupLegacyParts(original []*DownloadTask, streamRefs map[string]int) {
 	protected := make(map[string]bool)
 	// Only inspect directories referenced by legacy task caches. Opening the
 	// user's download destination unconditionally can block startup on macOS
@@ -331,19 +514,19 @@ func (m *DownloadManager) cleanupLegacyParts(original []*DownloadTask) {
 	dirs := make(map[string]bool)
 	for _, t := range m.tasks {
 		if t.Status != StatusCompleted {
-			protected[pathKey(t.VideoTmpPath)] = true
-			protected[pathKey(t.AudioTmpPath)] = true
+			protected[storagePathKey(t.VideoTmpPath)] = true
+			protected[storagePathKey(t.AudioTmpPath)] = true
 		}
 	}
 	for _, t := range original {
 		for _, path := range []string{t.VideoTmpPath, t.AudioTmpPath} {
-			if path == "" {
+			if path == "" || streamRefs[storagePathKey(path)] > 1 {
 				continue
 			}
 			if legacyPartName.MatchString(filepath.Base(path) + ".part-00") {
 				dirs[filepath.Dir(path)] = true
 			}
-			if !protected[pathKey(path)] && t.Status == StatusCompleted {
+			if !protected[storagePathKey(path)] && t.Status == StatusCompleted {
 				if m.cfgMgr.Get().DeleteTempFiles {
 					cleanupStreamArtifacts(path)
 				} else {
@@ -368,7 +551,7 @@ func (m *DownloadManager) cleanupLegacyParts(original []*DownloadTask) {
 			}
 			path := filepath.Join(dir, entry.Name())
 			base := path[:len(path)-len(".part-00")]
-			if !protected[pathKey(base)] {
+			if !protected[storagePathKey(base)] && streamRefs[storagePathKey(base)] <= 1 {
 				safeRemoveWithRetry(path)
 			}
 		}

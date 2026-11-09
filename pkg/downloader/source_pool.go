@@ -30,6 +30,7 @@ type sourceState struct {
 	url      string
 	failures int
 	ready    time.Time
+	missing  bool
 }
 
 // Shared by all workers of one track. URL refresh is single flight and failed
@@ -57,8 +58,11 @@ func (p *sourcePool) next(ctx context.Context) (string, error) {
 			p.mu.Unlock()
 			return "", fmt.Errorf("无有效下载 URL")
 		}
-		best := 0
+		best := -1
 		for i := range p.sources {
+			if p.sources[i].missing {
+				continue
+			}
 			// Preserve the API's preference once a source's cooldown expires.
 			// Comparing timestamps alone makes an untouched backup (zero time)
 			// win forever after a single transient error on the primary.
@@ -66,9 +70,13 @@ func (p *sourcePool) next(ctx context.Context) (string, error) {
 				best = i
 				break
 			}
-			if p.sources[i].ready.Before(p.sources[best].ready) {
+			if best < 0 || p.sources[i].ready.Before(p.sources[best].ready) {
 				best = i
 			}
+		}
+		if best < 0 {
+			p.mu.Unlock()
+			return "", fmt.Errorf("媒体请求 HTTP 404：所有候选地址均未找到媒体")
 		}
 		s := p.sources[best]
 		p.mu.Unlock()
@@ -79,6 +87,16 @@ func (p *sourcePool) next(ctx context.Context) (string, error) {
 			continue
 		}
 		return s.url, nil
+	}
+}
+
+func (p *sourcePool) notFound(url string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.sources {
+		if p.sources[i].url == url {
+			p.sources[i].missing = true
+		}
 	}
 }
 

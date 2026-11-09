@@ -305,8 +305,9 @@ func (m *DownloadManager) prepareDownloadTask(req *DownloadRequest, ep *bilibili
 	outPath := utils.EnsureSafePathLength(outDir, baseFileName, ".mp4")
 
 	taskID := newUUID()
-	// The worker reserves the final quality/collision suffix before writing.
-	vTmp, aTmp := downloadPaths(outPath)
+	// A queued task does not yet own its proposed output name. The worker
+	// assigns visible paths beside the final file after reserving that name.
+	vTmp, aTmp := m.cachePaths(taskID)
 
 	task := &DownloadTask{
 		ID:            taskID,
