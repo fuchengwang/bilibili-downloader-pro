@@ -297,8 +297,8 @@ function handleSubmit() {
         <div class="tool-options">
           <div class="opt-item">
             <span class="opt-label">画质</span>
-            <select v-model="targetQuality" class="opt-select" title="最高画质会按各视频的可用画质选择" aria-label="下载画质">
-              <option value="highest">最高画质</option>
+            <select v-model="targetQuality" class="opt-select" title="自动模式会按各视频的可用画质分别选择" aria-label="下载画质">
+              <option value="highest">按可用画质自动选择</option>
               <option
                 v-for="q in availableQualities"
                 :key="q.id"

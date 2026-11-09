@@ -211,7 +211,7 @@ function handleSubmit() {
           <div class="opt-item">
             <span class="opt-label">画质:</span>
             <select v-model="targetQuality" class="opt-select">
-              <option value="highest">最高画质 (自动选择)</option>
+              <option value="highest">按可用画质自动选择</option>
               <option
                 v-for="q in availableQualities"
                 :key="q.id"
@@ -231,7 +231,7 @@ function handleSubmit() {
           <div class="opt-item"><span class="opt-label">编码:</span><select v-model="targetCodec" class="opt-select"><option value="auto">自动选择（同画质优先兼容）</option><option value="AVC">AVC / H.264（兼容性最好）</option><option value="HEVC">HEVC / H.265（高压缩比）</option><option value="AV1">AV1（需播放器支持）</option></select></div>
         </div>
         <p v-if="playbackError" class="quality-note access-note">{{ linkedEpisode ? '当前链接' : '首集' }}：{{ playbackError.message }}。其他分集按各自观看权限检查。</p>
-        <p v-else class="quality-note">画质选项参考{{ linkedEpisode ? '当前链接' : '首集' }}；“最高画质”按每集可用画质分别选择。</p>
+        <p v-else class="quality-note">画质选项参考{{ linkedEpisode ? '当前链接' : '首集' }}；自动模式会按每集的可用画质分别选择。</p>
       </div>
 
       <!-- Episode Grid View -->

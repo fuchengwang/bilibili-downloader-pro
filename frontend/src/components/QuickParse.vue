@@ -14,6 +14,7 @@ import {
   Check,
   Calendar,
   AlertCircle,
+  UserRound,
   ExternalLink
 } from 'lucide-vue-next'
 import { bilibili } from '../../wailsjs/go/models'
@@ -25,6 +26,8 @@ const props = defineProps<{
   defaultQuality: string
   defaultCodec: string
   userInfo?: bilibili.UserInfo | null
+  userInfoLoading?: boolean
+  userInfoError?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -52,6 +55,26 @@ const displayCover = computed(() => linkedEpisode.value?.cover || parsedDetail.v
 const displayDuration = computed(() => linkedEpisode.value?.durationStr || parsedDetail.value?.durationStr)
 const singleDownloadBlocked = computed(() => isParsing.value || isFetchingQualities.value || isPermissionError(playbackError.value?.kind))
 const sourceURL = computed(() => linkedEpisode.value && parsedDetail.value ? episodeURL(linkedEpisode.value, parsedDetail.value.type) : '')
+const isGuest = computed(() => !props.userInfo?.isLogin && !props.userInfoLoading && !props.userInfoError)
+const showGuestPrompt = computed(() => isGuest.value && !isPermissionError(playbackError.value?.kind))
+const guestLoginDescription = computed(() => parsedDetail.value?.type === 'cheese'
+  ? '请用购买课程的账号登录。'
+  : '已购课程或充电视频请用对应账号登录，公开视频可直接下载。')
+const playbackHint = computed(() => {
+  if (isGuest.value && playbackError.value?.kind === 'charge_required') return '如果已充电，请登录已充电的 B 站账号。'
+  if (isGuest.value && playbackError.value?.kind === 'purchase_required') return '如果已购买，请登录购买时使用的 B 站账号。'
+  return playbackError.value?.hint
+})
+const automaticQualityLabel = computed(() => {
+  if (isFetchingQualities.value) return '正在检查可用画质…'
+  if (!isGuest.value) return '最高画质 (自动选择)'
+  const best = availableQualities.value.reduce<bilibili.QualityOption | undefined>(
+    (highest, option) => option.isAvailable && (!highest || option.id > highest.id) ? option : highest,
+    undefined
+  )
+  const label = best?.label.replace(/^(清晰|流畅)\s+|\s+(清晰|流畅)$/g, '')
+  return label ? `自动（可用至 ${label}）` : '按可用画质自动选择'
+})
 
 // 监听偏好设置变更
 watch(() => props.defaultQuality, (val) => {
@@ -153,13 +176,6 @@ async function fetchQualities(detail: bilibili.VideoDetail, ep: bilibili.Episode
     playbackError.value = info?.error || null
     availableQualities.value = qList || []
 
-    // 校验当前选中的清晰度是否不可用
-    if (selectedQuality.value !== 'highest') {
-      const currentOpt = qList?.find(q => q.id.toString() === selectedQuality.value)
-      if (currentOpt && !currentOpt.isAvailable) {
-        selectedQuality.value = 'highest'
-      }
-    }
   } catch (err: any) {
     if (request === qualityRequest && toRaw(parsedDetail.value) === toRaw(detail)) {
       availableQualities.value = []
@@ -176,12 +192,20 @@ function handleSingleDownload() {
   if (!parsedDetail.value || singleDownloadBlocked.value) return
   const ep = currentEpisode(parsedDetail.value)
   if (!ep) return
-  emit('quick-download-single', parsedDetail.value, ep, selectedQuality.value, props.defaultCodec || 'auto')
+  emit('quick-download-single', parsedDetail.value, ep, displayedQuality.value, props.defaultCodec || 'auto')
 }
+
+const displayedQuality = computed({
+  get: () => availableQualities.value.some(q => q.isAvailable && String(q.id) === selectedQuality.value)
+    ? selectedQuality.value
+    : 'highest',
+  set: value => { selectedQuality.value = value }
+})
 
 function handleOpenEpisodes() {
   if (!parsedDetail.value) return
-  emit('open-episodes', parsedDetail.value, selectedQuality.value, props.defaultCodec || 'auto')
+  const quality = availableQualities.value.length ? displayedQuality.value : selectedQuality.value
+  emit('open-episodes', parsedDetail.value, quality, props.defaultCodec || 'auto')
 }
 
 // 格式化数字
@@ -209,8 +233,7 @@ defineExpose({
   setAndParse: (url: string) => {
     inputUrl.value = url
     handleParse()
-  },
-  refreshQualities
+  }
 })
 </script>
 
@@ -316,10 +339,10 @@ defineExpose({
 
         <div v-if="playbackError" class="playback-notice" role="status">
           <div class="notice-message"><AlertCircle :size="14" /><span>{{ playbackError.message }}</span></div>
-          <p>{{ playbackError.hint }}</p>
+          <p>{{ playbackHint }}</p>
           <div class="notice-actions">
             <button v-if="sourceURL" class="notice-link" @click="BrowserOpenURL(sourceURL)"><ExternalLink :size="12" />在B站打开</button>
-            <button v-if="isPermissionError(playbackError.kind)" class="notice-link" @click="emit('open-login')">登录 / 重新登录</button>
+            <button v-if="isPermissionError(playbackError.kind)" class="notice-link" @click="emit('open-login')">{{ isGuest ? '登录 B 站账号' : '登录 / 重新登录' }}</button>
             <button class="notice-link" :disabled="isFetchingQualities" @click="refreshQualities">重新检查</button>
           </div>
           <details v-if="playbackError.detail"><summary>详细信息</summary>{{ playbackError.detail }}</details>
@@ -330,9 +353,9 @@ defineExpose({
           <div v-if="linkedEpisode" class="options-wrapper">
             <!-- Quality Selector (Clean & Clear with disabled/grey options for locked qualities) -->
             <div class="select-group">
-              <label class="select-label">清晰度:</label>
-              <select v-model="selectedQuality" class="quality-select">
-                <option value="highest">最高画质 (自动选择)</option>
+              <label for="parse-quality" class="select-label">清晰度:</label>
+              <select id="parse-quality" v-model="displayedQuality" :disabled="isFetchingQualities" class="quality-select">
+                <option value="highest">{{ automaticQualityLabel }}</option>
                 <option
                   v-for="q in availableQualities"
                   :key="q.id"
@@ -365,9 +388,17 @@ defineExpose({
         </div>
       </div>
     </div>
+    <div v-if="parsedDetail && showGuestPrompt" class="guest-notice">
+      <div class="guest-copy">
+        <UserRound :size="15" aria-hidden="true" />
+        <strong>未登录 B 站</strong>
+        <span>{{ guestLoginDescription }}</span>
+      </div>
+      <button type="button" class="guest-login" @click="emit('open-login')">登录 B 站账号</button>
+    </div>
 
     <!-- Empty / Guide State -->
-    <div v-else class="empty-guide">
+    <div v-if="!parsedDetail" class="empty-guide">
       <div class="guide-icon-box">
         <Film :size="32" />
       </div>
@@ -562,6 +593,35 @@ defineExpose({
 .notice-link:disabled { opacity: .5; cursor: default; }
 .playback-notice details { margin-top: 7px; color: var(--text-muted); font-size: 11px; }
 .playback-notice summary { cursor: pointer; }
+
+.guest-notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin-top: -8px;
+  padding: 6px 10px 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--guest-notice-bg);
+  font-size: 12px;
+}
+
+.guest-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--guest-accent); }
+.guest-copy span { color: var(--text-secondary); line-height: 1.5; }
+.guest-login {
+  margin-left: auto;
+  padding: 5px 9px;
+  border: 1px solid color-mix(in srgb, var(--guest-accent) 24%, transparent);
+  border-radius: var(--radius-xs);
+  background: var(--guest-login-bg);
+  color: var(--guest-accent);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.guest-login:hover { background: color-mix(in srgb, var(--guest-accent) 16%, transparent); }
+.guest-login:focus-visible { outline: 2px solid var(--guest-accent); outline-offset: 2px; }
 
 .meta-row {
   display: flex;

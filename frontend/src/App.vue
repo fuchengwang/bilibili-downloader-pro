@@ -606,9 +606,6 @@ function handleLoginSuccess(u: bilibili.UserInfo) {
   userInfoLoading.value = false
   userInfoError.value = false
   showToast(`登录成功: ${u.uname || 'B站用户'}`, 'success')
-  if (quickParseRef.value?.refreshQualities) {
-    quickParseRef.value.refreshQualities()
-  }
 }
 
 function handleLogoutSuccess() {
@@ -618,9 +615,6 @@ function handleLogoutSuccess() {
   userInfoLoading.value = false
   userInfoError.value = false
   showToast('已退出登录', 'info')
-  if (quickParseRef.value?.refreshQualities) {
-    quickParseRef.value.refreshQualities()
-  }
 }
 
 function handleLicenseDeactivated(key: string) {
@@ -666,6 +660,8 @@ function handleLicenseDeactivated(key: string) {
             :default-quality="settings.defaultQuality"
             :default-codec="settings.defaultCodec"
             :user-info="userInfo"
+            :user-info-loading="userInfoLoading"
+            :user-info-error="userInfoError"
             @open-episodes="handleOpenEpisodes"
             @quick-download-single="handleQuickDownloadSingle"
             @show-toast="showToast"

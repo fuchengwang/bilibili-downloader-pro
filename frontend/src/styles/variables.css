@@ -15,6 +15,9 @@
   --success-glow: rgba(16, 185, 129, 0.35);
   
   --warning: #f59e0b;
+  --guest-accent: #efb782;
+  --guest-notice-bg: color-mix(in srgb, var(--guest-accent) 4%, var(--bg-card));
+  --guest-login-bg: color-mix(in srgb, var(--guest-accent) 9%, transparent);
   --danger: #ef4444;
   --danger-glow: rgba(239, 68, 68, 0.35);
 
@@ -87,6 +90,9 @@
   --vip-gold: #a66408;
   --success: #087f5b;
   --warning: #a66408;
+  --guest-accent: #b4482d;
+  --guest-notice-bg: #fff7f3;
+  --guest-login-bg: #ffece4;
   --danger: #c83232;
   --bg-app: #f4f6fa;
   --bg-sidebar: rgba(255, 255, 255, 0.94);
