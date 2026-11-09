@@ -172,14 +172,18 @@ func (m *DownloadManager) cleanReservedTaskFiles(task *taskStorageCleanup) {
 	if task.workerDone != nil {
 		<-task.workerDone
 	}
-	cleanupStreamArtifacts(task.VideoTmpPath)
-	cleanupStreamArtifacts(task.AudioTmpPath)
+	m.checkpoints().cleanupStream(task.VideoTmpPath)
+	m.checkpoints().cleanupStream(task.AudioTmpPath)
 	if task.deleteOutput {
 		safeRemoveWithRetry(task.OutputPath)
 	}
 }
 
 func cleanupStreamArtifacts(path string) {
+	rangeStore("").cleanupStream(path)
+}
+
+func (s rangeStore) cleanupStream(path string) {
 	if path == "" {
 		return
 	}
@@ -188,13 +192,19 @@ func cleanupStreamArtifacts(path string) {
 	}
 	safeRemoveWithRetry(path)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		safeRemoveWithRetry(rangeRecordPath(path))
-		safeRemoveWithRetry(rangeMarkerPath(path))
+		s.removeCheckpoint(path)
 	}
 	// Remove only an empty task directory, never recursively delete user files.
 	if filepath.Base(path) == "video.downloading" || filepath.Base(path) == "audio.downloading" {
 		_ = os.Remove(filepath.Dir(path))
 	}
+}
+
+func (s rangeStore) removeCheckpoint(path string) {
+	if s != "" {
+		safeRemoveWithRetry(s.recordPath(path))
+	}
+	removeLegacyRangeFiles(path, true)
 }
 
 // availableOutputPathLocked reserves against both other tasks and existing files.
@@ -237,6 +247,7 @@ func (m *DownloadManager) availableOutputPathLocked(path, taskID string) (string
 				continue
 			}
 			artifacts := []string{staged, rangeRecordPath(staged), rangeMarkerPath(staged)}
+			artifacts = append(artifacts, m.checkpoints().recordPath(staged))
 			for i := 0; i < 8; i++ {
 				artifacts = append(artifacts, streamSegmentPath(staged, i))
 			}
@@ -271,11 +282,11 @@ func migrateStream(old, next string) error {
 }
 
 func migrateStreamContext(ctx context.Context, old, next string) error {
-	_, err := migrateStreamArtifacts(ctx, old, next)
+	_, err := rangeStore("").migrateStreamArtifacts(ctx, old, next)
 	return err
 }
 
-func migrateStreamArtifacts(ctx context.Context, old, next string) ([]string, error) {
+func (s rangeStore) migrateStreamArtifacts(ctx context.Context, old, next string) ([]string, error) {
 	if old == "" || old == next {
 		return nil, nil
 	}
@@ -283,8 +294,10 @@ func migrateStreamArtifacts(ctx context.Context, old, next string) ([]string, er
 		return nil, err
 	}
 	paths := []migratedStream{{old, next}}
-	paths = append(paths, migratedStream{rangeRecordPath(old), rangeRecordPath(next)})
-	paths = append(paths, migratedStream{rangeMarkerPath(old), rangeMarkerPath(next)})
+	if s == "" {
+		paths = append(paths, migratedStream{rangeRecordPath(old), rangeRecordPath(next)})
+		paths = append(paths, migratedStream{rangeMarkerPath(old), rangeMarkerPath(next)})
+	}
 	for i := 0; i < 8; i++ {
 		paths = append(paths, migratedStream{streamSegmentPath(old, i), streamSegmentPath(next, i)})
 	}
@@ -306,6 +319,22 @@ func migrateStreamArtifacts(ctx context.Context, old, next string) ([]string, er
 			return created, err
 		}
 		created = append(created, pair.next)
+	}
+	if s != "" {
+		if record, err := s.read(old); err == nil {
+			checkpoint := s.recordPath(next)
+			if _, err := os.Lstat(checkpoint); err == nil {
+				return created, fmt.Errorf("目标下载进度记录已存在: %s", checkpoint)
+			} else if !os.IsNotExist(err) {
+				return created, err
+			}
+			if err := s.write(next, record); err != nil {
+				return created, err
+			}
+			created = append(created, checkpoint)
+		} else if checkpointAccessError(err) {
+			return created, err
+		}
 	}
 	return created, nil
 }
@@ -371,7 +400,7 @@ func (m *DownloadManager) relocateTaskStreams(ctx context.Context, task *Downloa
 			continue
 		}
 		changed = true
-		copied, err := migrateStreamArtifacts(ctx, pair.old, pair.next)
+		copied, err := m.checkpoints().migrateStreamArtifacts(ctx, pair.old, pair.next)
 		created = append(created, copied...)
 		if err != nil {
 			rollback()
@@ -410,7 +439,7 @@ func (m *DownloadManager) relocateTaskStreams(ctx context.Context, task *Downloa
 	}
 	for _, pair := range pairs {
 		if pair.old != pair.next {
-			cleanupStreamArtifacts(pair.old)
+			m.checkpoints().cleanupStream(pair.old)
 			m.releaseStoragePaths(pair.old)
 		}
 	}
@@ -424,6 +453,7 @@ func (m *DownloadManager) reconcileTaskStorage() {
 	if len(original) == 0 {
 		m.cleanupLegacyParts(nil, nil)
 		m.cleanupCacheOrphans(nil)
+		m.checkpoints().pruneOrphans(nil)
 		return
 	}
 	var normalized []*DownloadTask
@@ -473,6 +503,7 @@ func (m *DownloadManager) reconcileTaskStorage() {
 	}
 	m.cleanupLegacyParts(original, streamRefs)
 	m.cleanupCacheOrphans(streamRefs)
+	m.checkpoints().pruneOrphans(m.tasks)
 }
 
 func (m *DownloadManager) cleanupCacheOrphans(streamRefs map[string]int) {
@@ -499,8 +530,8 @@ func (m *DownloadManager) cleanupCacheOrphans(streamRefs map[string]int) {
 		if protected[storagePathKey(dir)] {
 			continue
 		}
-		cleanupStreamArtifacts(filepath.Join(dir, "video.downloading"))
-		cleanupStreamArtifacts(filepath.Join(dir, "audio.downloading"))
+		m.checkpoints().cleanupStream(filepath.Join(dir, "video.downloading"))
+		m.checkpoints().cleanupStream(filepath.Join(dir, "audio.downloading"))
 	}
 }
 
@@ -528,8 +559,13 @@ func (m *DownloadManager) cleanupLegacyParts(original []*DownloadTask, streamRef
 			}
 			if !protected[storagePathKey(path)] && t.Status == StatusCompleted {
 				if m.cfgMgr.Get().DeleteTempFiles {
-					cleanupStreamArtifacts(path)
+					m.checkpoints().cleanupStream(path)
 				} else {
+					if _, err := os.Lstat(path); os.IsNotExist(err) {
+						m.checkpoints().removeCheckpoint(path)
+					} else if err := m.checkpoints().adoptLegacy(path); err != nil {
+						log.Printf("迁移已完成轨道的下载进度失败: %v", err)
+					}
 					for i := 0; i < 8; i++ {
 						safeRemoveWithRetry(streamSegmentPath(path, i))
 					}

@@ -317,6 +317,61 @@ func TestCollectionCleanupLegacyRegistryProvesOwnership(t *testing.T) {
 	}
 }
 
+func TestCollectionCleanupAfterUpgradeRemovesLegacySidecars(t *testing.T) {
+	for _, keepUserFile := range []bool{false, true} {
+		t.Run(map[bool]string{false: "empty collection", true: "hidden user file"}[keepUserFile], func(t *testing.T) {
+			m := newTestManager(t)
+			root := m.cfgMgr.Get().DownloadDir
+			if err := os.MkdirAll(root, 0755); err != nil {
+				t.Fatal(err)
+			}
+			dir, err := m.collectionDir(root, "video:BVlegacy", "旧合集", 1, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			output := filepath.Join(dir, "旧分集.mp4")
+			video, audio := downloadPaths(output)
+			task := &DownloadTask{
+				ID: newUUID(), BVID: "BVlegacy", Status: StatusPaused,
+				OutputPath: output, VideoTmpPath: video, AudioTmpPath: audio,
+			}
+			m.tasks = []*DownloadTask{task}
+			if err := m.SaveTasks(); err != nil {
+				t.Fatal(err)
+			}
+			legacyFiles := []string{
+				video, video + ".ranges", video + ".ranges.json",
+				audio, rangeMarkerPath(audio), rangeRecordPath(audio),
+			}
+			for _, path := range legacyFiles {
+				writeStorageFixture(t, path, []byte("legacy artifact"))
+			}
+			userFile := filepath.Join(dir, ".personal-notes")
+			if keepUserFile {
+				writeStorageFixture(t, userFile, []byte("keep this"))
+			}
+			m = NewDownloadManager(m.cfgMgr)
+			if err := m.DeleteTask(task.ID, false); err != nil {
+				t.Fatal(err)
+			}
+			waitCollectionCleanup(t, func() bool {
+				for _, path := range legacyFiles {
+					if !pathIsGone(path) {
+						return false
+					}
+				}
+				return keepUserFile || pathIsGone(dir)
+			})
+			if keepUserFile {
+				assertMediaBytes(t, userFile, []byte("keep this"))
+			}
+			if pathIsGone(root) {
+				t.Fatal("download root was removed")
+			}
+		})
+	}
+}
+
 func TestCollectionCleanupDoesNotFollowDirectoryLinks(t *testing.T) {
 	m, tasks, top := cleanupCollectionFixture(t, true)
 	if err := m.ClearCompleted(true); err != nil {

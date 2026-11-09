@@ -65,8 +65,11 @@ func (s *StreamDownloader) downloadCore(ctx context.Context, threads int, progre
 		return err
 	}
 	threads = max(1, min(threads, 8))
-	initial := resumableStreamSize(s.targetPath)
-	record, recordErr := readRangeRecord(s.targetPath)
+	if err := s.checkpoints.adoptLegacy(s.targetPath); err != nil {
+		return err
+	}
+	initial := s.checkpoints.received(s.targetPath)
+	record, recordErr := s.checkpoints.read(s.targetPath)
 	if recordErr == nil && initial > 0 && !s.representationChanged(record) &&
 		(initial == record.Total || s.representation != "" && record.Representation == "") {
 		release, err := s.connections.acquire(ctx)
@@ -115,7 +118,7 @@ func (s *StreamDownloader) downloadCore(ctx context.Context, threads int, progre
 			// Persist the zero progress marker BEFORE truncating a sparse file.
 			// A crash between these operations can only repeat bytes, never skip.
 			if s.totalSize > 0 {
-				if saveErr := writeRangeRecord(s.targetPath, rangeRecord{Version: 1, Total: s.totalSize, Representation: s.representation, Ranges: []byteRange{{End: s.totalSize}}}); saveErr != nil {
+				if saveErr := s.checkpoints.write(s.targetPath, rangeRecord{Version: 1, Total: s.totalSize, Representation: s.representation, Ranges: []byteRange{{End: s.totalSize}}}); saveErr != nil {
 					return saveErr
 				}
 			}
@@ -133,9 +136,9 @@ func (s *StreamDownloader) downloadCore(ctx context.Context, threads int, progre
 				_ = os.Remove(streamSegmentPath(s.targetPath, i))
 			}
 		} else if initial == 0 && e.received() == 0 {
-			_ = os.Remove(rangeRecordPath(s.targetPath))
-			_ = os.Remove(s.targetPath)
-			_ = os.Remove(rangeMarkerPath(s.targetPath))
+			if err := os.Remove(s.targetPath); err == nil || os.IsNotExist(err) {
+				s.checkpoints.removeCheckpoint(s.targetPath)
+			}
 		}
 		return err
 	}
@@ -152,13 +155,16 @@ func (s *StreamDownloader) reportRestored(delta int64, progress DownloadProgress
 
 func (s *StreamDownloader) prepareTransfer(pool *sourcePool, threads int, sequential bool, progress DownloadProgressFn) (*rangeTransfer, error) {
 	e := &rangeTransfer{s: s, pool: pool, total: s.totalSize, threads: threads, sequential: sequential, progress: progress, changed: make(chan struct{}, 1)}
-	r, recordErr := readRangeRecord(s.targetPath)
-	_, statErr := os.Stat(rangeRecordPath(s.targetPath))
-	hasRecord := !os.IsNotExist(statErr)
-	if _, err := os.Stat(rangeMarkerPath(s.targetPath)); !os.IsNotExist(err) {
-		hasRecord = true
+	r, recordErr := s.checkpoints.read(s.targetPath)
+	if checkpointAccessError(recordErr) {
+		return nil, recordErr
 	}
-	reset := hasRecord && recordErr != nil
+	reset := s.checkpoints != "" || s.representation != ""
+	if recordErr != nil && !reset {
+		_, recordStat := os.Lstat(rangeRecordPath(s.targetPath))
+		_, markerStat := os.Lstat(rangeMarkerPath(s.targetPath))
+		reset = !os.IsNotExist(recordStat) || !os.IsNotExist(markerStat)
+	}
 	if recordErr == nil {
 		sameSource := r.ValidatorKey == "" || r.ValidatorKey == s.probeValidatorKey
 		reset = s.representationChanged(r) || (s.totalSize > 0 && r.Total != s.totalSize) ||
@@ -166,9 +172,6 @@ func (s *StreamDownloader) prepareTransfer(pool *sourcePool, threads int, sequen
 		if r.received() == r.Total || (r.received() > 0 && s.representation != "" && r.Representation == "") {
 			reset = reset || !s.confirmsCachedEntity(r)
 		}
-	} else if s.representation != "" {
-		// Legacy raw prefixes have neither a track identity nor an HTTP validator.
-		reset = true
 	}
 	if recordErr == nil && !reset {
 		e.total = r.Total
@@ -217,9 +220,14 @@ func (s *StreamDownloader) prepareTransfer(pool *sourcePool, threads int, sequen
 			}
 		}
 	}
-	if err := ensureRangeMarker(s.targetPath); err != nil {
-		file.Close()
-		return nil, err
+	if s.checkpoints == "" {
+		if err := ensureRangeMarker(s.targetPath); err != nil {
+			file.Close()
+			return nil, err
+		}
+	} else if reset {
+		// The media was reset and the central store never trusts untracked bytes.
+		removeLegacyRangeFiles(s.targetPath, false)
 	}
 	if e.total > 0 {
 		s.setTotalSize(e.total)
@@ -279,7 +287,7 @@ func (e *rangeTransfer) checkpoint() error {
 		r.Ranges = append(r.Ranges, byteRange{Start: b.Start, Position: b.Position, End: b.End})
 	}
 	sort.Slice(r.Ranges, func(i, j int) bool { return r.Ranges[i].Start < r.Ranges[j].Start })
-	return writeRangeRecord(e.s.targetPath, r)
+	return e.s.checkpoints.write(e.s.targetPath, r)
 }
 
 func (e *rangeTransfer) claim(ctx context.Context) (*byteRange, error) {

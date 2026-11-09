@@ -40,6 +40,7 @@ type StreamDownloader struct {
 	probeETag, probeModified string
 	probeValidatorKey        string
 	representation           string
+	checkpoints              rangeStore
 }
 
 func (s *StreamDownloader) recordDiagnostic(err error) {

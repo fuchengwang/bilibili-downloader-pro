@@ -66,8 +66,9 @@ func NewDownloadManager(cfgMgr *config.ConfigManager) *DownloadManager {
 		mergeFunc:    MergeAudioVideoContext,
 	}
 	m.bandwidth = &bandwidthLimiter{limit: func() int64 { return cfgMgr.Get().DownloadLimitKB * 1024 }}
-	m.loadTasks()
-	m.reconcileTaskStorage()
+	if m.loadTasks() {
+		m.reconcileTaskStorage()
+	}
 	return m
 }
 
@@ -108,32 +109,34 @@ func (m *DownloadManager) notifyChange(t *DownloadTask) {
 	}
 }
 
-func (m *DownloadManager) loadTasks() {
+func (m *DownloadManager) loadTasks() bool {
 	tasksPath := m.cfgMgr.GetTasksPath()
 	data, err := os.ReadFile(tasksPath)
 	if err != nil {
-		return
+		return os.IsNotExist(err)
 	}
 	var loaded []*DownloadTask
-	if err := json.Unmarshal(data, &loaded); err == nil {
-		validTasks := make([]*DownloadTask, 0, len(loaded))
-		for _, t := range loaded {
-			if t == nil {
-				continue
-			}
-			// Continue the prior running queue; an explicit user pause stays paused.
-			if t.Status == StatusDownloading || t.Status == StatusMerging || (t.Status == StatusPaused && t.ResumeOnStartup) {
-				t.Status = StatusQueued
-				t.Speed = 0
-				t.SpeedStr = "0 KB/s"
-				t.ETAStr = "--"
-			}
-			t.ResumeOnStartup = false
-			validTasks = append(validTasks, t)
-		}
-		m.tasks = validTasks
-		assignMissingQueueOrders(m.tasks)
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return false
 	}
+	validTasks := make([]*DownloadTask, 0, len(loaded))
+	for _, t := range loaded {
+		if t == nil {
+			continue
+		}
+		// Continue the prior running queue; an explicit user pause stays paused.
+		if t.Status == StatusDownloading || t.Status == StatusMerging || (t.Status == StatusPaused && t.ResumeOnStartup) {
+			t.Status = StatusQueued
+			t.Speed = 0
+			t.SpeedStr = "0 KB/s"
+			t.ETAStr = "--"
+		}
+		t.ResumeOnStartup = false
+		validTasks = append(validTasks, t)
+	}
+	m.tasks = validTasks
+	assignMissingQueueOrders(m.tasks)
+	return true
 }
 
 // SaveTasks 持久化任务列表 (原子写入避免崩溃产生损坏文件，杜绝 Windows 权限冲突)
@@ -589,12 +592,16 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	}
 	m.mu.Unlock()
 	if pathErr != nil {
-		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, pathErr.Error())
+		message := pathErr.Error()
+		if isDiskSpaceError(pathErr) {
+			message = diskSpaceMessage
+		}
+		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, message)
 		return
 	}
 	if err := m.relocateTaskStreams(ctx, task); err != nil {
 		if ctx.Err() == nil {
-			m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, fmt.Sprintf("准备下载中文件失败: %v", err))
+			m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, fileFailureMessage("准备下载中文件失败", err))
 		}
 		return
 	}
@@ -609,6 +616,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		factory = NewStreamDownloader
 	}
 	vDownloader := factory(sel.VideoURLs, task.VideoTmpPath)
+	vDownloader.checkpoints = m.checkpoints()
 	vDownloader.representation = mediaRepresentationKey(sel.VideoURLs)
 	vDownloader.sizeHint = sel.VideoSize
 	vDownloader.skipSizeProbe = true
@@ -623,6 +631,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	var aDownloader *StreamDownloader
 	if len(filterStreamURLs(sel.AudioURLs)) > 0 {
 		aDownloader = factory(sel.AudioURLs, task.AudioTmpPath)
+		aDownloader.checkpoints = m.checkpoints()
 		aDownloader.representation = mediaRepresentationKey(sel.AudioURLs)
 		aDownloader.sizeHint = sel.AudioSize
 		aDownloader.skipSizeProbe = true
@@ -702,7 +711,7 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		}
 		if processErr != nil {
 			if ctx.Err() == nil {
-				m.setWorkerTaskStatus(task, token, StatusMerging, StatusError, fmt.Sprintf("课堂音视频处理失败: %v", processErr))
+				m.setWorkerTaskStatus(task, token, StatusMerging, StatusError, fileFailureMessage("课堂音视频处理失败", processErr))
 			}
 			return
 		}
@@ -718,14 +727,14 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		if ctx.Err() != nil {
 			return
 		}
-		m.setWorkerTaskStatus(task, token, StatusMerging, StatusError, fmt.Sprintf("音视频合成失败: %v", err))
+		m.setWorkerTaskStatus(task, token, StatusMerging, StatusError, fileFailureMessage("音视频合成失败", err))
 		return
 	}
 
 	// 确保临时 downloading 文件在任何平台都被彻底清理干净
 	if cfg.DeleteTempFiles {
-		cleanupStreamArtifacts(task.VideoTmpPath)
-		cleanupStreamArtifacts(aTmpP)
+		m.checkpoints().cleanupStream(task.VideoTmpPath)
+		m.checkpoints().cleanupStream(aTmpP)
 	}
 
 	// 7. 标记任务完成
@@ -877,6 +886,9 @@ func formatFriendlyError(err error) string {
 	if err == nil {
 		return ""
 	}
+	if isDiskSpaceError(err) {
+		return diskSpaceMessage
+	}
 	errStr := strings.ToLower(err.Error())
 	if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded") {
 		return "网络连接超时，请点击右侧重试按钮继续下载"
@@ -886,9 +898,6 @@ func formatFriendlyError(err error) string {
 	}
 	if strings.Contains(errStr, "403") {
 		return "下载直链已过期，请点击重试自动刷新"
-	}
-	if strings.Contains(errStr, "no space") || strings.Contains(errStr, "disk full") {
-		return "磁盘空间不足，请清理后重试"
 	}
 	return "下载异常中断，请点击右侧重试按钮恢复"
 }

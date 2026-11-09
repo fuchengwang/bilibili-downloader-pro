@@ -2,10 +2,13 @@ package downloader
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"bilibili_downloader/pkg/utils"
 )
@@ -34,7 +37,7 @@ type rangeRecord struct {
 func rangeSidecarPath(path, suffix string) string {
 	// Older records remain readable in place. New downloads keep these small
 	// bookkeeping files hidden alongside the visible .downloading media.
-	if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
+	if _, err := os.Lstat(path + suffix); !os.IsNotExist(err) {
 		return path + suffix
 	}
 	return filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+suffix)
@@ -42,6 +45,112 @@ func rangeSidecarPath(path, suffix string) string {
 
 func rangeRecordPath(path string) string { return rangeSidecarPath(path, ".ranges.json") }
 func rangeMarkerPath(path string) string { return rangeSidecarPath(path, ".ranges") }
+
+// Desktop tasks store their checkpoint in the application data directory.
+// The zero value keeps the standalone stream API compatible with old caches.
+type rangeStore string
+
+func (m *DownloadManager) checkpoints() rangeStore {
+	return rangeStore(filepath.Join(filepath.Dir(m.cfgMgr.GetTasksPath()), "download-checkpoints"))
+}
+
+func (s rangeStore) recordPath(path string) string {
+	if s == "" {
+		return rangeRecordPath(path)
+	}
+	return filepath.Join(string(s), fmt.Sprintf("%x.json", sha256.Sum256([]byte(storagePathKey(path)))))
+}
+
+var checkpointFileName = regexp.MustCompile(`^(?:[0-9a-f]{64}\.json|\.tmp_atomic-(?:backup-)?[0-9]+)$`)
+
+// Only call before workers start, with a successfully loaded task list.
+// Reference checks need no access to the user's download destination.
+func (s rangeStore) pruneOrphans(tasks []*DownloadTask) {
+	entries, err := os.ReadDir(string(s))
+	if err != nil {
+		return
+	}
+	keep := make(map[string]bool)
+	for _, task := range tasks {
+		for _, path := range []string{task.VideoTmpPath, task.AudioTmpPath} {
+			if path != "" {
+				keep[filepath.Base(s.recordPath(path))] = true
+			}
+		}
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.Type().IsRegular() && checkpointFileName.MatchString(name) && !keep[name] {
+			_ = os.Remove(filepath.Join(string(s), name))
+		}
+	}
+}
+
+func (s rangeStore) read(path string) (rangeRecord, error) {
+	record, err := readRangeRecordAt(path, s.recordPath(path))
+	if s != "" && os.IsNotExist(err) {
+		// Only fall back if the central checkpoint itself is absent.
+		if _, statErr := os.Lstat(s.recordPath(path)); os.IsNotExist(statErr) {
+			return readRangeRecord(path)
+		}
+	}
+	return record, err
+}
+
+func checkpointAccessError(err error) bool {
+	var pathErr *os.PathError
+	return errors.As(err, &pathErr) && !errors.Is(err, os.ErrNotExist)
+}
+
+func removeLegacyRangeFiles(path string, retry bool) {
+	for _, suffix := range []string{".ranges.json", ".ranges"} {
+		for _, name := range []string{path + suffix, filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+suffix)} {
+			if info, err := os.Lstat(name); err == nil && info.Mode().IsRegular() {
+				if retry {
+					safeRemoveWithRetry(name)
+				} else {
+					_ = os.Remove(name)
+				}
+			}
+		}
+	}
+}
+
+// Publish the new checkpoint before removing the old metadata. A failed
+// migration leaves the original media and sidecars available for retry.
+func (s rangeStore) adoptLegacy(path string) error {
+	if s == "" {
+		return nil
+	}
+	_, recordErr := os.Lstat(rangeRecordPath(path))
+	_, markerErr := os.Lstat(rangeMarkerPath(path))
+	if os.IsNotExist(recordErr) && os.IsNotExist(markerErr) {
+		return nil
+	}
+	checkpoint := s.recordPath(path)
+	if _, err := os.Lstat(checkpoint); err == nil {
+		if _, err := readRangeRecordAt(path, checkpoint); err == nil {
+			removeLegacyRangeFiles(path, false)
+		} else if checkpointAccessError(err) {
+			return err
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	record, err := readRangeRecord(path)
+	if err != nil {
+		if checkpointAccessError(err) {
+			return err
+		}
+		return nil // invalid checkpoints must be reset by the transfer
+	}
+	if err := s.write(path, record); err != nil {
+		return err
+	}
+	removeLegacyRangeFiles(path, false)
+	return nil
+}
 
 // This durable marker distinguishes a legacy contiguous prefix from a sparse
 // file whose record was lost, including a crash during Windows replacement.
@@ -63,13 +172,21 @@ func (r rangeRecord) received() int64 {
 }
 
 func readRangeRecord(path string) (rangeRecord, error) {
+	return readRangeRecordAt(path, rangeRecordPath(path))
+}
+
+func readRangeRecordAt(path, checkpoint string) (rangeRecord, error) {
 	var r rangeRecord
-	data, err := os.ReadFile(rangeRecordPath(path))
+	info, err := os.Lstat(checkpoint)
 	if err != nil {
 		return r, err
 	}
-	if len(data) > 1024*1024 {
-		return r, fmt.Errorf("下载进度记录过大")
+	if !info.Mode().IsRegular() || info.Size() > 1024*1024 {
+		return r, fmt.Errorf("下载进度记录无效或过大")
+	}
+	data, err := os.ReadFile(checkpoint)
+	if err != nil {
+		return r, err
 	}
 	if err := json.Unmarshal(data, &r); err != nil {
 		return r, err
@@ -87,7 +204,7 @@ func readRangeRecord(path string) (rangeRecord, error) {
 	if end != r.Total {
 		return r, fmt.Errorf("下载范围记录不完整")
 	}
-	info, err := os.Stat(path)
+	info, err = os.Stat(path)
 	if err != nil {
 		return r, err
 	}
@@ -106,24 +223,37 @@ func readRangeRecord(path string) (rangeRecord, error) {
 }
 
 func writeRangeRecord(path string, record rangeRecord) error {
-	if err := ensureRangeMarker(path); err != nil {
-		return err
+	return rangeStore("").write(path, record)
+}
+
+func (s rangeStore) write(path string, record rangeRecord) error {
+	if s == "" {
+		if err := ensureRangeMarker(path); err != nil {
+			return err
+		}
 	}
 	data, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
-	return utils.AtomicWriteFile(rangeRecordPath(path), data, 0600)
+	return utils.AtomicWriteFile(s.recordPath(path), data, 0600)
 }
 
 // Used before workers start and by progress reporting on resume. A damaged
 // record must never make a preallocated file look complete.
 func resumableStreamSize(path string) int64 {
+	return rangeStore("").received(path)
+}
+
+func (s rangeStore) received(path string) int64 {
 	if path == "" {
 		return 0
 	}
-	if r, err := readRangeRecord(path); err == nil {
+	if r, err := s.read(path); err == nil {
 		return r.received()
+	}
+	if s != "" {
+		return 0 // an untracked sparse file's length is never progress
 	}
 	if _, err := os.Stat(rangeRecordPath(path)); !os.IsNotExist(err) {
 		return 0

@@ -411,12 +411,12 @@ func TestVisibleStorageMigratesRangeCheckpointAndSurvivesRestart(t *testing.T) {
 	if got, err := os.ReadFile(task.VideoTmpPath); err != nil || !bytes.Equal(got, data) {
 		t.Fatalf("migration changed raw media: %v", err)
 	}
-	got, err := readRangeRecord(task.VideoTmpPath)
+	got, err := m.checkpoints().read(task.VideoTmpPath)
 	if err != nil || got.received() != int64(len(data)) || got.ETag != record.ETag {
 		t.Fatalf("checkpoint lost: %+v %v", got, err)
 	}
-	if !strings.HasPrefix(filepath.Base(rangeRecordPath(task.VideoTmpPath)), ".") {
-		t.Fatal("new checkpoint should be hidden")
+	if !pathIsGone(rangeRecordPath(task.VideoTmpPath)) || !pathIsGone(rangeMarkerPath(task.VideoTmpPath)) {
+		t.Fatal("checkpoint migration left sidecars beside the media")
 	}
 	if _, err := os.Stat(task.OutputPath); !os.IsNotExist(err) {
 		t.Fatal("unfinished download created a final MP4")
@@ -426,12 +426,19 @@ func TestVisibleStorageMigratesRangeCheckpointAndSurvivesRestart(t *testing.T) {
 			t.Fatalf("committed legacy artifact remains: %s", path)
 		}
 	}
-	loaded := NewDownloadManager(m.cfgMgr).GetTasks()
+	restarted := NewDownloadManager(m.cfgMgr)
+	loaded := restarted.GetTasks()
 	if len(loaded) != 1 || loaded[0].VideoTmpPath != task.VideoTmpPath || loaded[0].Status != StatusPaused {
 		t.Fatal("restart lost migrated path or pause state")
 	}
-	cleanupStreamArtifacts(task.VideoTmpPath)
-	cleanupStreamArtifacts(task.AudioTmpPath)
+	if restored := restarted.checkpoints().received(task.VideoTmpPath); restored != int64(len(data)) {
+		t.Fatalf("restart lost checkpoint bytes: %d", restored)
+	}
+	restarted.checkpoints().cleanupStream(task.VideoTmpPath)
+	restarted.checkpoints().cleanupStream(task.AudioTmpPath)
+	if !pathIsGone(restarted.checkpoints().recordPath(task.VideoTmpPath)) {
+		t.Fatal("track cleanup left a checkpoint")
+	}
 	entries, err := os.ReadDir(filepath.Dir(task.OutputPath))
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("track cleanup left artifacts: %v %v", entries, err)
@@ -459,6 +466,38 @@ func TestVisibleStoragePreservesForeignStagedFiles(t *testing.T) {
 		if err != nil || string(got) != want {
 			t.Fatalf("collision damaged %s: %v", path, err)
 		}
+	}
+}
+
+func TestStartupPrunesOnlyUnreferencedCheckpointFiles(t *testing.T) {
+	m := newTestManager(t)
+	store := m.checkpoints()
+	video, audio := downloadPaths(filepath.Join(m.cfgMgr.Get().DownloadDir, "temporarily offline.mp4"))
+	m.tasks = []*DownloadTask{{ID: newUUID(), Status: StatusPaused, VideoTmpPath: video, AudioTmpPath: audio}}
+	if err := m.SaveTasks(); err != nil {
+		t.Fatal(err)
+	}
+	keep := store.recordPath(video)
+	orphan := store.recordPath(filepath.Join(t.TempDir(), "orphan.downloading"))
+	interruptedWrite := filepath.Join(string(store), ".tmp_atomic-123")
+	unrelated := filepath.Join(string(store), "unrelated.json")
+	for _, path := range []string{keep, orphan, interruptedWrite, unrelated} {
+		writeStorageFixture(t, path, []byte("checkpoint fixture"))
+	}
+	NewDownloadManager(m.cfgMgr)
+	if !pathIsGone(orphan) || !pathIsGone(interruptedWrite) || pathIsGone(keep) || pathIsGone(unrelated) {
+		t.Fatal("startup did not distinguish referenced checkpoints from orphans")
+	}
+}
+
+func TestStartupPreservesCheckpointsWhenTaskListCannotBeRead(t *testing.T) {
+	m := newTestManager(t)
+	record := m.checkpoints().recordPath(filepath.Join(t.TempDir(), "partial.downloading"))
+	writeStorageFixture(t, record, []byte("checkpoint fixture"))
+	writeStorageFixture(t, m.cfgMgr.GetTasksPath(), []byte("incomplete task snapshot"))
+	NewDownloadManager(m.cfgMgr)
+	if pathIsGone(record) {
+		t.Fatal("an invalid task list was treated as proof of an orphan")
 	}
 }
 

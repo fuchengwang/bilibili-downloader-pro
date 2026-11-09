@@ -231,7 +231,8 @@ func AtomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
 	}
 
 	// 1. 优先尝试直接原子重命名；同卷 Unix 覆盖和目标不存在时均是原子的。
-	if err := os.Rename(tmpPath, filePath); err == nil {
+	renameErr := os.Rename(tmpPath, filePath)
+	if renameErr == nil {
 		cleanupTemp = false
 		return nil
 	}
@@ -240,7 +241,7 @@ func AtomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
 	// 新文件替换失败则立即恢复；旧文件从未在新内容准备好前被删除。
 	info, statErr := os.Stat(filePath)
 	if statErr != nil {
-		return fmt.Errorf("原子替换失败: %w", statErr)
+		return fmt.Errorf("原子替换失败: %w", renameErr)
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("原子写入目标不是普通文件: %s", filePath)

@@ -800,3 +800,75 @@ func TestRangeRecordMigrationAndCleanup(t *testing.T) {
 		}
 	}
 }
+
+func TestDesktopRangeStoreKeepsOnlyMediaTracksInDownloadFolder(t *testing.T) {
+	m := newTestManager(t)
+	dir := m.cfgMgr.Get().DownloadDir
+	video, audio := downloadPaths(filepath.Join(dir, "clip.mp4"))
+	data := []byte("a complete media track")
+	var videoStart atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/video" {
+			var start int64
+			_, _ = fmt.Sscanf(req.Header.Get("Range"), "bytes=%d-", &start)
+			videoStart.Store(start)
+		}
+		w.Header().Set("ETag", `"track"`)
+		http.ServeContent(w, req, "media", time.Time{}, bytes.NewReader(data))
+	}))
+	defer server.Close()
+
+	videoURL := server.URL + "/video"
+	writeStorageFixture(t, video, data[:3])
+	if err := writeRangeRecord(video, rangeRecord{
+		Version: 1, Total: int64(len(data)), ETag: `"track"`,
+		ValidatorKey: mediaValidatorKey(videoURL), // older records lacked Representation
+		Ranges:       []byteRange{{Position: 3, End: int64(len(data))}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A media file with no checkpoint could be a sparse file whose metadata
+	// was lost. Its length must not cause it to be treated as downloaded.
+	writeStorageFixture(t, audio, make([]byte, len(data)))
+	start := func(url, path string) *StreamDownloader {
+		s := NewStreamDownloader([]string{url}, path)
+		s.checkpoints = m.checkpoints()
+		s.representation = mediaRepresentationKey([]string{url})
+		s.skipSizeProbe = true
+		return s
+	}
+	if failure := downloadMediaTracks(context.Background(), start(videoURL, video), start(server.URL+"/audio", audio), 2, nil); failure != nil {
+		t.Fatal(failure)
+	}
+	if videoStart.Load() != 3 {
+		t.Fatalf("valid legacy checkpoint was not resumed: start=%d", videoStart.Load())
+	}
+	for _, path := range []string{video, audio} {
+		assertMediaBytes(t, path, data)
+		if got := m.checkpoints().received(path); got != int64(len(data)) {
+			t.Fatalf("central checkpoint contains %d bytes", got)
+		}
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 2 {
+		t.Fatalf("download folder contains more than the media tracks: %v, %v", entries, err)
+	}
+}
+
+func TestFailedLegacyCheckpointImportPreservesMediaAndSidecars(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "track.downloading")
+	writeStorageFixture(t, path, []byte("prefix"))
+	if err := writeRangeRecord(path, rangeRecord{Version: 1, Total: 12, Ranges: []byteRange{{Position: 6, End: 12}}}); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(t.TempDir(), "blocked")
+	writeStorageFixture(t, blocked, []byte("file in place of the checkpoint directory"))
+	store := rangeStore(blocked)
+	if err := store.adoptLegacy(path); err == nil {
+		t.Fatal("checkpoint import succeeded with unavailable destination")
+	}
+	assertMediaBytes(t, path, []byte("prefix"))
+	if pathIsGone(rangeMarkerPath(path)) || pathIsGone(rangeRecordPath(path)) {
+		t.Fatal("failed import removed the original sidecars")
+	}
+}

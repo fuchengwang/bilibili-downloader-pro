@@ -28,9 +28,9 @@ func newTaskDownloadProgress(ctx context.Context, m *DownloadManager, task *Down
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if p.activeLocked() {
-		task.DownloadedBytes = existingStreamSize(task.VideoTmpPath)
+		task.DownloadedBytes = m.checkpoints().received(task.VideoTmpPath)
 		if hasAudio {
-			task.DownloadedBytes += existingStreamSize(task.AudioTmpPath)
+			task.DownloadedBytes += m.checkpoints().received(task.AudioTmpPath)
 		}
 		p.updateDisplayLocked()
 	}
