@@ -83,13 +83,13 @@ const guestLoginDescription = computed(() => {
 })
 const automaticQualityLabel = computed(() => {
   if (isFetchingQualities.value) return '正在检查可用画质…'
-  if (!isGuest.value) return '最高画质 (自动选择)'
   const best = availableQualities.value.reduce<bilibili.QualityOption | undefined>(
     (highest, option) => option.isAvailable && (!highest || option.id > highest.id) ? option : highest,
     undefined
   )
-  const label = best?.label.replace(/^(清晰|流畅)\s+|\s+(清晰|流畅)$/g, '')
-  return label ? `自动（可用至 ${label}）` : '按可用画质自动选择'
+  if (!best) return '自动'
+  const label = best.label.match(/\b(?:\d{3,4}P|[248]K)\b/i)?.[0].toUpperCase() || best.label
+  return `自动（${label}）`
 })
 
 // 监听偏好设置变更
@@ -301,10 +301,6 @@ defineExpose({
       <div class="card-right">
         <div class="video-header">
           <h2 class="video-title" :title="displayTitle">{{ displayTitle }}</h2>
-          <p v-if="parsedDetail.isCollection" class="collection-context">
-            <span v-if="linkedEpisode" class="current-episode-label">{{ `${parsedDetail.type === 'cheese' ? '课' : 'P'}${linkedEpisode.index}` }} · 当前链接</span>
-            <span :title="parsedDetail.collectionTitle || parsedDetail.title">{{ parsedDetail.collectionTitle || parsedDetail.title }} · 共 {{ parsedDetail.totalParts }} {{ parsedDetail.type === 'cheese' ? '课时' : '集' }}</span>
-          </p>
         </div>
 
         <div class="meta-row">
@@ -591,8 +587,6 @@ defineExpose({
   overflow: hidden;
 }
 
-.collection-context { display: flex; flex-wrap: wrap; gap: 5px 10px; margin-top: 6px; color: var(--text-muted); font-size: 11.5px; }
-.current-episode-label { color: var(--bili-pink); flex-shrink: 0; }
 .playback-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 10px; padding: 6px 10px; border-radius: var(--radius-sm); background: var(--neutral-05); font-size: 12px; }
 .notice-message { display: flex; align-items: flex-start; gap: 6px; color: var(--guest-accent); font-weight: 600; }
 .notice-message svg { flex-shrink: 0; margin-top: 2px; }

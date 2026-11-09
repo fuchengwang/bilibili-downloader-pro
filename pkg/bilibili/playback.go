@@ -41,7 +41,7 @@ func playbackError(kind, detail string) *PlaybackError {
 		e.Message = "当前账号尚未获得该视频的购买观看权限"
 		e.Hint = "请在B站确认购买状态，或登录已购买的账号后重试。"
 	case "preview_only":
-		e.Message = "当前账号只能观看试看内容，无法下载完整视频"
+		e.Message = "当前账号只能访问该视频的试看内容，无法下载完整视频"
 		e.Hint = "请在B站确认完整观看权限后重试。"
 	case "region_restricted":
 		e.Message = "该视频在当前地区暂不可用"

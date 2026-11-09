@@ -1,6 +1,19 @@
 type Episode = { cid: number; index: number; title: string; longTitle?: string }
 export type EpisodeSelection = Record<number, boolean>
 
+export function nearEpisode<T extends { cid: number }>(episodes: T[], cid?: number): T[] {
+  if (!cid) return episodes
+  const current = episodes.findIndex(episode => episode.cid === cid)
+  if (current < 0) return episodes
+
+  const ordered = [episodes[current]]
+  for (let distance = 1; current - distance >= 0 || current + distance < episodes.length; distance++) {
+    if (current + distance < episodes.length) ordered.push(episodes[current + distance])
+    if (current - distance >= 0) ordered.push(episodes[current - distance])
+  }
+  return ordered
+}
+
 export function filterEpisodes<T extends Episode>(episodes: T[], query: string): T[] {
   const text = query.trim().toLocaleLowerCase()
   if (!text) return episodes

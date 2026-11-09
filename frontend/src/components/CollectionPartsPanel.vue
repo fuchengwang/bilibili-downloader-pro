@@ -3,10 +3,14 @@ import { computed, ref, watch } from 'vue'
 import { ArrowLeft, CheckSquare, MinusSquare, Square, Search, X, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { bilibili } from '../../wailsjs/go/models'
 import { filterEpisodes, selectEpisodes } from '../utils/episode-selection'
+import type { EpisodeAccess } from '../utils/episode-playback'
+import EpisodeSelectionMark from './EpisodeSelectionMark.vue'
 
 const props = defineProps<{
   video: bilibili.CollectionVideo
   selection: Record<number, boolean>
+  accessFor: (cid: number) => EpisodeAccess
+  canSelect: (cid: number) => boolean
 }>()
 const emit = defineEmits<{
   (e: 'back'): void
@@ -18,21 +22,24 @@ const range = ref('')
 const rangeError = ref('')
 const page = ref(1)
 const pageSize = 20
-const chosen = computed(() => props.video.parts.filter(p => props.selection[p.cid]))
+const chosen = computed(() => props.video.parts.filter(p => props.canSelect(p.cid) && props.selection[p.cid]))
 const matches = computed(() => filterEpisodes(props.video.parts.map(p => ({ ...p, index: p.page })), query.value))
-const filtered = computed(() => onlySelected.value ? matches.value.filter(p => props.selection[p.cid]) : matches.value)
-const filteredSelected = computed(() => filtered.value.filter(p => props.selection[p.cid]).length)
-const allFilteredSelected = computed(() => filtered.value.length > 0 && filteredSelected.value === filtered.value.length)
+const filtered = computed(() => onlySelected.value ? matches.value.filter(p => props.canSelect(p.cid) && props.selection[p.cid]) : matches.value)
+const selectable = computed(() => filtered.value.filter(p => props.canSelect(p.cid)))
+const filteredSelected = computed(() => selectable.value.filter(p => props.selection[p.cid]).length)
+const allFilteredSelected = computed(() => selectable.value.length > 0 && filteredSelected.value === selectable.value.length)
 const pageCount = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize)))
 const visible = computed(() => filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize))
 watch([query, onlySelected, () => props.video.bvid], () => { page.value = 1 })
 watch(pageCount, count => { if (page.value > count) page.value = count })
-function toggle(cid: number) { emit('select', { ...props.selection, [cid]: !props.selection[cid] }) }
-function selectResults(invert = false) { emit('select', selectEpisodes(props.selection, filtered.value, invert)) }
+function toggle(cid: number) {
+  if (props.canSelect(cid)) emit('select', { ...props.selection, [cid]: !props.selection[cid] })
+}
+function selectResults(invert = false) { emit('select', selectEpisodes(props.selection, selectable.value, invert)) }
 function toggleResults() {
   if (!allFilteredSelected.value) return selectResults()
   const next = { ...props.selection }
-  for (const part of filtered.value) delete next[part.cid]
+  for (const part of selectable.value) delete next[part.cid]
   emit('select', next)
 }
 function clearVideo() {
@@ -57,7 +64,7 @@ function applyRange() {
     }
     for (let i = start; i <= end; i++) if (pages.has(i)) requested.add(i)
   }
-  emit('select', selectEpisodes(props.selection, props.video.parts.filter(p => requested.has(p.page))))
+  emit('select', selectEpisodes(props.selection, props.video.parts.filter(p => requested.has(p.page) && props.canSelect(p.cid))))
   range.value = ''; rangeError.value = ''
 }
 </script>
@@ -72,16 +79,29 @@ function applyRange() {
     <div class="parts-tools">
       <label class="parts-search"><Search :size="15" /><input v-model="query" type="search" placeholder="搜索分 P 标题或序号，如 P8、1-10" aria-label="搜索此视频的分 P" /><button v-if="query" @click="query = ''" aria-label="清除分 P 搜索"><X :size="14" /></button></label>
       <div class="parts-actions">
-        <button role="checkbox" :aria-checked="allFilteredSelected ? 'true' : filteredSelected ? 'mixed' : 'false'" :disabled="filtered.length === 0" @click="toggleResults"><CheckSquare v-if="allFilteredSelected" :size="14" /><MinusSquare v-else-if="filteredSelected" :size="14" /><Square v-else :size="14" />{{ allFilteredSelected ? '取消全选' : '全选' }}{{ query || onlySelected ? '结果' : '此视频' }}</button>
-        <button :disabled="!filtered.length" @click="selectResults(true)">{{ query || onlySelected ? '反选结果' : '反选' }}</button>
+        <button role="checkbox" :aria-checked="allFilteredSelected ? 'true' : filteredSelected ? 'mixed' : 'false'" :disabled="selectable.length === 0" @click="toggleResults"><CheckSquare v-if="allFilteredSelected" :size="14" /><MinusSquare v-else-if="filteredSelected" :size="14" /><Square v-else :size="14" />{{ allFilteredSelected ? '取消全选' : '全选' }}{{ query || onlySelected ? '结果' : '此视频' }}</button>
+        <button :disabled="!selectable.length" @click="selectResults(true)">{{ query || onlySelected ? '反选结果' : '反选' }}</button>
         <button v-if="chosen.length || onlySelected" :class="{ active: onlySelected }" @click="onlySelected = !onlySelected">{{ onlySelected ? '显示全部' : '只看已选' }}</button>
         <button v-if="onlySelected && chosen.length" @click="clearVideo">清空此视频</button>
       </div>
     </div>
     <div class="parts-scroll">
-      <button v-for="part in visible" :key="part.cid" class="part-option" :class="{ selected: selection[part.cid] }" role="checkbox" :aria-checked="!!selection[part.cid]" @click="toggle(part.cid)">
-        <CheckSquare v-if="selection[part.cid]" :size="16" class="selected-icon" /><Square v-else :size="16" class="empty-icon" />
-        <span class="part-number">P{{ part.page }}</span><span class="part-title">{{ part.title }}</span><span class="part-duration">{{ part.durationStr }}</span>
+      <button
+        v-for="part in visible"
+        :key="part.cid"
+        class="part-option"
+        :class="{ selected: canSelect(part.cid) && selection[part.cid] }"
+        :data-access="accessFor(part.cid).state"
+        role="checkbox"
+        :aria-checked="canSelect(part.cid) && !!selection[part.cid]"
+        :aria-disabled="!canSelect(part.cid)"
+        :aria-description="accessFor(part.cid).reason"
+        :title="accessFor(part.cid).reason"
+        @click="toggle(part.cid)"
+      >
+        <EpisodeSelectionMark :state="accessFor(part.cid).state" :checked="canSelect(part.cid) && !!selection[part.cid]" />
+        <span class="part-number">P{{ part.page }}</span><span class="part-title">{{ part.title }}</span>
+        <span class="part-duration">{{ part.durationStr }}</span>
       </button>
       <div v-if="filtered.length === 0" class="parts-empty"><Search :size="24" /><p>{{ onlySelected ? '当前结果中没有已选分 P' : '没有找到匹配的分 P' }}</p></div>
     </div>
@@ -118,6 +138,8 @@ button:disabled { opacity: .45; cursor: default; }button:focus-visible { outline
 .parts-search input, .parts-actions button, .sequence-select input, .sequence-select button { font-size: 11.5px; }
 .parts-actions button:first-child { position: relative; padding: 0 7px; margin-right: 12px; border: 0; border-radius: 5px; }
 .parts-actions button:first-child::after { content: ''; position: absolute; right: -8px; top: 7px; width: 1px; height: 16px; background: var(--border-subtle); pointer-events: none; }
-.part-option { display: grid; grid-template-columns: 16px 30px minmax(0, 1fr) 55px; align-items: center; }
-.part-option > svg { margin-top: 0; }
+.part-option { display: grid; grid-template-columns: 20px 30px minmax(0, 1fr) 55px; align-items: center; }
+.part-option[aria-disabled="true"] { color: var(--text-secondary); cursor: default; }
+.part-option[aria-disabled="true"]:hover { background: transparent; }
+.part-option.selected { background: var(--episode-selected-bg); }
 </style>

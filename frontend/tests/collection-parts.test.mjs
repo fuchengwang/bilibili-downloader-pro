@@ -3,18 +3,29 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import ts from 'typescript'
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, shallowReactive, reactive } from 'vue'
 
 const utilSource = readFileSync(new URL('../src/utils/episode-selection.ts', import.meta.url), 'utf8')
 const utilJS = ts.transpileModule(utilSource, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText
-const { filterEpisodes, selectEpisodes } = await import(`data:text/javascript;base64,${Buffer.from(utilJS).toString('base64')}`)
+const { filterEpisodes, nearEpisode, selectEpisodes } = await import(`data:text/javascript;base64,${Buffer.from(utilJS).toString('base64')}`)
+const knownAccess = {
+  referenceQualities: ref([]),
+  accessFor: () => ({ state: 'available' }),
+  canSelect: () => true,
+}
 function harness(component, props, extra = {}) {
   const source = readFileSync(new URL(`../src/components/${component}.vue`, import.meta.url), 'utf8').match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
   const ast = ts.createSourceFile('component.ts', source, ts.ScriptTarget.Latest, true)
   const script = ast.statements.filter(s => !ts.isImportDeclaration(s)).map(s => s.getText(ast)).join('\n')
   const code = ts.transpileModule(script, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
   const messages = []
-  const c = vm.createContext({ ref, computed, watch, nextTick, filterEpisodes, selectEpisodes, defineProps: () => props, defineEmits: () => (...args) => messages.push(args), onMounted: () => {}, onUnmounted: () => {}, ...extra })
+  const c = vm.createContext({
+    ref, computed, watch, nextTick, filterEpisodes, nearEpisode, selectEpisodes,
+    useEpisodePlayback: () => knownAccess,
+    defineProps: () => component === 'CollectionPartsPanel' ? { ...knownAccess, ...props } : props,
+    defineEmits: () => (...args) => messages.push(args),
+    onMounted: () => {}, onUnmounted: () => {}, ...extra,
+  })
   vm.runInContext(code, c)
   return { c, messages, run: code => vm.runInContext(code, c) }
 }
@@ -152,10 +163,10 @@ test('loaded videos can be submitted while other videos are loading', async () =
   c.toggleGroup(detail.episodes[0])
   assert.equal(run('loading.value'), true)
   assert.equal(run('canSubmit.value'), true)
-  assert.equal(run('selectionIncomplete.value'), true)
+  assert.equal(run('Object.keys(groups.value).length'), 1)
   finish({ ...video(2), bvid: 'BVslow' })
   await loading
-  assert.equal(run('loadedCount.value'), 2)
+  assert.equal(run('Object.keys(groups.value).length'), 2)
 })
 
 test('an incomplete season allows verified entries and a pending submission cannot submit twice', async () => {
@@ -167,4 +178,57 @@ test('an incomplete season allows verified entries and a pending submission cann
   props.submitting = true
   c.handleSubmit()
   assert.equal(messages.length, 0)
+})
+
+test('batch selection uses per-episode playback results and ignores responses for the previous account', async () => {
+  const source = readFileSync(new URL('../src/utils/episode-playback.ts', import.meta.url), 'utf8')
+  const imports = {
+    vue: { computed, watch, shallowReactive, onScopeDispose: callback => { dispose = callback } },
+    '../../wailsjs/go/main/App': { GetPlaybackInfo: (_, __, cid, epid) => new Promise(resolve => requests.push({ cid, epid, resolve })) },
+    './episode-selection': { isPermissionError: kind => kind === 'preview_only', nearEpisode },
+  }
+  const requests = []
+  let dispose
+  const exports = {}
+  vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText,
+    { exports, require: name => imports[name] })
+  const props = reactive({
+    detail: {
+      type: 'bangumi', defaultPage: 2, hasLinkedEpisode: true,
+      episodes: [1, 2, 3, 4].map(cid => ({ cid, epid: cid + 10, index: cid })),
+    },
+    userInfo: { isLogin: true, mid: 1 },
+  })
+  const { c, run, messages } = harness('EpisodeSelectorModal', props, exports)
+  try {
+    assert.deepEqual(requests.map(r => r.epid), [12, 13, 11])
+    c.selectAll()
+    assert.equal(run('selectedList.value.length'), 0)
+
+    props.userInfo = { isLogin: true, mid: 2 }
+    for (const r of requests.slice()) r.resolve({ error: { kind: 'preview_only' } })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(run('accessFor(1).state'), 'checking')
+    assert.deepEqual(requests.slice(3).map(r => r.cid), [2, 3, 1])
+
+    requests[3].resolve({ error: { kind: 'preview_only', message: '只能试看' } })
+    requests[4].resolve({ qualities: [{ isAvailable: false }] })
+    requests[5].resolve({ qualities: [{ isAvailable: true }] })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(requests[6].cid, 4)
+    assert.equal(run('accessFor(2).state'), 'blocked')
+    assert.equal(run('accessFor(3).state'), 'unknown')
+
+    c.selectAll()
+    c.handleSubmit()
+    assert.deepEqual(Array.from(messages.at(-1)[1]), [1, 3])
+    c.deselectAll()
+    c.toggleEpisode(2)
+    run("searchQuery.value = '1-4'; selectAll()")
+    c.invertSelection()
+    assert.equal(run('selectedList.value.length'), 0)
+  } finally {
+    dispose()
+    requests[6]?.resolve({})
+  }
 })

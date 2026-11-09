@@ -1,0 +1,194 @@
+.episode-modal {
+  width: 760px;
+  max-width: 90vw;
+  height: min(680px, 85vh);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.header-title-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.header-icon {
+  color: var(--bili-pink);
+  flex-shrink: 0;
+}
+
+.title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tool-btn.active { color: var(--bili-pink); border-color: var(--bili-pink); }
+.tool-btn:disabled { opacity: .45; cursor: default; }
+.ep-card:focus-visible { outline: 2px solid var(--bili-pink); outline-offset: 2px; }
+.start-btn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+.current-badge {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--neutral-08);
+  color: var(--text-secondary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.no-episodes { grid-column: 1 / -1; min-height: 160px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-muted); font-size: 12px; }
+
+.tool-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tool-btn {
+  height: 28px;
+  padding: 0 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tool-btn:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+.episode-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 20px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+  gap: 10px;
+  align-content: start;
+}
+
+.episode-grid:has(.no-episodes) {
+  align-content: stretch;
+}
+
+.ep-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+
+.ep-card.selected {
+  background: var(--episode-selected-bg);
+  border-color: var(--bili-pink);
+}
+
+.ep-card[aria-disabled="true"] { cursor: default; }
+.ep-card[data-access="blocked"] { background: transparent; border-style: dashed; border-color: var(--neutral-15); }
+.ep-card[data-access="blocked"] :is(.ep-title, .ep-index) { color: var(--text-secondary); }
+.ep-card[data-access="blocked"] .ep-badge { color: var(--text-secondary); background: var(--neutral-05); border-color: transparent; }
+
+.ep-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ep-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 17px;
+}
+
+.ep-index {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.ep-badge {
+  font-size: 9px;
+  padding: 0 4px;
+}
+
+.ep-duration {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.ep-title {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.modal-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--neutral-015);
+}
+
+.footer-stats {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.highlight-num {
+  color: var(--bili-pink);
+  font-weight: 700;
+}
+
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cancel-btn, .add-queue-btn, .start-btn {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 12.5px;
+  gap: 4px;
+}

@@ -13,7 +13,7 @@ const functionNames = new Set(['fetchQualities', 'handleClear', 'currentEpisode'
 const functions = ast.statements
   .filter(node => ts.isFunctionDeclaration(node) && functionNames.has(node.name.text))
   .map(node => node.getText(ast)).join('\n')
-const displayNames = new Set(['linkedEpisode', 'displayTitle', 'displayCover', 'displayDuration'])
+const displayNames = new Set(['linkedEpisode', 'displayTitle', 'displayCover', 'displayDuration', 'automaticQualityLabel'])
 const display = ast.statements
   .filter(node => ts.isVariableStatement(node) && node.declarationList.declarations.some(decl => displayNames.has(decl.name.getText(ast))))
   .map(node => node.getText(ast)).join('\n')
@@ -36,6 +36,21 @@ function harness() {
 
 const detail = () => ({ bvid: 'BVtest', aid: 1, type: 'video', episodes: [{ cid: 2 }] })
 const qualities = [{ id: 80, label: '1080P', isAvailable: true }, { id: 64, label: '720P', isAvailable: true }]
+
+test('automatic quality label uses the highest confirmed available resolution', () => {
+  const { context: c } = harness()
+  const label = () => vm.runInContext('automaticQualityLabel.value', c)
+  assert.equal(label(), '自动')
+  c.isFetchingQualities.value = true
+  assert.equal(label(), '正在检查可用画质…')
+  c.availableQualities.value = [
+    { id: 80, label: '高清 1080P', isAvailable: false },
+    { id: 16, label: '流畅 360P', isAvailable: true },
+    { id: 32, label: '清晰 480P', isAvailable: true },
+  ]
+  c.isFetchingQualities.value = false
+  assert.equal(label(), '自动（480P）')
+})
 
 test('collection quality lookup uses the linked episode instead of the first', async () => {
   const { context: c, requests } = harness()

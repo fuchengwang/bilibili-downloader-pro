@@ -18,6 +18,7 @@
   --guest-accent: #efb782;
   --guest-notice-bg: color-mix(in srgb, var(--guest-accent) 4%, var(--bg-card));
   --guest-login-bg: color-mix(in srgb, var(--guest-accent) 9%, transparent);
+  --episode-selected-bg: color-mix(in srgb, var(--bili-pink) 18%, var(--bg-card));
   --danger: #ef4444;
   --danger-glow: rgba(239, 68, 68, 0.35);
 
