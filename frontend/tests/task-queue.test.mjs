@@ -8,7 +8,15 @@ import { ref, createSSRApp } from 'vue'
 
 const source = readFileSync(new URL('../src/utils/task-queue.ts', import.meta.url), 'utf8')
 const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText
-const { orderedQueueTasks, mergeTaskSnapshots } = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`)
+const {
+  orderedQueueTasks,
+  mergeTaskSnapshots,
+  isPausableQueueTask,
+  isResumableQueueTask,
+  pruneSelectedQueueIds,
+  toggleQueueTaskSelection,
+  summarizeQueueSelection
+} = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`)
 const task = (id, queueOrder, status = 'queued') => ({ id, queueOrder, status, createdAt: 10 })
 
 test('queue uses persistent admission order and leaves newest-first history untouched', () => {
@@ -29,6 +37,62 @@ test('events received during initial read override stale statuses without losing
   assert.equal(merged.find(t=>t.id==='B1').status,'paused')
   assert.equal(merged.length,3)
   assert.deepEqual(orderedQueueTasks(merged).map(t=>t.id),['A1','A2','B1'])
+})
+
+test('toggleQueueTaskSelection toggles single items and supports forward/backward Shift range selection', () => {
+  const visible = ['T1', 'T2', 'T3', 'T4', 'T5']
+  const first = toggleQueueTaskSelection(new Set(), visible, 'T2')
+  assert.deepEqual([...first.selected], ['T2'])
+  assert.equal(first.anchorId, 'T2')
+
+  const forward = toggleQueueTaskSelection(first.selected, visible, 'T4', { shiftKey: true, anchorId: first.anchorId })
+  assert.deepEqual([...forward.selected].sort(), ['T2', 'T3', 'T4'])
+  assert.equal(forward.anchorId, 'T2')
+
+  const backward = toggleQueueTaskSelection(new Set(['T4']), visible, 'T1', { shiftKey: true, anchorId: 'T4' })
+  assert.deepEqual([...backward.selected].sort(), ['T1', 'T2', 'T3', 'T4'])
+
+  const deselected = toggleQueueTaskSelection(forward.selected, visible, 'T3')
+  assert.deepEqual([...deselected.selected].sort(), ['T2', 'T4'])
+  assert.equal(deselected.anchorId, 'T3')
+})
+
+test('summarizeQueueSelection classifies mixed task statuses into pausable, resumable, and deletable IDs', () => {
+  const visible = [
+    task('D1', 1, 'downloading'),
+    task('Q1', 2, 'queued'),
+    task('P1', 3, 'paused'),
+    task('E1', 4, 'error'),
+    task('C1', 5, 'cancelled'),
+    task('M1', 6, 'merging')
+  ]
+  assert.equal(isPausableQueueTask(visible[0]), true)
+  assert.equal(isPausableQueueTask(visible[1]), true)
+  assert.equal(isPausableQueueTask(visible[5]), false)
+  assert.equal(isResumableQueueTask(visible[2]), true)
+  assert.equal(isResumableQueueTask(visible[3]), true)
+  assert.equal(isResumableQueueTask(visible[4]), true)
+  assert.equal(isResumableQueueTask(visible[0]), false)
+
+  const partial = summarizeQueueSelection(visible, new Set(['D1', 'Q1', 'P1', 'E1', 'M1']))
+  assert.deepEqual(partial.pausableIds, ['D1', 'Q1'])
+  assert.deepEqual(partial.resumableIds, ['P1', 'E1'])
+  assert.deepEqual(partial.deletableIds, ['D1', 'Q1', 'P1', 'E1', 'M1'])
+  assert.equal(partial.selectedCount, 5)
+  assert.equal(partial.totalCount, 6)
+  assert.equal(partial.allSelected, false)
+  assert.equal(partial.someSelected, true)
+
+  const full = summarizeQueueSelection(visible, new Set(visible.map(t => t.id)))
+  assert.equal(full.allSelected, true)
+  assert.equal(full.someSelected, false)
+  assert.deepEqual(full.resumableIds, ['P1', 'E1', 'C1'])
+})
+
+test('pruneSelectedQueueIds drops completed and removed tasks while preserving active selections', () => {
+  const tasks = [task('A1', 1, 'paused'), task('A2', 2, 'completed'), task('A3', 3, 'downloading')]
+  const pruned = pruneSelectedQueueIds(new Set(['A1', 'A2', 'A3', 'MISSING']), tasks)
+  assert.deepEqual([...pruned], ['A1', 'A3'])
 })
 
 const app=readFileSync(new URL('../src/App.vue',import.meta.url),'utf8')
@@ -63,15 +127,71 @@ const template=compileTemplate({source:component.match(/<template>([\s\S]*?)<\/t
 assert.deepEqual(template.errors,[])
 const rendered=vm.createContext({exports:{},require:vueRequire})
 vm.runInContext(ts.transpileModule(template.code,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,rendered)
+
+const iconStubs = Object.fromEntries(
+  ['Play', 'Pause', 'RotateCcw', 'Trash2', 'FolderOpen', 'AlertCircle', 'AlertTriangle', 'Clock', 'Zap', 'HardDrive', 'Film', 'ExternalLink', 'ListChecks', 'Check', 'Minus', 'X']
+    .map(name => [name, { render: () => null }])
+)
+
+async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all', selectionMode = false, selectedIds = new Set(), batchBusy = false, showBatchDeleteModal = false }) {
+  const activeQueueCount = tasks.filter(t => t.status !== 'completed').length
+  const downloadingCount = tasks.filter(t => t.status === 'downloading' || t.status === 'merging').length
+  const pausedCount = tasks.filter(t => t.status === 'paused' || t.status === 'queued').length
+  const errorCount = tasks.filter(t => t.status === 'error' || t.status === 'cancelled').length
+  const selectionSummary = summarizeQueueSelection(filteredTasks, selectedIds)
+  return renderToString(createSSRApp({
+    ssrRender: rendered.exports.ssrRender,
+    components: iconStubs,
+    data: () => ({
+      tasks,
+      filteredTasks,
+      currentFilter,
+      activeQueueCount,
+      downloadingCount,
+      pausedCount,
+      errorCount,
+      selectionMode,
+      selectionSummary,
+      batchDeletePreviewTasks: selectionSummary.selectedTasks.slice(0, 4),
+      batchBusy,
+      showBatchDeleteModal,
+      isTaskSelected: id => selectedIds.has(id),
+      isLegacyPlaybackError: () => false
+    })
+  }))
+}
+
 test('queued task renders pause-queue action while paused task renders continue',async()=>{
   for(const [status,expected,unexpected]of [['queued','暂停排队','继续'],['paused','继续','暂停排队']]){
     const tasks=[{...task('A1',1,status),partTitle:'A1',title:'A',progress:0}]
-    const html=await renderToString(createSSRApp({
-      ssrRender:rendered.exports.ssrRender,
-      components:Object.fromEntries(['Play','Pause','RotateCcw','Trash2','FolderOpen','AlertCircle','Clock','Zap','HardDrive','Film','ExternalLink'].map(name=>[name,{render:()=>null}])),
-      data:()=>({tasks,filteredTasks:tasks,currentFilter:'all',isLegacyPlaybackError:()=>false}),
-    }))
+    const html=await renderQueue({ tasks })
     assert.ok(html.includes(`title="${expected}"`),html)
     assert.ok(!html.includes(`title="${unexpected}"`),html)
   }
+})
+
+test('normal mode shows multi-select trigger without batch bar; selection mode renders batch bar and checkboxes', async () => {
+  const tasks = [
+    { ...task('A1', 1, 'downloading'), partTitle: 'Part 1', title: 'Video A', progress: 40 },
+    { ...task('A2', 2, 'paused'), partTitle: 'Part 2', title: 'Video A', progress: 15 },
+    { ...task('A3', 3, 'error'), partTitle: 'Part 3', title: 'Video A', progress: 0, errorMsg: 'boom' }
+  ]
+
+  const normalHtml = await renderQueue({ tasks, selectionMode: false })
+  assert.ok(normalHtml.includes('多选'), normalHtml)
+  assert.ok(normalHtml.includes('失败 (1)'), normalHtml)
+  assert.ok(!normalHtml.includes('class="batch-bar"'), normalHtml)
+  assert.ok(!normalHtml.includes('role="checkbox"'), normalHtml)
+
+  const selectedHtml = await renderQueue({
+    tasks,
+    selectionMode: true,
+    selectedIds: new Set(['A1', 'A2'])
+  })
+  assert.ok(selectedHtml.includes('退出多选'), selectedHtml)
+  assert.ok(selectedHtml.includes('class="batch-bar"'), selectedHtml)
+  assert.ok(selectedHtml.includes('role="checkbox"'), selectedHtml)
+  assert.ok(selectedHtml.includes('继续 (1)'), selectedHtml)
+  assert.ok(selectedHtml.includes('暂停 (1)'), selectedHtml)
+  assert.ok(selectedHtml.includes('删除 (2)'), selectedHtml)
 })

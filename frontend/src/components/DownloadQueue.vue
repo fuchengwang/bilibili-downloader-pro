@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Play,
   Pause,
@@ -7,20 +7,33 @@ import {
   Trash2,
   FolderOpen,
   AlertCircle,
+  AlertTriangle,
   Clock,
   Zap,
   HardDrive,
   Film,
-  ExternalLink
+  ExternalLink,
+  ListChecks,
+  Check,
+  Minus,
+  X
 } from 'lucide-vue-next'
 import { downloader } from '../../wailsjs/go/models'
 import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
 import { episodeURL, isPermissionError } from '../utils/episode-selection'
-import { orderedQueueTasks } from '../utils/task-queue'
+import {
+  orderedQueueTasks,
+  pruneSelectedQueueIds,
+  summarizeQueueSelection,
+  toggleQueueTaskSelection
+} from '../utils/task-queue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   tasks: downloader.DownloadTask[]
-}>()
+  batchBusy?: boolean
+}>(), {
+  batchBusy: false
+})
 
 const emit = defineEmits<{
   (e: 'pause-task', id: string): void
@@ -32,14 +45,24 @@ const emit = defineEmits<{
   (e: 'open-file', path: string, task?: downloader.DownloadTask): void
   (e: 'pause-all'): void
   (e: 'resume-all'): void
+  (e: 'batch-pause', ids: string[]): void
+  (e: 'batch-resume', ids: string[]): void
+  (e: 'batch-delete', ids: string[]): void
   (e: 'clear-completed'): void
   (e: 'open-login'): void
 }>()
 
+const queueContainerRef = ref<HTMLElement | null>(null)
 const currentFilter = ref<'all' | 'downloading' | 'paused' | 'error'>('all')
+const selectionMode = ref(false)
+const selectedIds = ref<Set<string>>(new Set())
+const lastAnchorId = ref<string | null>(null)
+const showBatchDeleteModal = ref(false)
+
 function isLegacyPlaybackError(task: downloader.DownloadTask) {
   return !task.errorKind && /解析媒体流失败|DASH|playurl/.test(task.errorMsg || '')
 }
+
 function taskSourceURL(task: downloader.DownloadTask) {
   return task.sourceUrl || episodeURL(task, task.isCheese ? 'cheese' : task.isBangumi ? 'bangumi' : 'normal')
 }
@@ -51,6 +74,11 @@ function normalizeImg(url?: string) {
   return url
 }
 
+const activeQueueCount = computed(() => props.tasks.filter(t => t.status !== 'completed').length)
+const downloadingCount = computed(() => props.tasks.filter(t => t.status === 'downloading' || t.status === 'merging').length)
+const pausedCount = computed(() => props.tasks.filter(t => t.status === 'paused' || t.status === 'queued').length)
+const errorCount = computed(() => props.tasks.filter(t => t.status === 'error' || t.status === 'cancelled').length)
+
 const filteredTasks = computed(() => {
   const activeTasks = orderedQueueTasks(props.tasks)
   if (currentFilter.value === 'all') return activeTasks
@@ -59,10 +87,151 @@ const filteredTasks = computed(() => {
   if (currentFilter.value === 'error') return activeTasks.filter(t => t.status === 'error' || t.status === 'cancelled')
   return activeTasks
 })
+
+const selectionSummary = computed(() => summarizeQueueSelection(filteredTasks.value, selectedIds.value))
+const batchDeletePreviewTasks = computed(() => selectionSummary.value.selectedTasks.slice(0, 4))
+
+function isTaskSelected(id: string) {
+  return selectedIds.value.has(id)
+}
+
+function exitSelectionMode() {
+  selectionMode.value = false
+  selectedIds.value = new Set()
+  lastAnchorId.value = null
+  showBatchDeleteModal.value = false
+}
+
+function toggleSelectionMode() {
+  if (selectionMode.value) exitSelectionMode()
+  else selectionMode.value = true
+}
+
+function applyTaskSelection(taskId: string, shiftKey: boolean) {
+  const visibleIds = filteredTasks.value.map(t => t.id)
+  const next = toggleQueueTaskSelection(selectedIds.value, visibleIds, taskId, {
+    shiftKey,
+    anchorId: lastAnchorId.value
+  })
+  selectedIds.value = next.selected
+  lastAnchorId.value = next.anchorId
+}
+
+function handleTaskCheckClick(taskId: string, event: MouseEvent) {
+  applyTaskSelection(taskId, event.shiftKey)
+}
+
+function handleTaskCardClick(taskId: string, event: MouseEvent) {
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.task-btn-group, .task-error-help, button, a, summary, details')) return
+  const shortcutSelect = event.metaKey || event.ctrlKey || event.shiftKey
+  if (!selectionMode.value && !shortcutSelect) return
+  if (!selectionMode.value) selectionMode.value = true
+  applyTaskSelection(taskId, event.shiftKey)
+}
+
+function selectAllVisible() {
+  const next = new Set(selectedIds.value)
+  for (const task of filteredTasks.value) {
+    next.add(task.id)
+  }
+  selectedIds.value = next
+  lastAnchorId.value = filteredTasks.value[filteredTasks.value.length - 1]?.id ?? null
+}
+
+function toggleSelectAllVisible() {
+  const next = new Set(selectedIds.value)
+  if (selectionSummary.value.allSelected) {
+    for (const task of filteredTasks.value) {
+      next.delete(task.id)
+    }
+    selectedIds.value = next
+    lastAnchorId.value = null
+    return
+  }
+  selectAllVisible()
+}
+
+function invertSelection() {
+  const next = new Set(selectedIds.value)
+  for (const task of filteredTasks.value) {
+    if (next.has(task.id)) next.delete(task.id)
+    else next.add(task.id)
+  }
+  selectedIds.value = next
+  lastAnchorId.value = null
+}
+
+function triggerBatchResume() {
+  if (props.batchBusy || selectionSummary.value.resumableIds.length === 0) return
+  emit('batch-resume', [...selectionSummary.value.resumableIds])
+}
+
+function triggerBatchPause() {
+  if (props.batchBusy || selectionSummary.value.pausableIds.length === 0) return
+  emit('batch-pause', [...selectionSummary.value.pausableIds])
+}
+
+function openBatchDeleteModal() {
+  if (props.batchBusy || selectionSummary.value.deletableIds.length === 0) return
+  showBatchDeleteModal.value = true
+}
+
+function confirmBatchDelete() {
+  const ids = [...selectionSummary.value.deletableIds]
+  if (ids.length === 0) {
+    showBatchDeleteModal.value = false
+    return
+  }
+  const removed = new Set(ids)
+  const next = new Set(selectedIds.value)
+  for (const id of removed) next.delete(id)
+  selectedIds.value = next
+  lastAnchorId.value = null
+  showBatchDeleteModal.value = false
+  emit('batch-delete', ids)
+}
+
+watch(() => props.tasks, (nextTasks) => {
+  if (selectedIds.value.size > 0) {
+    selectedIds.value = pruneSelectedQueueIds(selectedIds.value, nextTasks)
+  }
+  if (!nextTasks.some(t => t.status !== 'completed')) {
+    exitSelectionMode()
+  }
+  if (currentFilter.value === 'error' && !nextTasks.some(t => t.status === 'error' || t.status === 'cancelled')) {
+    currentFilter.value = 'all'
+  }
+}, { deep: true })
+
+function handleKeydown(event: KeyboardEvent) {
+  if (!selectionMode.value) return
+  if (!queueContainerRef.value || queueContainerRef.value.getClientRects().length === 0) return
+  const target = event.target as HTMLElement | null
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    if (showBatchDeleteModal.value) showBatchDeleteModal.value = false
+    else exitSelectionMode()
+    return
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a' && filteredTasks.value.length > 0) {
+    event.preventDefault()
+    selectAllVisible()
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleKeydown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown)
+})
 </script>
 
 <template>
-  <div class="queue-container">
+  <div ref="queueContainerRef" class="queue-container">
     <!-- Queue Header & Action Bar -->
     <div class="queue-header">
       <div class="filter-tabs">
@@ -71,32 +240,115 @@ const filteredTasks = computed(() => {
           :class="{ active: currentFilter === 'all' }"
           @click="currentFilter = 'all'"
         >
-          全部 ({{ tasks.filter(t => t.status !== 'completed').length }})
+          全部 ({{ activeQueueCount }})
         </button>
         <button
           class="tab-btn"
           :class="{ active: currentFilter === 'downloading' }"
           @click="currentFilter = 'downloading'"
         >
-          下载中 ({{ tasks.filter(t => t.status === 'downloading' || t.status === 'merging').length }})
+          下载中 ({{ downloadingCount }})
         </button>
         <button
           class="tab-btn"
           :class="{ active: currentFilter === 'paused' }"
           @click="currentFilter = 'paused'"
         >
-          等待/暂停 ({{ tasks.filter(t => t.status === 'paused' || t.status === 'queued').length }})
+          等待/暂停 ({{ pausedCount }})
+        </button>
+        <button
+          v-if="errorCount > 0"
+          class="tab-btn tab-btn-error"
+          :class="{ active: currentFilter === 'error' }"
+          @click="currentFilter = 'error'"
+        >
+          失败 ({{ errorCount }})
         </button>
       </div>
 
       <div class="queue-actions">
-        <button class="btn-secondary q-action-btn" @click="emit('pause-all')">
+        <button
+          v-if="activeQueueCount > 0"
+          class="btn-secondary q-action-btn q-select-toggle"
+          :class="{ active: selectionMode }"
+          @click="toggleSelectionMode"
+        >
+          <ListChecks :size="13" />
+          <span>{{ selectionMode ? '退出多选' : '多选' }}</span>
+        </button>
+        <button class="btn-secondary q-action-btn" :disabled="batchBusy" @click="emit('pause-all')">
           <Pause :size="13" />
           <span>全部暂停</span>
         </button>
-        <button class="btn-secondary q-action-btn" @click="emit('resume-all')">
+        <button class="btn-secondary q-action-btn" :disabled="batchBusy" @click="emit('resume-all')">
           <Play :size="13" />
           <span>全部继续</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Contextual Batch Action Bar -->
+    <div v-if="selectionMode && filteredTasks.length > 0" class="batch-bar">
+      <div class="batch-left">
+        <button
+          type="button"
+          class="batch-select-all"
+          @click="toggleSelectAllVisible"
+        >
+          <span
+            class="queue-check-box"
+            :class="{ checked: selectionSummary.allSelected, mixed: selectionSummary.someSelected }"
+            aria-hidden="true"
+          >
+            <Check v-if="selectionSummary.allSelected" :size="12" :stroke-width="3" />
+            <Minus v-else-if="selectionSummary.someSelected" :size="12" :stroke-width="3" />
+          </span>
+          <span>全选</span>
+        </button>
+
+        <button
+          type="button"
+          class="btn-secondary batch-chip-btn"
+          @click="invertSelection"
+        >
+          反选
+        </button>
+
+        <span class="batch-count">
+          已选 <strong>{{ selectionSummary.selectedCount }}</strong> / {{ selectionSummary.totalCount }} 项
+        </span>
+        <span class="batch-tip">支持 Shift 连选</span>
+      </div>
+
+      <div class="batch-right">
+        <button
+          type="button"
+          class="btn-secondary batch-action-btn batch-resume-btn"
+          :disabled="batchBusy || selectionSummary.resumableIds.length === 0"
+          @click="triggerBatchResume"
+        >
+          <Play :size="13" />
+          <span>继续{{ selectionSummary.resumableIds.length > 0 ? ` (${selectionSummary.resumableIds.length})` : '' }}</span>
+        </button>
+
+        <button
+          type="button"
+          class="btn-secondary batch-action-btn batch-pause-btn"
+          :disabled="batchBusy || selectionSummary.pausableIds.length === 0"
+          @click="triggerBatchPause"
+        >
+          <Pause :size="13" />
+          <span>暂停{{ selectionSummary.pausableIds.length > 0 ? ` (${selectionSummary.pausableIds.length})` : '' }}</span>
+        </button>
+
+        <button
+          type="button"
+          class="btn-secondary batch-action-btn batch-delete-btn"
+          :disabled="batchBusy || selectionSummary.deletableIds.length === 0"
+          @click="openBatchDeleteModal"
+        >
+          <Trash2 :size="13" />
+          <span>删除{{ selectionSummary.deletableIds.length > 0 ? ` (${selectionSummary.deletableIds.length})` : '' }}</span>
         </button>
       </div>
     </div>
@@ -107,8 +359,26 @@ const filteredTasks = computed(() => {
         v-for="task in filteredTasks"
         :key="task.id"
         class="task-card"
-        :class="'status-' + task.status"
+        :class="[
+          'status-' + task.status,
+          { 'is-selectable': selectionMode, 'is-selected': isTaskSelected(task.id) }
+        ]"
+        @click="handleTaskCardClick(task.id, $event)"
       >
+        <button
+          v-if="selectionMode"
+          type="button"
+          class="queue-check-btn"
+          role="checkbox"
+          :aria-checked="isTaskSelected(task.id)"
+          :aria-label="`选择任务 ${task.partTitle || task.title}`"
+          @click.stop="handleTaskCheckClick(task.id, $event)"
+        >
+          <span class="queue-check-box" :class="{ checked: isTaskSelected(task.id) }">
+            <Check v-if="isTaskSelected(task.id)" :size="12" :stroke-width="3" />
+          </span>
+        </button>
+
         <div class="task-cover-box">
           <img
             v-if="task.cover"
@@ -251,6 +521,45 @@ const filteredTasks = computed(() => {
       <h3 class="empty-title">当前没有下载任务</h3>
       <p class="empty-desc">在「解析下载」中输入视频链接并选择分集开始下载吧</p>
     </div>
+
+    <!-- Batch Delete Confirmation Modal -->
+    <div v-if="showBatchDeleteModal" class="modal-overlay" @click.self="showBatchDeleteModal = false">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-title-box">
+            <AlertTriangle :size="18" class="modal-icon-danger" />
+            <h3 class="modal-title">删除选中的下载任务</h3>
+          </div>
+          <button class="btn-close" @click="showBatchDeleteModal = false">
+            <X :size="16" />
+          </button>
+        </div>
+
+        <div class="modal-body">
+          <p class="modal-desc">
+            确定要从下载队列中删除选中的 <strong>{{ selectionSummary.deletableIds.length }}</strong> 个任务吗？未完成的临时缓存文件也会一并清理。
+          </p>
+
+          <div class="batch-preview-list">
+            <div v-for="task in batchDeletePreviewTasks" :key="task.id" class="batch-preview-item">
+              <span class="batch-preview-title">{{ task.partTitle || task.title }}</span>
+            </div>
+            <div v-if="selectionSummary.deletableIds.length > batchDeletePreviewTasks.length" class="batch-preview-more">
+              以及其余 {{ selectionSummary.deletableIds.length - batchDeletePreviewTasks.length }} 个任务
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn-secondary" @click="showBatchDeleteModal = false">
+            取消
+          </button>
+          <button class="btn-danger" :disabled="batchBusy" @click="confirmBatchDelete">
+            确认删除 ({{ selectionSummary.deletableIds.length }})
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -268,6 +577,8 @@ const filteredTasks = computed(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -276,6 +587,7 @@ const filteredTasks = computed(() => {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-wrap: wrap;
 }
 
 .tab-btn {
@@ -297,6 +609,11 @@ const filteredTasks = computed(() => {
   font-weight: 600;
 }
 
+.tab-btn-error.active {
+  background: rgba(239, 68, 68, 0.14);
+  color: var(--danger);
+}
+
 .queue-actions {
   display: flex;
   align-items: center;
@@ -308,6 +625,145 @@ const filteredTasks = computed(() => {
   font-size: 11.5px;
   padding: 0 8px;
   gap: 4px;
+}
+
+.q-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.q-select-toggle.active {
+  background: rgba(251, 114, 153, 0.14);
+  border-color: rgba(251, 114, 153, 0.38);
+  color: var(--bili-pink);
+}
+
+/* Batch Action Bar */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid rgba(251, 114, 153, 0.28);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.batch-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.batch-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 6px 0 2px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: var(--radius-xs);
+}
+
+.batch-select-all:hover {
+  background: var(--neutral-05);
+}
+
+.batch-chip-btn {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 11.5px;
+  border-radius: var(--radius-xs);
+}
+
+.batch-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.batch-count strong {
+  color: var(--bili-pink);
+  font-weight: 600;
+}
+
+.batch-tip {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.batch-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.batch-action-btn {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  gap: 4px;
+}
+
+.batch-action-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.batch-resume-btn:not(:disabled):hover {
+  border-color: rgba(251, 114, 153, 0.4);
+  color: var(--bili-pink);
+}
+
+.batch-pause-btn:not(:disabled):hover {
+  border-color: rgba(245, 158, 11, 0.4);
+  color: var(--warning);
+}
+
+.batch-delete-btn:not(:disabled) {
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.batch-delete-btn:not(:disabled):hover {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.queue-check-btn {
+  display: grid;
+  place-items: center;
+  padding: 2px;
+  background: transparent;
+  flex-shrink: 0;
+  border-radius: var(--radius-xs);
+}
+
+.queue-check-box {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--neutral-25);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--bg-app);
+  transition: all var(--transition-fast);
+}
+
+.queue-check-box.checked,
+.queue-check-box.mixed {
+  border-color: var(--bili-pink);
+  background: var(--bili-pink);
+  color: var(--bg-app);
 }
 
 .task-list {
@@ -331,6 +787,15 @@ const filteredTasks = computed(() => {
 .task-card:hover {
   background: var(--bg-card-hover);
   border-color: var(--neutral-12);
+}
+
+.task-card.is-selectable {
+  cursor: pointer;
+}
+
+.task-card.is-selected {
+  background: var(--episode-selected-bg);
+  border-color: var(--border-hover);
 }
 
 .task-cover-box {
@@ -570,5 +1035,155 @@ const filteredTasks = computed(() => {
 .empty-desc {
   font-size: 12.5px;
   color: var(--text-muted);
+}
+
+/* Batch Delete Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.modal-card {
+  background: var(--bg-modal);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: 90%;
+  max-width: 440px;
+  overflow: hidden;
+  animation: scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.modal-title-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-icon-danger {
+  color: var(--danger);
+}
+
+.modal-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.btn-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-xs);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+}
+
+.btn-close:hover {
+  color: var(--text-primary);
+  background: var(--neutral-1);
+}
+
+.modal-body {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-desc {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.batch-preview-list {
+  background: var(--neutral-03);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.batch-preview-item {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.batch-preview-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.batch-preview-more {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--neutral-02);
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 0 14px;
+  height: 32px;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(1.12);
+  box-shadow: 0 2px 8px var(--danger-glow);
+}
+
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 680px) {
+  .batch-tip {
+    display: none;
+  }
 }
 </style>

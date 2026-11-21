@@ -567,6 +567,72 @@ async function onResumeAll() {
   }
 }
 
+const queueBatchBusy = ref(false)
+
+async function runBatchQueueAction(
+  ids: string[],
+  action: (id: string) => Promise<void>
+): Promise<{ succeeded: string[]; failed: number; lastError: string }> {
+  if (queueBatchBusy.value || ids.length === 0) {
+    return { succeeded: [], failed: 0, lastError: '' }
+  }
+  queueBatchBusy.value = true
+  const succeeded: string[] = []
+  let failed = 0
+  let lastError = ''
+  try {
+    for (const id of ids) {
+      try {
+        await action(id)
+        succeeded.push(id)
+      } catch (err: any) {
+        failed++
+        lastError = err?.message || String(err)
+      }
+    }
+  } finally {
+    queueBatchBusy.value = false
+  }
+  return { succeeded, failed, lastError }
+}
+
+async function onBatchPauseTasks(ids: string[]) {
+  const { succeeded, failed, lastError } = await runBatchQueueAction(ids, PauseTask)
+  if (failed === 0 && succeeded.length > 0) {
+    showToast(`已暂停 ${succeeded.length} 个任务`, 'info')
+  } else if (failed > 0 && succeeded.length > 0) {
+    showToast(`已暂停 ${succeeded.length} 个任务，${failed} 个失败: ${lastError}`, 'error')
+  } else if (failed > 0) {
+    showToast('批量暂停失败: ' + lastError, 'error')
+  }
+}
+
+async function onBatchResumeTasks(ids: string[]) {
+  const { succeeded, failed, lastError } = await runBatchQueueAction(ids, ResumeTask)
+  if (failed === 0 && succeeded.length > 0) {
+    showToast(`已继续 ${succeeded.length} 个任务`, 'info')
+  } else if (failed > 0 && succeeded.length > 0) {
+    showToast(`已继续 ${succeeded.length} 个任务，${failed} 个失败: ${lastError}`, 'error')
+  } else if (failed > 0) {
+    showToast('批量继续失败: ' + lastError, 'error')
+  }
+}
+
+async function onBatchDeleteTasks(ids: string[]) {
+  const { succeeded, failed, lastError } = await runBatchQueueAction(ids, id => DeleteTask(id, false))
+  if (succeeded.length > 0) {
+    const removed = new Set(succeeded)
+    tasks.value = tasks.value.filter(t => !removed.has(t.id))
+  }
+  if (failed === 0 && succeeded.length > 0) {
+    showToast(`已移除 ${succeeded.length} 个任务`, 'info')
+  } else if (failed > 0 && succeeded.length > 0) {
+    showToast(`已移除 ${succeeded.length} 个任务，${failed} 个失败: ${lastError}`, 'error')
+  } else if (failed > 0) {
+    showToast('批量移除失败: ' + lastError, 'error')
+  }
+}
+
 async function onClearCompleted(deleteFiles: boolean = false) {
   try {
     await ClearCompletedTasks(deleteFiles)
@@ -673,6 +739,7 @@ function handleLicenseDeactivated(key: string) {
         <div v-show="activeTab === 'queue'" class="tab-view">
           <DownloadQueue
             :tasks="tasks"
+            :batch-busy="queueBatchBusy"
             @open-login="showLoginModal = true"
             @pause-task="onPauseTask"
             @resume-task="onResumeTask"
@@ -682,6 +749,9 @@ function handleLicenseDeactivated(key: string) {
             @open-file="onOpenFile"
             @pause-all="onPauseAll"
             @resume-all="onResumeAll"
+            @batch-pause="onBatchPauseTasks"
+            @batch-resume="onBatchResumeTasks"
+            @batch-delete="onBatchDeleteTasks"
             @clear-completed="onClearCompleted"
           />
         </div>
