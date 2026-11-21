@@ -317,7 +317,6 @@ onUnmounted(() => {
         <span class="batch-count">
           已选 <strong>{{ selectionSummary.selectedCount }}</strong> / {{ selectionSummary.totalCount }} 项
         </span>
-        <span class="batch-tip">支持 Shift 连选</span>
       </div>
 
       <div class="batch-right">
@@ -691,11 +690,6 @@ onUnmounted(() => {
 .batch-count strong {
   color: var(--bili-pink);
   font-weight: 600;
-}
-
-.batch-tip {
-  font-size: 11px;
-  color: var(--text-muted);
 }
 
 .batch-right {
@@ -1179,11 +1173,5 @@ onUnmounted(() => {
 .btn-danger:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-@media (max-width: 680px) {
-  .batch-tip {
-    display: none;
-  }
 }
 </style>
