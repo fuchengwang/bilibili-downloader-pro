@@ -167,105 +167,136 @@ func (s *StreamDownloader) GetTotalSize(ctx context.Context) (int64, error) {
 	if s.totalSize > 0 {
 		return s.totalSize, nil
 	}
-	return s.probeTotalSize(ctx)
+	return s.probeTotalSizeWithRefresh(ctx, false)
 }
 
 // A completed cache must get fresh headers, even if its size is already known.
 func (s *StreamDownloader) probeTotalSize(ctx context.Context) (int64, error) {
+	return s.probeTotalSizeWithRefresh(ctx, true)
+}
+
+func (s *StreamDownloader) probeTotalSizeWithRefresh(ctx context.Context, allowRefresh bool) (int64, error) {
 	s.probed = true
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
+	total, sawAuthExpired, lastErr := s.probeCandidates(ctx)
+	if lastErr == nil && total > 0 {
+		return total, nil
+	}
+	if allowRefresh && sawAuthExpired && s.refresher != nil && ctx.Err() == nil {
+		fresh, refErr := s.refresher(ctx)
+		if refErr != nil {
+			s.recordDiagnostic(refErr)
+		} else if clean := filterStreamURLs(fresh); len(clean) > 0 {
+			s.urls = clean
+			total, _, retryErr := s.probeCandidates(ctx)
+			if retryErr == nil && total > 0 {
+				return total, nil
+			}
+			if retryErr != nil {
+				lastErr = retryErr
+			}
+		}
+	}
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+	if lastErr != nil {
+		return 0, lastErr
+	}
+	return 0, fmt.Errorf("无有效下载 URL")
+}
+
+func (s *StreamDownloader) probeCandidates(ctx context.Context) (int64, bool, error) {
 	var lastErr error
+	sawAuthExpired := false
 	for i := 0; i < len(s.urls); i++ {
 		if err := ctx.Err(); err != nil {
-			return 0, err
+			return 0, sawAuthExpired, err
 		}
 		urlToProbe := s.urls[i]
 		if urlToProbe == "" {
 			continue
 		}
-
-		candidateCtx, stopCandidate := context.WithTimeout(ctx, 2*time.Second)
-		defer stopCandidate()
-		req, err := http.NewRequestWithContext(candidateCtx, http.MethodGet, urlToProbe, nil)
+		total, status, err := s.probeSingleCandidate(ctx, i, urlToProbe)
+		if err == nil && total > 0 {
+			return total, sawAuthExpired, nil
+		}
+		if ctx.Err() != nil {
+			return 0, sawAuthExpired, ctx.Err()
+		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusGone {
+			sawAuthExpired = true
+		}
 		if err != nil {
 			lastErr = err
-			continue
 		}
-		req.Header.Set("User-Agent", bilibili.BrowserUA)
-		req.Header.Set("Referer", bilibili.Referer)
-		req.Header.Set("Range", "bytes=0-0")
-		req.Header.Set("Accept-Encoding", "identity")
+	}
+	return 0, sawAuthExpired, lastErr
+}
 
-		resp, err := s.client.Do(req)
-		if err != nil {
-			if ctx.Err() != nil {
-				return 0, ctx.Err()
-			}
-			s.recordDiagnostic(err)
-			lastErr = err
-			continue
-		}
-		if encoding := resp.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
-			_ = resp.Body.Close()
-			lastErr = fmt.Errorf("探测响应使用了不支持的内容编码")
-			continue
-		}
+func (s *StreamDownloader) probeSingleCandidate(ctx context.Context, index int, urlToProbe string) (int64, int, error) {
+	candidateCtx, stopCandidate := context.WithTimeout(ctx, 5*time.Second)
+	defer stopCandidate()
 
-		// 处理 206 Partial Content：必须严格依赖 Content-Range 头计算文件总大小，严禁读取仅代表分片大小的 Content-Length
-		if resp.StatusCode == http.StatusPartialContent {
-			if isLikelyNonMediaResponse(resp) {
-				_ = resp.Body.Close()
-				lastErr = fmt.Errorf("探测响应不是媒体内容: %s", resp.Header.Get("Content-Type"))
-				continue
-			}
-			cr := resp.Header.Get("Content-Range")
-			first, last, total, pErr := parseContentRange(cr)
-			if pErr == nil && first == 0 && last == 0 && total > 0 && (resp.ContentLength < 0 || resp.ContentLength == 1) {
-				_ = resp.Body.Close()
-				s.rememberProbeValidators(resp)
-				s.setTotalSize(total)
-				s.preferProbeURL(i)
-				return total, nil
-			}
-			_ = resp.Body.Close()
-			if pErr != nil {
-				lastErr = fmt.Errorf("探测响应 Content-Range 无效 (%q): %w", cr, pErr)
-			} else {
-				lastErr = fmt.Errorf("探测响应 Content-Range 缺少有效总长度 (%q)", cr)
-			}
-			continue
-		}
+	req, err := http.NewRequestWithContext(candidateCtx, http.MethodGet, urlToProbe, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	req.Header.Set("User-Agent", bilibili.BrowserUA)
+	req.Header.Set("Referer", bilibili.Referer)
+	req.Header.Set("Range", "bytes=0-0")
+	req.Header.Set("Accept-Encoding", "identity")
 
-		// 处理 200 OK：服务端未按 Range 响应而是返回整个流实体，此时方可读取 Content-Length
-		if resp.StatusCode == http.StatusOK {
-			if isLikelyNonMediaResponse(resp) {
-				_ = resp.Body.Close()
-				lastErr = fmt.Errorf("探测响应不是媒体内容: %s", resp.Header.Get("Content-Type"))
-				continue
-			}
-			if resp.ContentLength > 0 {
-				_ = resp.Body.Close()
-				s.rememberProbeValidators(resp)
-				s.setTotalSize(resp.ContentLength)
-				s.preferProbeURL(i)
-				return resp.ContentLength, nil
-			}
-			_ = resp.Body.Close()
-			lastErr = fmt.Errorf("探测响应缺少有效 Content-Length")
-			continue
+	resp, err := s.client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return 0, 0, ctx.Err()
 		}
+		s.recordDiagnostic(err)
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
 
-		// 所有探测响应都必须关闭，即使状态码不是 200/206；否则长任务会耗尽连接与文件描述符。
-		_ = resp.Body.Close()
-		lastErr = fmt.Errorf("探测 URL 返回异常: %s", resp.Status)
+	if encoding := resp.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+		return 0, resp.StatusCode, fmt.Errorf("探测响应使用了不支持的内容编码")
 	}
 
-	if lastErr != nil {
-		return 0, lastErr
+	// 处理 206 Partial Content：必须严格依赖 Content-Range 头计算文件总大小，严禁读取仅代表分片大小的 Content-Length
+	if resp.StatusCode == http.StatusPartialContent {
+		if isLikelyNonMediaResponse(resp) {
+			return 0, resp.StatusCode, fmt.Errorf("探测响应不是媒体内容: %s", resp.Header.Get("Content-Type"))
+		}
+		cr := resp.Header.Get("Content-Range")
+		first, last, total, pErr := parseContentRange(cr)
+		if pErr == nil && first == 0 && last == 0 && total > 0 && (resp.ContentLength < 0 || resp.ContentLength == 1) {
+			s.rememberProbeValidators(resp)
+			s.setTotalSize(total)
+			s.preferProbeURL(index)
+			return total, resp.StatusCode, nil
+		}
+		if pErr != nil {
+			return 0, resp.StatusCode, fmt.Errorf("探测响应 Content-Range 无效 (%q): %w", cr, pErr)
+		}
+		return 0, resp.StatusCode, fmt.Errorf("探测响应 Content-Range 缺少有效总长度 (%q)", cr)
 	}
-	return 0, fmt.Errorf("无有效下载 URL")
+
+	// 处理 200 OK：服务端未按 Range 响应而是返回整个流实体，此时方可读取 Content-Length
+	if resp.StatusCode == http.StatusOK {
+		if isLikelyNonMediaResponse(resp) {
+			return 0, resp.StatusCode, fmt.Errorf("探测响应不是媒体内容: %s", resp.Header.Get("Content-Type"))
+		}
+		if resp.ContentLength > 0 {
+			s.rememberProbeValidators(resp)
+			s.setTotalSize(resp.ContentLength)
+			s.preferProbeURL(index)
+			return resp.ContentLength, resp.StatusCode, nil
+		}
+		return 0, resp.StatusCode, fmt.Errorf("探测响应缺少有效 Content-Length")
+	}
+
+	return 0, resp.StatusCode, fmt.Errorf("探测 URL 返回异常: %s", resp.Status)
 }
 
 func (s *StreamDownloader) rememberProbeValidators(resp *http.Response) {

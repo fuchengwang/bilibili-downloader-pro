@@ -59,11 +59,21 @@ func mediaTransportForStream() http.RoundTripper {
 
 func isBilibiliMediaHost(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	return strings.HasSuffix(host, ".bilivideo.com") || strings.HasSuffix(host, ".bilivideo.cn") || host == "upos-hz-mirrorakam.akamaized.net"
+	return strings.HasSuffix(host, ".bilivideo.com") ||
+		strings.HasSuffix(host, ".bilivideo.cn") ||
+		strings.HasSuffix(host, ".szbdyd.com") ||
+		(strings.HasPrefix(host, "upos-") && strings.HasSuffix(host, ".akamaized.net"))
 }
 
 func recoverableRouteError(err error) bool {
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) {
+		return true
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
 		return true
 	}
 	var network net.Error

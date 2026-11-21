@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,6 +10,18 @@ import (
 	"sync"
 	"time"
 )
+
+var errAllSourcesRejected = errors.New("all candidate sources rejected")
+
+var singleSourceBackoff = []time.Duration{
+	200 * time.Millisecond,
+	400 * time.Millisecond,
+	800 * time.Millisecond,
+	1200 * time.Millisecond,
+	1600 * time.Millisecond,
+	2000 * time.Millisecond,
+	2500 * time.Millisecond,
+}
 
 // Each manager shares the connection budget across tracks and tasks. Waiting
 // for a slot does not consume a CDN read/header timeout.
@@ -31,6 +44,7 @@ type sourceState struct {
 	failures int
 	ready    time.Time
 	missing  bool
+	rejected bool
 }
 
 // Shared by all workers of one track. URL refresh is single flight and failed
@@ -59,14 +73,19 @@ func (p *sourcePool) next(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("无有效下载 URL")
 		}
 		best := -1
+		hasRejected := false
+		now := time.Now()
 		for i := range p.sources {
-			if p.sources[i].missing {
+			if p.sources[i].rejected {
+				hasRejected = true
+			}
+			if p.sources[i].missing || p.sources[i].rejected {
 				continue
 			}
 			// Preserve the API's preference once a source's cooldown expires.
 			// Comparing timestamps alone makes an untouched backup (zero time)
 			// win forever after a single transient error on the primary.
-			if !p.sources[i].ready.After(time.Now()) {
+			if !p.sources[i].ready.After(now) {
 				best = i
 				break
 			}
@@ -76,6 +95,9 @@ func (p *sourcePool) next(ctx context.Context) (string, error) {
 		}
 		if best < 0 {
 			p.mu.Unlock()
+			if hasRejected {
+				return "", errAllSourcesRejected
+			}
 			return "", fmt.Errorf("媒体请求 HTTP 404：所有候选地址均未找到媒体")
 		}
 		s := p.sources[best]
@@ -88,6 +110,37 @@ func (p *sourcePool) next(ctx context.Context) (string, error) {
 		}
 		return s.url, nil
 	}
+}
+
+func (p *sourcePool) hasHealthyAlternativeLocked(excludeURL string, now time.Time) bool {
+	for i := range p.sources {
+		s := &p.sources[i]
+		if s.url != excludeURL && !s.missing && !s.rejected && !s.ready.After(now) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *sourcePool) reject(url string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.sources {
+		if p.sources[i].url == url {
+			p.sources[i].rejected = true
+		}
+	}
+}
+
+func (p *sourcePool) hasAvailable() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.sources {
+		if !p.sources[i].missing && !p.sources[i].rejected {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *sourcePool) notFound(url string) {
@@ -103,14 +156,41 @@ func (p *sourcePool) notFound(url string) {
 func (p *sourcePool) failed(url string, delay time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.failedLocked(url, delay, time.Now())
+}
+
+func (p *sourcePool) demote(url string, preferDelay time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	if preferDelay > 0 && p.hasHealthyAlternativeLocked(url, now) {
+		for i := range p.sources {
+			s := &p.sources[i]
+			if s.url == url {
+				s.failures++
+				s.ready = now.Add(preferDelay)
+			}
+		}
+		return
+	}
+	p.failedLocked(url, 0, now)
+}
+
+func (p *sourcePool) failedLocked(url string, delay time.Duration, now time.Time) {
+	hasAlt := delay <= 0 && p.hasHealthyAlternativeLocked(url, now)
 	for i := range p.sources {
 		s := &p.sources[i]
 		if s.url == url {
 			s.failures++
-			if delay <= 0 {
-				delay = time.Duration(1<<min(s.failures-1, 4)) * 100 * time.Millisecond
+			d := delay
+			if d <= 0 {
+				if hasAlt {
+					d = time.Duration(1<<min(s.failures-1, 4)) * 500 * time.Millisecond
+				} else {
+					d = singleSourceBackoff[min(s.failures-1, len(singleSourceBackoff)-1)]
+				}
 			}
-			s.ready = time.Now().Add(delay)
+			s.ready = now.Add(d)
 		}
 	}
 }

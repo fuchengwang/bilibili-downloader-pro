@@ -18,8 +18,10 @@ import (
 )
 
 var (
-	errRangeUnsupported = errors.New("server does not support ranged downloads")
-	errEntityChanged    = errors.New("媒体内容已变化，重新下载")
+	errRangeUnsupported    = errors.New("server does not support ranged downloads")
+	errEntityChanged       = errors.New("媒体内容已变化，重新下载")
+	errNonMediaResponse    = errors.New("媒体响应类型异常")
+	errUnsupportedEncoding = errors.New("媒体响应使用了不支持的内容编码")
 )
 
 const minimumSplitSize int64 = 64 * 1024
@@ -485,6 +487,9 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 		}
 		url, err := e.pool.next(ctx)
 		if err != nil {
+			if errors.Is(err, errAllSourcesRejected) && last != nil {
+				return last
+			}
 			return err
 		}
 		release, err := e.s.connections.acquire(ctx)
@@ -528,11 +533,52 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 			release()
 			last = fmt.Errorf("媒体请求 HTTP %d", status)
 			e.s.recordDiagnostic(last)
-			if status == 416 {
+			if status == http.StatusRequestedRangeNotSatisfiable {
+				_, _, realTotal, pErr := parseContentRange(resp.Header.Get("Content-Range"))
+				e.mu.Lock()
+				confirmed := e.confirmed
+				knownTotal := e.total
+				if start == 0 && !confirmed {
+					if pErr == nil && realTotal > 0 {
+						e.s.sizeHint = realTotal
+					} else {
+						e.s.sizeHint = 0
+					}
+					e.mu.Unlock()
+					if pErr != nil || realTotal <= 0 {
+						e.pool.failed(url, 0)
+					}
+					failures++
+					continue
+				}
+				e.mu.Unlock()
+				if pErr == nil && realTotal > 0 && realTotal != knownTotal {
+					e.s.setTotalSize(realTotal)
+				}
 				return errEntityChanged
 			}
 			if status == http.StatusNotFound {
 				e.pool.notFound(url)
+				if !e.pool.hasAvailable() && e.pool.refresh != nil {
+					if err := e.pool.refreshURLs(ctx, url); err != nil {
+						e.s.recordDiagnostic(err)
+					}
+				}
+				failures++
+				continue
+			}
+			if status == 400 || status == 405 || status == 451 {
+				e.pool.reject(url)
+				if !e.pool.hasAvailable() {
+					if e.pool.refresh != nil {
+						if err := e.pool.refreshURLs(ctx, url); err != nil {
+							e.s.recordDiagnostic(err)
+						}
+					}
+					if !e.pool.hasAvailable() {
+						return last
+					}
+				}
 				failures++
 				continue
 			}
@@ -545,9 +591,6 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 				if err := e.pool.refreshURLs(ctx, url); err != nil {
 					e.s.recordDiagnostic(err)
 				}
-			}
-			if status == 400 || status == 405 || status == 451 {
-				return last
 			}
 			failures++
 			continue
@@ -569,13 +612,15 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 		if errors.Is(err, errEntityChanged) {
 			return err
 		}
+		e.mu.Lock()
+		advanced := b.Position > start
+		total := e.total
+		confirmed := e.confirmed
+		e.mu.Unlock()
 		if errors.Is(err, errRangeUnsupported) {
 			// A single ignored Range must not discard every healthy worker's
 			// bytes and permanently collapse a verified parallel transfer.
 			ignoredRanges++
-			e.mu.Lock()
-			confirmed := e.confirmed
-			e.mu.Unlock()
 			if !confirmed && ignoredRanges >= 3 {
 				return errRangeUnsupported
 			}
@@ -584,15 +629,30 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 		if errors.As(err, &local) {
 			return err
 		} // disk errors are never network retries
-		if e.total <= 0 {
+		if total <= 0 && advanced {
 			return err
 		}
 		last = err
 		e.s.recordDiagnostic(err)
-		e.pool.failed(url, 0)
-		e.mu.Lock()
-		advanced := b.Position > start
-		e.mu.Unlock()
+		if !advanced && (errors.Is(err, errNonMediaResponse) || errors.Is(err, errUnsupportedEncoding)) {
+			e.pool.reject(url)
+			if !e.pool.hasAvailable() {
+				if e.pool.refresh != nil {
+					if refErr := e.pool.refreshURLs(ctx, url); refErr != nil {
+						e.s.recordDiagnostic(refErr)
+					}
+				}
+				if !e.pool.hasAvailable() {
+					return err
+				}
+			}
+		} else if errors.Is(err, errSlowStream) {
+			e.pool.demote(url, 30*time.Second)
+		} else if errors.Is(err, errIdleStream) {
+			e.pool.demote(url, 10*time.Second)
+		} else {
+			e.pool.failed(url, 0)
+		}
 		if advanced {
 			failures = 0
 		} else {
@@ -622,10 +682,10 @@ func (e *rangeTransfer) acceptResponse(resp *http.Response, b *byteRange, start 
 	changed := sameSource && validatorChanged(e.etag, e.modified, resp.Header.Get("ETag"), resp.Header.Get("Last-Modified"))
 	e.mu.Unlock()
 	if isLikelyNonMediaResponse(resp) {
-		return fmt.Errorf("媒体响应类型异常: %s", resp.Header.Get("Content-Type"))
+		return fmt.Errorf("%w: %s", errNonMediaResponse, resp.Header.Get("Content-Type"))
 	}
 	if encoding := resp.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
-		return fmt.Errorf("媒体响应使用了不支持的内容编码")
+		return errUnsupportedEncoding
 	}
 	total := resp.ContentLength
 	canRange := strings.EqualFold(resp.Header.Get("Accept-Ranges"), "bytes")
