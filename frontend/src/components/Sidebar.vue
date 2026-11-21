@@ -200,26 +200,25 @@ function handleAccountClick() {
 .brand-sub {
   font-size: 9px;
   font-weight: 700;
-  padding: 1px 4px;
+  padding: 1px 5px;
   border-radius: 4px;
-  background: rgba(251, 114, 153, 0.15);
+  background: rgba(242, 93, 142, 0.12);
   color: var(--bili-pink);
-  border: 1px solid rgba(251, 114, 153, 0.25);
   letter-spacing: 0.5px;
 }
 
 .nav-menu {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   flex: 1;
 }
 
 .nav-item {
   width: 100%;
-  height: 36px;
-  padding: 0 12px;
-  border-radius: 9px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-secondary);
   display: flex;
@@ -233,15 +232,19 @@ function handleAccountClick() {
 }
 
 .nav-item:hover {
-  background: var(--neutral-05);
+  background: rgba(255, 255, 255, 0.045);
   color: var(--text-primary);
 }
 
 .nav-item.active {
-  background: rgba(244, 102, 143, 0.13);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  color: var(--bili-pink);
+  background: rgba(255, 255, 255, 0.085);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
   font-weight: 600;
+}
+
+.nav-item.active .nav-icon {
+  color: var(--bili-pink);
 }
 
 .settings-icon-wrap { position: relative; display: inline-flex; flex-shrink: 0; }

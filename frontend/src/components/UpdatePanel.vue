@@ -58,69 +58,70 @@ async function changeAutomatic(event: Event) {
 </script>
 
 <template>
-  <section class="update-card" aria-labelledby="update-title">
-    <div class="update-header">
-      <span class="update-icon"><RefreshCw :size="16" /></span>
-      <h3 id="update-title">软件更新</h3>
+  <section class="update-section" aria-labelledby="update-title">
+    <div class="update-section-header">
+      <h3 id="update-title" class="update-section-title">软件更新</h3>
       <span class="current-version">当前版本 v{{ state.currentVersion }}</span>
     </div>
-    <div class="update-body">
-      <div class="update-controls">
-        <label class="automatic-choice">
-          <input type="checkbox" :checked="state.autoCheck" :disabled="savingChoice" @change="changeAutomatic" />
-          <span>自动检查更新</span>
-        </label>
-        <button class="update-button secondary" :disabled="busy || ready || requesting" @click="act(CheckForUpdates)">
-          <RefreshCw :size="14" :class="{ spinning: state.phase === 'checking' }" />
-          {{ state.phase === 'checking' ? '正在检查…' : '检查更新' }}
-        </button>
-      </div>
-
-      <div v-if="state.hasUpdate || status" class="release-row">
-        <div class="release-info">
-          <strong v-if="state.version">v{{ state.version }}</strong>
-          <span>{{ status }}</span>
+    <div class="update-card">
+      <div class="update-body">
+        <div class="update-controls">
+          <label class="automatic-choice">
+            <input type="checkbox" :checked="state.autoCheck" :disabled="savingChoice" @change="changeAutomatic" />
+            <span>自动检查更新</span>
+          </label>
+          <button class="update-button secondary" :disabled="busy || ready || requesting" @click="act(CheckForUpdates)">
+            <RefreshCw :size="14" :class="{ spinning: state.phase === 'checking' }" />
+            {{ state.phase === 'checking' ? '正在检查…' : '检查更新' }}
+          </button>
         </div>
-        <button v-if="state.phase === 'available' || state.phase === 'paused'" class="update-button primary" :disabled="requesting" @click="act(DownloadUpdate)">
-          <Download :size="14" />{{ state.phase === 'paused' ? '继续更新' : '下载更新' }}
-        </button>
-        <button v-else-if="state.phase === 'downloading'" class="update-button secondary" :disabled="requesting" @click="act(PauseUpdateDownload)"><Pause :size="14" />暂停</button>
-        <button v-else-if="ready && dismissed" class="update-button primary" :disabled="requesting" @click="act(RestartForUpdate)">重启使用新版</button>
-        <button v-else-if="state.phase === 'install_failed'" class="update-button primary" :disabled="requesting" @click="act(RestartForUpdate)">重试安装</button>
-      </div>
-      <p v-if="state.notes && state.hasUpdate" class="release-notes">{{ state.notes }}</p>
 
-      <div v-if="['downloading', 'paused', 'preparing'].includes(state.phase)" class="download-progress">
-        <div class="progress-track" role="progressbar" aria-label="更新下载进度" :aria-valuenow="progress" aria-valuemin="0" aria-valuemax="100">
-          <div class="progress-fill" :style="{ width: progress + '%' }"></div>
+        <div v-if="state.hasUpdate || status" class="release-row">
+          <div class="release-info">
+            <strong v-if="state.version">v{{ state.version }}</strong>
+            <span>{{ status }}</span>
+          </div>
+          <button v-if="state.phase === 'available' || state.phase === 'paused'" class="update-button primary" :disabled="requesting" @click="act(DownloadUpdate)">
+            <Download :size="14" />{{ state.phase === 'paused' ? '继续更新' : '下载更新' }}
+          </button>
+          <button v-else-if="state.phase === 'downloading'" class="update-button secondary" :disabled="requesting" @click="act(PauseUpdateDownload)"><Pause :size="14" />暂停</button>
+          <button v-else-if="ready && dismissed" class="update-button primary" :disabled="requesting" @click="act(RestartForUpdate)">重启使用新版</button>
+          <button v-else-if="state.phase === 'install_failed'" class="update-button primary" :disabled="requesting" @click="act(RestartForUpdate)">重试安装</button>
         </div>
-        <div class="progress-label"><span>{{ formatBytes(state.downloaded) }} / {{ formatBytes(state.total) }}</span><span>{{ progress }}%</span></div>
-      </div>
+        <p v-if="state.notes && state.hasUpdate" class="release-notes">{{ state.notes }}</p>
 
-      <div v-if="ready && !dismissed" class="ready-message" role="status">
-        <div class="ready-heading"><CheckCircle2 :size="17" /><strong>更新已下载</strong><button class="dismiss-button" aria-label="关闭更新提示" @click="dismissed = true"><X :size="15" /></button></div>
-        <p>重启以安装并使用新版。</p>
-        <div class="ready-actions">
-          <button class="update-button primary" :disabled="requesting" @click="act(RestartForUpdate)">立即重启</button>
-          <button class="update-button secondary" :disabled="requesting" @click="dismissed = true">暂不重启</button>
+        <div v-if="['downloading', 'paused', 'preparing'].includes(state.phase)" class="download-progress">
+          <div class="progress-track" role="progressbar" aria-label="更新下载进度" :aria-valuenow="progress" aria-valuemin="0" aria-valuemax="100">
+            <div class="progress-fill" :style="{ width: progress + '%' }"></div>
+          </div>
+          <div class="progress-label"><span>{{ formatBytes(state.downloaded) }} / {{ formatBytes(state.total) }}</span><span>{{ progress }}%</span></div>
         </div>
-      </div>
 
-      <div v-if="error" class="update-error" role="status">
-        <p>{{ error }}</p>
-        <button v-if="state.hasUpdate && !busy" class="text-button" :disabled="requesting" @click="act(RetryUpdateDownload)">重新下载</button>
+        <div v-if="ready && !dismissed" class="ready-message" role="status">
+          <div class="ready-heading"><CheckCircle2 :size="17" /><strong>更新已下载</strong><button class="dismiss-button" aria-label="关闭更新提示" @click="dismissed = true"><X :size="15" /></button></div>
+          <p>重启以安装并使用新版。</p>
+          <div class="ready-actions">
+            <button class="update-button primary" :disabled="requesting" @click="act(RestartForUpdate)">立即重启</button>
+            <button class="update-button secondary" :disabled="requesting" @click="dismissed = true">暂不重启</button>
+          </div>
+        </div>
+
+        <div v-if="error" class="update-error" role="status">
+          <p>{{ error }}</p>
+          <button v-if="state.hasUpdate && !busy" class="text-button" :disabled="requesting" @click="act(RetryUpdateDownload)">重新下载</button>
+        </div>
       </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-.update-card { background: var(--bg-card); border: 1px solid var(--border-hairline); border-radius: var(--radius-md); box-shadow: var(--surface-highlight), var(--shadow-sm); overflow: hidden; }
-.update-header { display: flex; align-items: center; gap: 10px; padding: 16px 20px 8px 20px; }
-.update-header h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text-primary); }
-.update-icon { width: 28px; height: 28px; border-radius: 8px; background: rgba(0,174,236,.12); color: #00aeec; display: flex; align-items: center; justify-content: center; }
-.current-version { margin-left: auto; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.update-body { padding: 8px 20px 20px 20px; display: flex; flex-direction: column; gap: 14px; }
+.update-section { display: flex; flex-direction: column; }
+.update-section-header { display: flex; align-items: center; justify-content: space-between; padding: 0 4px 8px 4px; }
+.update-section-title { margin: 0; font-size: 12px; font-weight: 600; color: var(--text-muted); letter-spacing: 0.01em; }
+.current-version { font-size: 11.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.update-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; box-shadow: var(--surface-highlight), var(--shadow-sm); overflow: hidden; }
+.update-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 .update-controls, .release-row, .ready-heading, .ready-actions { display: flex; align-items: center; gap: 10px; }
 .update-controls, .release-row { justify-content: space-between; }
 .automatic-choice { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary); cursor: pointer; }

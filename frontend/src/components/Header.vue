@@ -42,8 +42,8 @@ const emit = defineEmits<{
 
 <style scoped>
 .app-header {
-  height: 56px;
-  min-height: 56px;
+  height: 52px;
+  min-height: 52px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -59,7 +59,7 @@ const emit = defineEmits<{
 }
 
 .page-title {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: -0.2px;

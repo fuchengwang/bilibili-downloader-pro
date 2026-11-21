@@ -1,51 +1,51 @@
 :root {
   /* 品牌与主色调 */
-  --bili-pink: #f4668f;
-  --bili-pink-hover: #ff7ba1;
-  --bili-pink-glow: rgba(244, 102, 143, 0.24);
+  --bili-pink: #f25d8e;
+  --bili-pink-hover: #ff72a0;
+  --bili-pink-glow: rgba(242, 93, 142, 0.22);
   
   --bili-blue: #00aeec;
   --bili-blue-hover: #23c9ff;
-  --bili-blue-glow: rgba(0, 174, 236, 0.3);
+  --bili-blue-glow: rgba(0, 174, 236, 0.28);
 
   --vip-gold: #f59e0b;
-  --vip-gold-glow: rgba(245, 158, 11, 0.3);
+  --vip-gold-glow: rgba(245, 158, 11, 0.28);
 
   --success: #10b981;
-  --success-glow: rgba(16, 185, 129, 0.3);
+  --success-glow: rgba(16, 185, 129, 0.28);
   
   --warning: #f59e0b;
   --guest-accent: #efb782;
-  --guest-notice-bg: color-mix(in srgb, var(--guest-accent) 4%, var(--bg-card));
-  --guest-login-bg: color-mix(in srgb, var(--guest-accent) 9%, transparent);
-  --episode-selected-bg: color-mix(in srgb, var(--bili-pink) 16%, var(--bg-card));
+  --guest-notice-bg: rgba(239, 183, 130, 0.05);
+  --guest-login-bg: rgba(239, 183, 130, 0.1);
+  --episode-selected-bg: rgba(242, 93, 142, 0.12);
   --danger: #ef4444;
-  --danger-glow: rgba(239, 68, 68, 0.3);
+  --danger-glow: rgba(239, 68, 68, 0.28);
 
-  /* 背景体系 (4-step luminance ladder) */
-  --bg-app: #0b0d12;
-  --bg-sidebar: #0f1218;
-  --bg-card: #151922;
-  --bg-card-hover: #1b202c;
-  --bg-control: #1c2230;
-  --bg-control-hover: #232a3b;
-  --bg-input: #1a1f2b;
-  --bg-modal: #151923;
-  --bg-popover: rgba(24, 29, 41, 0.96);
+  /* 背景体系 (Neutral Obsidian Charcoal Ladder) */
+  --bg-app: #0d0d0f;
+  --bg-sidebar: #121215;
+  --bg-card: #17171b;
+  --bg-card-hover: #1e1e23;
+  --bg-control: #202026;
+  --bg-control-hover: #282830;
+  --bg-input: #1b1b20;
+  --bg-modal: #151519;
+  --bg-popover: rgba(26, 26, 31, 0.96);
   --bg-badge: rgba(255, 255, 255, 0.08);
 
   /* 边框体系 */
-  --border-subtle: rgba(255, 255, 255, 0.055);
-  --border-hairline: rgba(255, 255, 255, 0.04);
-  --border-popover: rgba(255, 255, 255, 0.1);
-  --border-hover: rgba(244, 102, 143, 0.4);
-  --border-focus: #f4668f;
-  --surface-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-hairline: rgba(255, 255, 255, 0.05);
+  --border-popover: rgba(255, 255, 255, 0.11);
+  --border-hover: rgba(242, 93, 142, 0.42);
+  --border-focus: #f25d8e;
+  --surface-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.045);
 
   /* 文字颜色 */
-  --text-primary: #f1f5f9;
-  --text-secondary: #9aa6b8;
-  --text-muted: #667387;
+  --text-primary: #f4f4f6;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
   --text-link: #38bdf8;
 
   /* 圆角 */
@@ -60,8 +60,8 @@
   --shadow-md: 0 10px 28px -8px rgba(0, 0, 0, 0.55);
   --shadow-lg: 0 24px 56px -12px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.08);
   --shadow-popover: 0 16px 40px -8px rgba(0, 0, 0, 0.68), 0 0 0 1px rgba(255, 255, 255, 0.09);
-  --shadow-pink: 0 4px 16px rgba(232, 80, 125, 0.28);
-  --shadow-blue: 0 4px 16px rgba(0, 174, 236, 0.25);
+  --shadow-pink: 0 2px 10px rgba(222, 66, 116, 0.28);
+  --shadow-blue: 0 2px 10px rgba(0, 174, 236, 0.25);
 
   /* 动效过渡 */
   --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
@@ -69,9 +69,9 @@
   --transition-smooth: 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 
   color-scheme: dark;
-  --bg-header: rgba(11, 13, 18, 0.78);
-  --bg-toast: rgba(24, 29, 41, 0.96);
-  --bg-toast-highlight: rgba(32, 26, 40, 0.96);
+  --bg-header: rgba(13, 13, 15, 0.82);
+  --bg-toast: rgba(26, 26, 31, 0.96);
+  --bg-toast-highlight: rgba(32, 24, 30, 0.96);
   --neutral-015: rgba(255, 255, 255, 0.015);
   --neutral-02: rgba(255, 255, 255, 0.02);
   --neutral-03: rgba(255, 255, 255, 0.03);

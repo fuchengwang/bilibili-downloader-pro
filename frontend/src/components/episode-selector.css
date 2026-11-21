@@ -62,7 +62,7 @@
 .tool-btn {
   height: 28px;
   padding: 0 10px;
-  background: var(--bg-card);
+  background: var(--bg-control);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xs);
   color: var(--text-secondary);
@@ -73,7 +73,7 @@
 }
 
 .tool-btn:hover {
-  background: var(--bg-card-hover);
+  background: var(--bg-control-hover);
   color: var(--text-primary);
 }
 
@@ -96,21 +96,21 @@
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 10px 11px;
+  padding: 11px 12px;
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.035);
+  background: rgba(255, 255, 255, 0.03);
   border: 1px solid transparent;
   cursor: pointer;
   transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .ep-card:hover:not([aria-disabled="true"]):not(.selected) {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.065);
 }
 
 .ep-card.selected {
-  background: var(--episode-selected-bg);
-  border-color: var(--bili-pink);
+  background: rgba(242, 93, 142, 0.12);
+  border-color: rgba(242, 93, 142, 0.55);
 }
 
 .ep-card[aria-disabled="true"] { cursor: default; }

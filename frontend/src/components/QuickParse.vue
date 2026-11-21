@@ -254,7 +254,16 @@ defineExpose({
 </script>
 
 <template>
-  <div class="parse-container">
+  <div class="parse-container" :class="{ 'is-empty': !parsedDetail }">
+    <!-- Hero Heading (Empty State) -->
+    <div v-if="!parsedDetail" class="hero-head">
+      <div class="hero-icon-badge">
+        <Film :size="22" />
+      </div>
+      <h2 class="hero-title">粘贴链接，即刻解析</h2>
+      <p class="hero-subtitle">支持 B 站视频、番剧、合集、课堂与 b23.tv 短链</p>
+    </div>
+
     <!-- Hero Search Input Box -->
     <div class="input-card">
       <div class="search-wrap">
@@ -407,39 +416,115 @@ defineExpose({
       <button type="button" class="guest-login" @click="emit('open-login')">登录 B 站账号</button>
     </div>
 
-    <!-- Empty / Guide State -->
-    <div v-if="!parsedDetail" class="empty-guide">
-      <div class="guide-icon-box">
-        <Film :size="26" />
-      </div>
-      <h3 class="guide-title">粘贴链接开始下载</h3>
-      <p class="guide-desc">支持视频、番剧、合集、课堂与 b23.tv 短链</p>
-      <div class="features-row">
-        <span class="feature-pill">8K / 4K / 1080P60</span>
-        <span class="feature-pill">无损音质</span>
-        <span class="feature-pill">合集批量选集</span>
-      </div>
+    <!-- Empty / Capability Cue -->
+    <div v-if="!parsedDetail" class="capability-row">
+      <span>8K / 4K / 1080P60</span>
+      <span class="cap-dot" aria-hidden="true">·</span>
+      <span>杜比 / 无损音质</span>
+      <span class="cap-dot" aria-hidden="true">·</span>
+      <span>合集批量选集</span>
     </div>
   </div>
 </template>
 
 <style scoped>
 .parse-container {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 18px;
   width: 100%;
-  max-width: 920px;
+  max-width: 880px;
   margin: 0 auto;
 }
 
+.parse-container.is-empty {
+  min-height: calc(100vh - 120px);
+  justify-content: center;
+  align-items: center;
+  padding-bottom: 64px;
+  gap: 0;
+}
+
+.parse-container.is-empty::before {
+  content: '';
+  position: absolute;
+  width: 460px;
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(242, 93, 142, 0.11) 0%, transparent 70%);
+  filter: blur(40px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.hero-head {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.hero-icon-badge {
+  width: 46px;
+  height: 46px;
+  border-radius: 13px;
+  background: rgba(242, 93, 142, 0.12);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--bili-pink);
+  margin-bottom: 14px;
+}
+
+.hero-title {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.025em;
+  margin-bottom: 6px;
+}
+
+.hero-subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 .input-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
   border-radius: var(--radius-md);
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
-  padding: 5px 7px;
-  box-shadow: var(--surface-highlight), var(--shadow-sm);
+  padding: 5px 8px;
+  box-shadow: var(--surface-highlight), var(--shadow-md);
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.parse-container.is-empty .input-card {
+  max-width: 680px;
+}
+
+.capability-row {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.cap-dot {
+  opacity: 0.45;
 }
 
 .input-card:focus-within {
@@ -498,8 +583,8 @@ defineExpose({
 
 .result-card {
   display: flex;
-  gap: 20px;
-  padding: 18px;
+  gap: 22px;
+  padding: 20px;
   border-radius: var(--radius-md);
   background: var(--bg-card);
   border: 1px solid var(--border-hairline);
@@ -507,8 +592,8 @@ defineExpose({
 }
 
 .card-left {
-  width: 240px;
-  min-width: 240px;
+  width: 264px;
+  min-width: 264px;
 }
 
 .cover-wrapper {
@@ -517,7 +602,8 @@ defineExpose({
   aspect-ratio: 16 / 10;
   border-radius: var(--radius-sm);
   overflow: hidden;
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 .video-cover {
@@ -572,9 +658,10 @@ defineExpose({
 }
 
 .video-title {
-  font-size: 15.5px;
-  font-weight: 700;
+  font-size: 17px;
+  font-weight: 600;
   color: var(--text-primary);
+  letter-spacing: -0.02em;
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -721,57 +808,4 @@ defineExpose({
   white-space: nowrap;
 }
 .main-action-btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
-
-/* Empty State */
-.empty-guide {
-  margin-top: 56px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  padding: 36px 20px;
-}
-
-.guide-icon-box {
-  width: 52px;
-  height: 52px;
-  border-radius: var(--radius-md);
-  background: radial-gradient(circle at 30% 20%, rgba(244, 102, 143, 0.2), rgba(244, 102, 143, 0.08));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--bili-pink);
-  margin-bottom: 16px;
-}
-
-.guide-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-primary);
-  letter-spacing: -0.2px;
-  margin-bottom: 6px;
-}
-
-.guide-desc {
-  font-size: 13px;
-  color: var(--text-muted);
-  max-width: 440px;
-  margin-bottom: 20px;
-}
-
-.features-row {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-
-.feature-pill {
-  padding: 4px 11px;
-  border-radius: var(--radius-full);
-  background: var(--neutral-04);
-  font-size: 11.5px;
-  color: var(--text-secondary);
-}
 </style>

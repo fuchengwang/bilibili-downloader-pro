@@ -443,7 +443,8 @@ function confirmClearAll() {
   overflow: hidden;
   flex-shrink: 0;
   cursor: pointer;
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 .cover-img {
@@ -525,10 +526,13 @@ function confirmClearAll() {
 
 .part-badge {
   font-size: 10.5px;
-  color: var(--bili-blue);
-  background: rgba(0, 174, 236, 0.12);
-  padding: 1px 5px;
+  color: var(--text-secondary);
+  background: var(--neutral-06);
+  padding: 1px 6px;
   border-radius: var(--radius-xs);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   flex-shrink: 0;
 }

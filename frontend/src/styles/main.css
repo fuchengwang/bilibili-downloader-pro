@@ -58,28 +58,28 @@ button:active {
 }
 
 .btn-primary {
-  background: linear-gradient(180deg, #f77097, #e8507d);
+  background: linear-gradient(180deg, #ec5284, #de4274);
   color: #fff;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 10px rgba(232, 80, 125, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 2px 8px rgba(222, 66, 116, 0.25);
   padding: 8px 16px;
 }
 
 .btn-primary:hover {
-  background: linear-gradient(180deg, #ff7da3, #ee5b86);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26), 0 4px 14px rgba(232, 80, 125, 0.36);
+  background: linear-gradient(180deg, #f56191, #e64c7d);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24), 0 4px 12px rgba(222, 66, 116, 0.32);
 }
 
 .btn-secondary {
-  background: var(--neutral-06);
+  background: rgba(255, 255, 255, 0.065);
   color: var(--text-primary);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.07);
   box-shadow: var(--surface-highlight);
   padding: 8px 14px;
 }
 
 .btn-secondary:hover {
-  background: var(--neutral-1);
-  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.11);
+  border-color: rgba(255, 255, 255, 0.11);
 }
 
 .btn-icon {

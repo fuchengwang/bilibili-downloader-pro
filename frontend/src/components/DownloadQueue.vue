@@ -582,34 +582,40 @@ onUnmounted(() => {
 }
 
 .filter-tabs {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-hairline);
+  border-radius: 10px;
   flex-wrap: wrap;
 }
 
 .tab-btn {
-  padding: 5px 10px;
+  padding: 5px 11px;
   font-size: 12px;
   background: transparent;
   color: var(--text-muted);
-  border-radius: var(--radius-sm);
+  border-radius: 7px;
+  transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
-.tab-btn:hover {
-  background: var(--neutral-05);
+.tab-btn:hover:not(.active) {
   color: var(--text-primary);
 }
 
 .tab-btn.active {
-  background: rgba(251, 114, 153, 0.12);
-  color: var(--bili-pink);
+  background: var(--bg-control-hover);
+  color: var(--text-primary);
   font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .tab-btn-error.active {
-  background: rgba(239, 68, 68, 0.14);
+  background: rgba(239, 68, 68, 0.16);
   color: var(--danger);
+  box-shadow: none;
 }
 
 .queue-actions {
@@ -798,7 +804,8 @@ onUnmounted(() => {
   border-radius: var(--radius-sm);
   overflow: hidden;
   flex-shrink: 0;
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 .task-cover {
@@ -846,7 +853,7 @@ onUnmounted(() => {
 }
 
 .task-title {
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
@@ -856,10 +863,13 @@ onUnmounted(() => {
 
 .part-badge {
   font-size: 10.5px;
-  color: var(--bili-blue);
-  background: rgba(0, 174, 236, 0.12);
-  padding: 1px 5px;
+  color: var(--text-secondary);
+  background: var(--neutral-06);
+  padding: 1px 6px;
   border-radius: var(--radius-xs);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -870,7 +880,7 @@ onUnmounted(() => {
 
 .progress-bar {
   width: 100%;
-  height: 5px;
+  height: 3.5px;
   background: var(--neutral-08);
   border-radius: var(--radius-full);
   overflow: hidden;

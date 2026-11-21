@@ -1,16 +1,10 @@
 <script setup lang="ts">
 import { ref, onBeforeUnmount } from 'vue'
 import {
-  Folder,
   FolderOpen,
-  Cpu,
-  ClipboardCheck,
-  ShieldCheck,
-  KeyRound,
   Unlink,
   Eye,
-  EyeOff,
-  Sun
+  EyeOff
 } from 'lucide-vue-next'
 import UpdatePanel from './UpdatePanel.vue'
 import AppSelect from './AppSelect.vue'
@@ -250,8 +244,8 @@ async function handleSave() {
 }
 
 const themeOptions = [
-  { value: 'light', label: '浅色模式' },
-  { value: 'dark', label: '深色模式' },
+  { value: 'light', label: '浅色' },
+  { value: 'dark', label: '深色' },
   { value: 'system', label: '跟随系统' }
 ]
 
@@ -291,74 +285,66 @@ const limitUnitOptions = [
 <template>
   <div class="settings-page">
     <div class="settings-container">
-      <div class="settings-card">
-        <div class="card-header">
-          <div class="card-icon-box"><Sun :size="16" /></div>
-          <div class="header-text">
-            <h3 class="card-title">外观</h3>
+      <!-- Group 1: 外观与存储 -->
+      <section class="settings-section">
+        <h3 class="settings-section-title">外观与存储</h3>
+        <div class="settings-group">
+          <div class="setting-row">
+            <div class="setting-label-wrap">
+              <span class="setting-label">界面模式</span>
+            </div>
+            <div class="setting-control">
+              <div class="segmented-control" role="radiogroup" aria-label="界面模式">
+                <button
+                  v-for="opt in themeOptions"
+                  :key="opt.value"
+                  type="button"
+                  role="radio"
+                  class="segmented-btn"
+                  :class="{ active: form.theme === opt.value }"
+                  :aria-checked="form.theme === opt.value"
+                  @click="() => { form.theme = opt.value; savePreference('theme', opt.value) }"
+                >
+                  {{ opt.label }}
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
-        <div class="card-body">
-          <div class="form-item">
-            <label class="item-label" for="theme-select">界面模式</label>
-            <AppSelect
-              id="theme-select"
-              :model-value="form.theme"
-              :options="themeOptions"
-              aria-label="界面模式"
-              @update:model-value="val => { form.theme = String(val); savePreference('theme', form.theme) }"
-            />
-          </div>
-        </div>
-      </div>
-      <!-- Section 1: 下载目录 -->
-      <div class="settings-card">
-        <div class="card-header">
-          <div class="card-icon-box">
-            <Folder :size="16" />
-          </div>
-          <div class="header-text">
-            <h3 class="card-title">存储位置</h3>
-          </div>
-        </div>
 
-        <div class="card-body">
-          <div class="form-item">
-            <label class="item-label">下载目录</label>
-            <div class="dir-group">
+          <div class="setting-row">
+            <div class="setting-label-wrap">
+              <span class="setting-label">下载目录</span>
+            </div>
+            <div class="setting-control dir-control">
               <input
                 v-model="form.downloadDir"
                 type="text"
                 class="dir-input"
                 placeholder="正在获取默认下载目录..."
-                @input="scheduleDirectorySave" @blur="saveDirectory" @keydown.enter="saveDirectory"
+                @input="scheduleDirectorySave"
+                @blur="saveDirectory"
+                @keydown.enter="saveDirectory"
               />
               <button class="btn-secondary browse-btn" @click="handleBrowseDir">
-                <span>更改目录</span>
+                <span>更改</span>
               </button>
               <button class="btn-secondary open-btn" @click="handleOpenDir" title="在访达/资源管理器中打开">
-                <FolderOpen :size="15" />
+                <FolderOpen :size="14" />
               </button>
             </div>
           </div>
         </div>
-      </div>
+      </section>
 
-      <!-- Section 2: 画质与并发偏好 -->
-      <div class="settings-card">
-        <div class="card-header">
-          <div class="card-icon-box">
-            <Cpu :size="16" />
-          </div>
-          <div class="header-text">
-            <h3 class="card-title">下载与画质</h3>
-          </div>
-        </div>
-
-        <div class="card-body">
-          <div class="grid-2">
-            <div class="form-item">
-              <label class="item-label">首选画质</label>
+      <!-- Group 2: 下载与画质 -->
+      <section class="settings-section">
+        <h3 class="settings-section-title">下载与画质</h3>
+        <div class="settings-group">
+          <div class="setting-row">
+            <div class="setting-label-wrap">
+              <span class="setting-label">首选画质</span>
+            </div>
+            <div class="setting-control select-control">
               <AppSelect
                 :model-value="form.defaultQuality"
                 :options="qualityOptions"
@@ -366,9 +352,13 @@ const limitUnitOptions = [
                 @update:model-value="val => { form.defaultQuality = String(val); savePreference('defaultQuality', form.defaultQuality) }"
               />
             </div>
+          </div>
 
-            <div class="form-item">
-              <label class="item-label">视频编码</label>
+          <div class="setting-row">
+            <div class="setting-label-wrap">
+              <span class="setting-label">视频编码</span>
+            </div>
+            <div class="setting-control select-control">
               <AppSelect
                 :model-value="form.defaultCodec"
                 :options="codecOptions"
@@ -378,46 +368,65 @@ const limitUnitOptions = [
             </div>
           </div>
 
-          <div class="grid-2">
-            <div class="form-item">
-              <label class="item-label">分片线程</label>
+          <div class="setting-row">
+            <div class="setting-label-wrap">
+              <span class="setting-label">单任务分片线程</span>
+            </div>
+            <div class="setting-control select-control-sm">
               <AppSelect
                 :model-value="form.threadsPerTask"
                 :options="threadOptions"
-                aria-label="分片线程"
+                aria-label="单任务分片线程"
                 @update:model-value="val => { form.threadsPerTask = Number(val); savePreference('threadsPerTask', form.threadsPerTask) }"
               />
             </div>
+          </div>
 
-            <div class="form-item">
-              <label class="item-label">同时下载数</label>
-              <div class="slider-box">
-                <input
-                  v-model.number="form.maxConcurrent"
-                  type="range"
-                  min="1"
-                  max="10"
-                  class="concurrency-range"
-                  @input="savePreference('maxConcurrent', form.maxConcurrent)"
-                />
-                <span class="range-val-badge">{{ form.maxConcurrent }} 个任务</span>
-              </div>
+          <div class="setting-row">
+            <div class="setting-label-wrap">
+              <span class="setting-label">最大同时下载数</span>
+            </div>
+            <div class="setting-control slider-control">
+              <input
+                v-model.number="form.maxConcurrent"
+                type="range"
+                min="1"
+                max="10"
+                class="concurrency-range"
+                @input="savePreference('maxConcurrent', form.maxConcurrent)"
+              />
+              <span class="range-val-badge">{{ form.maxConcurrent }} 个任务</span>
             </div>
           </div>
-          <div class="form-item speed-limit-item">
-            <div class="speed-limit-header">
-              <div>
-                <label class="item-label" for="limit-enabled">限制下载速度</label>
-                <p class="card-subtitle">{{ limitEnabled ? '所有下载任务共享上限' : '不限速' }}</p>
+
+          <div class="setting-row setting-row-stack">
+            <div class="setting-row-main">
+              <div class="setting-label-wrap">
+                <label class="setting-label" for="limit-enabled">限制下载速度</label>
+                <span class="setting-desc">{{ limitEnabled ? '所有任务共享上限' : '不限速' }}</span>
               </div>
-              <label class="speed-switch">
-                <input id="limit-enabled" v-model="limitEnabled" type="checkbox" role="switch" aria-label="限制下载速度" @change="handleLimitToggle" />
-                <span class="speed-switch-track" aria-hidden="true"></span>
-              </label>
+              <div class="setting-control">
+                <label class="speed-switch">
+                  <input id="limit-enabled" v-model="limitEnabled" type="checkbox" role="switch" aria-label="限制下载速度" @change="handleLimitToggle" />
+                  <span class="speed-switch-track" aria-hidden="true"></span>
+                </label>
+              </div>
             </div>
-            <div v-if="limitEnabled" class="speed-limit-controls">
+
+            <div v-if="limitEnabled" class="speed-limit-subrow">
               <div class="speed-limit-input">
-                <input id="download-limit" v-model="downloadLimitInput" type="text" inputmode="decimal" autocomplete="off" class="dir-input" aria-label="下载速度上限" @input="scheduleLimitSave" @blur="handleSave" @keydown.enter="handleSave" />
+                <input
+                  id="download-limit"
+                  v-model="downloadLimitInput"
+                  type="text"
+                  inputmode="decimal"
+                  autocomplete="off"
+                  class="dir-input"
+                  aria-label="下载速度上限"
+                  @input="scheduleLimitSave"
+                  @blur="handleSave"
+                  @keydown.enter="handleSave"
+                />
                 <AppSelect
                   :model-value="limitUnit"
                   :options="limitUnitOptions"
@@ -430,51 +439,48 @@ const limitUnitOptions = [
             </div>
           </div>
         </div>
-      </div>
+      </section>
 
-      <!-- Section 3: 剪贴板感应与交互 -->
-      <div class="settings-card">
-        <div class="card-header">
-          <div class="card-icon-box">
-            <ClipboardCheck :size="16" />
-          </div>
-          <div class="header-text">
-            <h3 class="card-title">交互与感应</h3>
-          </div>
-        </div>
-
-        <div class="card-body">
-          <div class="switch-row">
-            <span class="switch-row-label">自动识别剪贴板 B 站链接</span>
-            <label class="speed-switch">
-              <input v-model="form.autoClipboard" type="checkbox" role="switch" aria-label="自动识别剪贴板 B 站链接" @change="savePreference('autoClipboard', form.autoClipboard)" />
-              <span class="speed-switch-track" aria-hidden="true"></span>
-            </label>
+      <!-- Group 3: 系统交互 -->
+      <section class="settings-section">
+        <h3 class="settings-section-title">系统交互</h3>
+        <div class="settings-group">
+          <div class="setting-row">
+            <div class="setting-label-wrap">
+              <span class="setting-label">剪贴板自动感应</span>
+              <span class="setting-desc">切回应用时自动解析剪贴板 B 站链接</span>
+            </div>
+            <div class="setting-control">
+              <label class="speed-switch">
+                <input v-model="form.autoClipboard" type="checkbox" role="switch" aria-label="自动识别剪贴板 B 站链接" @change="savePreference('autoClipboard', form.autoClipboard)" />
+                <span class="speed-switch-track" aria-hidden="true"></span>
+              </label>
+            </div>
           </div>
         </div>
-      </div>
+      </section>
 
-      <p class="auto-save-status" role="status">{{ saveStatus }}</p>
-
+      <!-- Group 4: 软件更新 -->
       <UpdatePanel :state="updateState" />
 
-      <!-- Section 4: 专业版授权 -->
-      <div class="settings-card license-settings-card">
-        <div class="card-header">
-          <div class="card-icon-box license-icon-box">
-            <ShieldCheck :size="18" />
-          </div>
-          <div class="header-text">
-            <h3 class="card-title">专业版授权</h3>
-          </div>
-          <span class="license-status-badge">已激活</span>
+      <!-- Group 5: 专业版授权 -->
+      <section class="settings-section">
+        <div class="section-header-row">
+          <h3 class="settings-section-title">专业版授权</h3>
+          <span class="license-pill">
+            <span class="license-dot" aria-hidden="true"></span>
+            已激活
+          </span>
         </div>
-
-        <div class="card-body license-body">
-          <div class="license-summary">
-            <div class="license-detail">
-              <KeyRound :size="15" />
-              <div class="license-key-value"><span>激活码</span><strong :class="{ 'selectable-license-key': showLicenseKey }">{{ showLicenseKey ? (licenseStatus?.license_key || '—') : maskLicenseKey(licenseStatus?.license_key) }}</strong></div>
+        <div class="settings-group">
+          <div class="setting-row">
+            <div class="setting-label-wrap">
+              <span class="setting-label">激活码</span>
+            </div>
+            <div class="setting-control license-key-control">
+              <strong class="license-key-text" :class="{ 'selectable-license-key': showLicenseKey }">
+                {{ showLicenseKey ? (licenseStatus?.license_key || '—') : maskLicenseKey(licenseStatus?.license_key) }}
+              </strong>
               <button
                 class="license-key-toggle"
                 type="button"
@@ -482,37 +488,42 @@ const limitUnitOptions = [
                 :title="showLicenseKey ? '隐藏激活码' : '显示激活码'"
                 @click="showLicenseKey = !showLicenseKey"
               >
-                <EyeOff v-if="showLicenseKey" :size="15" />
-                <Eye v-else :size="15" />
+                <EyeOff v-if="showLicenseKey" :size="14" />
+                <Eye v-else :size="14" />
               </button>
-            </div>
-            <div class="license-detail">
-              <ShieldCheck :size="15" />
-              <div><span>授权类型</span><strong>{{ licenseStatus?.is_permanent ? '永久授权' : `剩余 ${licenseStatus?.days_left ?? 0} 天` }}</strong></div>
             </div>
           </div>
 
-          <div class="license-action-row">
-            <p>准备换电脑时，可先释放本机名额，再在新设备使用原激活码。</p>
-            <button v-if="!showDeactivateConfirm" class="btn-unlink" @click="showDeactivateConfirm = true">
-              <Unlink :size="14" />解绑本机
-            </button>
-          </div>
-
-          <div v-if="showDeactivateConfirm" class="deactivate-confirm">
-            <div>
-              <strong>确认解绑当前设备？</strong>
-              <p v-if="deactivateError" class="deactivate-error">{{ deactivateError }}</p>
+          <div class="setting-row setting-row-stack">
+            <div class="setting-row-main">
+              <div class="setting-label-wrap">
+                <span class="setting-label">授权状态</span>
+                <span class="setting-desc">{{ licenseStatus?.is_permanent ? '永久授权' : `剩余 ${licenseStatus?.days_left ?? 0} 天` }}</span>
+              </div>
+              <div class="setting-control">
+                <button v-if="!showDeactivateConfirm" class="btn-unlink" @click="showDeactivateConfirm = true">
+                  <Unlink :size="13" />解绑本机
+                </button>
+              </div>
             </div>
-            <div class="confirm-actions">
-              <button class="btn-secondary" :disabled="isDeactivating" @click="showDeactivateConfirm = false">取消</button>
-              <button class="btn-unlink danger" :disabled="isDeactivating" @click="handleDeactivate">
-                {{ isDeactivating ? '正在解绑…' : '确认解绑' }}
-              </button>
+
+            <div v-if="showDeactivateConfirm" class="deactivate-confirm">
+              <div>
+                <strong>确认解绑当前设备？</strong>
+                <p v-if="deactivateError" class="deactivate-error">{{ deactivateError }}</p>
+              </div>
+              <div class="confirm-actions">
+                <button class="btn-secondary" :disabled="isDeactivating" @click="showDeactivateConfirm = false">取消</button>
+                <button class="btn-unlink danger" :disabled="isDeactivating" @click="handleDeactivate">
+                  {{ isDeactivating ? '正在解绑…' : '确认解绑' }}
+                </button>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      </section>
+
+      <p class="auto-save-status" role="status">{{ saveStatus }}</p>
     </div>
   </div>
 </template>
@@ -522,116 +533,119 @@ const limitUnitOptions = [
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 10px 0 30px 0;
+  padding: 6px 0 32px 0;
   width: 100%;
 }
 
 .settings-container {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 22px;
   width: 100%;
-  max-width: 820px;
+  max-width: 720px;
 }
 
-.settings-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-md);
-  box-shadow: var(--surface-highlight), var(--shadow-sm);
-  overflow: hidden;
-}
-
-.card-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 16px 20px 8px 20px;
-}
-
-.card-icon-box {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  background: rgba(244, 102, 143, 0.12);
-  color: var(--bili-pink);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.header-text {
+.settings-section {
   display: flex;
   flex-direction: column;
-  gap: 1px;
 }
 
-.card-title {
-  font-size: 14px;
+.section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 8px 4px;
+}
+
+.section-header-row .settings-section-title {
+  padding: 0;
+}
+
+.settings-section-title {
+  font-size: 12px;
   font-weight: 600;
+  color: var(--text-muted);
+  padding: 0 4px 8px 4px;
+  letter-spacing: 0.01em;
+}
+
+.settings-group {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  box-shadow: var(--surface-highlight), var(--shadow-sm);
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 13px 16px;
+}
+
+.setting-row + .setting-row {
+  border-top: 1px solid var(--border-hairline);
+}
+
+.setting-row-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.setting-row-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.setting-label-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.setting-label {
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text-primary);
 }
 
-.card-subtitle {
+.setting-desc {
   font-size: 11.5px;
   color: var(--text-muted);
 }
 
-.card-body {
-  padding: 8px 20px 20px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.form-item {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.item-label {
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-weight: 500;
-}
-
-.dir-group {
+.setting-control {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  flex-shrink: 0;
 }
 
-.speed-limit-item {
-  margin-top: 2px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  background: var(--neutral-03);
-  gap: 12px;
+.select-control {
+  width: 210px;
 }
-.speed-limit-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.speed-limit-header .item-label { display: block; margin-bottom: 2px; color: var(--text-primary); font-size: 13px; }
-.speed-limit-controls { display: flex; flex-direction: column; gap: 6px; }
-.speed-limit-unit { width: 96px; flex-shrink: 0; }
-.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.switch-row-label { font-size: 13px; color: var(--text-primary); }
-.speed-switch { position: relative; display: inline-flex; flex-shrink: 0; width: 36px; height: 21px; cursor: pointer; }
-.speed-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
-.speed-switch-track { width: 100%; height: 100%; border-radius: 999px; background: var(--neutral-12); pointer-events: none; transition: background .18s; }
-.speed-switch-track::after { content: ''; position: absolute; top: 3px; left: 3px; width: 15px; height: 15px; border-radius: 50%; background: var(--text-muted); transition: transform .18s, background .18s; }
-.speed-switch input:checked + .speed-switch-track { background: var(--bili-pink); }
-.speed-switch input:checked + .speed-switch-track::after { transform: translateX(15px); background: white; }
-.speed-switch input:focus-visible + .speed-switch-track { outline: 2px solid var(--bili-pink); outline-offset: 3px; }
-.speed-limit-input { display: flex; align-items: center; gap: 10px; max-width: 420px; }
-.speed-limit-input input { min-width: 0; width: 140px; flex: 1; }
-.speed-limit-input span { color: var(--text-secondary); font-size: 12px; }
-.speed-limit-item .card-subtitle { line-height: 1.6; }
+
+.select-control-sm {
+  width: 160px;
+}
+
+.dir-control {
+  flex: 1;
+  max-width: 420px;
+  min-width: 0;
+}
 
 .dir-input {
   flex: 1;
-  height: 34px;
-  padding: 0 11px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
   font-size: 12.5px;
   color: var(--text-primary);
   background: var(--bg-control);
@@ -639,86 +653,280 @@ const limitUnitOptions = [
   box-shadow: var(--surface-highlight);
 }
 
-.browse-btn, .open-btn {
-  height: 34px;
-  padding: 0 12px;
+.browse-btn,
+.open-btn {
+  height: 32px;
+  padding: 0 11px;
+  font-size: 12px;
   flex-shrink: 0;
 }
 
-.grid-2 {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
+.open-btn {
+  width: 32px;
+  padding: 0;
 }
 
-.form-select {
-  height: 34px;
-  padding: 0 10px;
-  font-size: 12.5px;
-}
-
-.slider-box {
-  display: flex;
+/* macOS Segmented Control */
+.segmented-control {
+  display: inline-flex;
   align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--bg-app);
+  border: 1px solid var(--border-hairline);
+}
+
+.segmented-btn {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.segmented-btn:hover:not(.active) {
+  color: var(--text-primary);
+}
+
+.segmented-btn.active {
+  background: var(--bg-control-hover);
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* Slider */
+.slider-control {
   gap: 12px;
 }
 
 .concurrency-range {
-  flex: 1;
+  width: 140px;
   accent-color: var(--bili-pink);
 }
 
 .range-val-badge {
   font-size: 12px;
   font-weight: 600;
-  color: var(--bili-pink);
-  background: rgba(251, 114, 153, 0.12);
+  color: var(--text-primary);
+  background: var(--bg-control);
   padding: 3px 10px;
   border-radius: var(--radius-full);
+  font-variant-numeric: tabular-nums;
 }
 
-.toggle-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
-  color: var(--text-secondary);
+/* Toggle Switch */
+.speed-switch {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 36px;
+  height: 20px;
   cursor: pointer;
 }
 
-.toggle-item input {
-  accent-color: var(--bili-pink);
-  width: 15px;
-  height: 15px;
+.speed-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
 }
 
-.auto-save-status { color: var(--text-muted); font-size: 11.5px; text-align: right; }
-.limit-error { color: var(--danger); font-size: 11.5px; }
+.speed-switch-track {
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--neutral-12);
+  pointer-events: none;
+  transition: background 0.18s;
+}
 
-.license-icon-box { background: rgba(16, 185, 129, 0.12); color: var(--success); }
-.license-status-badge { margin-left: auto; padding: 4px 10px; border-radius: var(--radius-full); color: var(--success); background: rgba(16, 185, 129, 0.12); font-size: 11px; font-weight: 700; }
-.license-body { gap: 16px; }
-.license-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.license-detail { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 11px 12px; border-radius: var(--radius-sm); background: var(--neutral-035); color: var(--text-muted); }
-.license-detail div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.license-detail span { font-size: 10.5px; color: var(--text-muted); }
-.license-detail strong { overflow: hidden; color: var(--text-primary); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
-.license-key-value { flex: 1; min-width: 0; }
-.selectable-license-key { user-select: text; -webkit-user-select: text; }
-.license-key-toggle { flex-shrink: 0; padding: 5px; color: var(--text-muted); background: transparent; }
-.license-key-toggle:hover { color: var(--text-primary); background: var(--neutral-08); }
-.license-action-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 2px; }
-.license-action-row p, .deactivate-confirm p { color: var(--text-muted); font-size: 11.5px; line-height: 1.55; }
-.btn-unlink { flex-shrink: 0; padding: 8px 13px; border: 1px solid rgba(239,68,68,.25); background: rgba(239,68,68,.08); color: var(--danger); }
-.btn-unlink:hover { background: rgba(239,68,68,.15); }
-.btn-unlink.danger { background: #dc2626; border-color: #dc2626; color: #fff; }
-.deactivate-confirm { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border: 1px solid rgba(239,68,68,.2); border-radius: var(--radius-sm); background: rgba(239,68,68,.055); }
-.deactivate-confirm strong { display: block; margin-bottom: 3px; color: var(--text-primary); font-size: 12.5px; }
-.confirm-actions { display: flex; gap: 8px; flex-shrink: 0; }
-.deactivate-error { margin-top: 5px; color: var(--danger) !important; }
+.speed-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transition: transform 0.18s, background 0.18s;
+}
 
-@media (max-width: 700px) {
-  .license-summary { grid-template-columns: 1fr; }
-  .license-action-row, .deactivate-confirm { align-items: flex-start; flex-direction: column; }
+.speed-switch input:checked + .speed-switch-track {
+  background: var(--bili-pink);
+}
+
+.speed-switch input:checked + .speed-switch-track::after {
+  transform: translateX(16px);
+  background: #ffffff;
+}
+
+.speed-switch input:focus-visible + .speed-switch-track {
+  outline: 2px solid var(--bili-pink);
+  outline-offset: 3px;
+}
+
+/* Speed Limit Subrow */
+.speed-limit-subrow {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.speed-limit-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 240px;
+}
+
+.speed-limit-input input {
+  min-width: 0;
+  flex: 1;
+}
+
+.speed-limit-unit {
+  width: 92px;
+  flex-shrink: 0;
+}
+
+.limit-error {
+  color: var(--danger);
+  font-size: 11.5px;
+}
+
+/* License */
+.license-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--success);
+}
+
+.license-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.license-key-control {
+  gap: 6px;
+}
+
+.license-key-text {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.selectable-license-key {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.license-key-toggle {
+  padding: 5px;
+  color: var(--text-muted);
+  background: transparent;
+}
+
+.license-key-toggle:hover {
+  color: var(--text-primary);
+  background: var(--neutral-08);
+}
+
+.btn-unlink {
+  height: 30px;
+  padding: 0 11px;
+  font-size: 12px;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--danger);
+}
+
+.btn-unlink:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.btn-unlink.danger {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #fff;
+}
+
+.deactivate-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: var(--radius-sm);
+  background: rgba(239, 68, 68, 0.055);
+}
+
+.deactivate-confirm strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 12.5px;
+}
+
+.deactivate-confirm p {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.deactivate-error {
+  margin-top: 4px;
+  color: var(--danger) !important;
+}
+
+.auto-save-status {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  text-align: right;
+  padding-right: 4px;
+}
+
+@media (max-width: 640px) {
+  .setting-row,
+  .setting-row-main {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .setting-control,
+  .dir-control,
+  .select-control,
+  .select-control-sm,
+  .speed-limit-subrow {
+    width: 100%;
+    max-width: none;
+    justify-content: flex-start;
+    align-items: flex-start;
+  }
+
+  .deactivate-confirm {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 </style>
