@@ -13,6 +13,7 @@ import {
   Sun
 } from 'lucide-vue-next'
 import UpdatePanel from './UpdatePanel.vue'
+import AppSelect from './AppSelect.vue'
 import { config, license, updater } from '../../wailsjs/go/models'
 import {
   GetSettings,
@@ -247,6 +248,44 @@ async function handleSave() {
   form.value.downloadLimitKB = limit
   await savePreference('downloadLimitKB', limit)
 }
+
+const themeOptions = [
+  { value: 'light', label: '浅色模式' },
+  { value: 'dark', label: '深色模式' },
+  { value: 'system', label: '跟随系统' }
+]
+
+const qualityOptions = [
+  { value: 'highest', label: '自动最高画质' },
+  { value: '127', label: '8K 超高清' },
+  { value: '120', label: '4K 超清' },
+  { value: '116', label: '1080P 60帧' },
+  { value: '112', label: '1080P 高码率' },
+  { value: '80', label: '1080P 高清' },
+  { value: '64', label: '720P 高清' },
+  { value: '32', label: '480P 清晰' }
+]
+
+const codecOptions = [
+  { value: 'auto', label: '自动（优先兼容）' },
+  { value: 'AVC', label: 'AVC / H.264' },
+  { value: 'HEVC', label: 'HEVC / H.265' },
+  { value: 'AV1', label: 'AV1' }
+]
+
+const threadOptions = [
+  { value: 1, label: '1 线程' },
+  { value: 2, label: '2 线程' },
+  { value: 3, label: '3 线程' },
+  { value: 4, label: '4 线程（推荐）' },
+  { value: 6, label: '6 线程' },
+  { value: 8, label: '8 线程' }
+]
+
+const limitUnitOptions = [
+  { value: 'MB', label: 'MB/s' },
+  { value: 'KB', label: 'KB/s' }
+]
 </script>
 
 <template>
@@ -254,20 +293,21 @@ async function handleSave() {
     <div class="settings-container">
       <div class="settings-card">
         <div class="card-header">
-          <div class="card-icon-box"><Sun :size="18" /></div>
+          <div class="card-icon-box"><Sun :size="16" /></div>
           <div class="header-text">
             <h3 class="card-title">外观</h3>
-            <p class="card-subtitle">切换后立即生效并自动保存</p>
           </div>
         </div>
         <div class="card-body">
           <div class="form-item">
             <label class="item-label" for="theme-select">界面模式</label>
-            <select id="theme-select" v-model="form.theme" class="form-select" @change="savePreference('theme', form.theme)">
-              <option value="light">浅色模式</option>
-              <option value="dark">深色模式</option>
-              <option value="system">跟随系统</option>
-            </select>
+            <AppSelect
+              id="theme-select"
+              :model-value="form.theme"
+              :options="themeOptions"
+              aria-label="界面模式"
+              @update:model-value="val => { form.theme = String(val); savePreference('theme', form.theme) }"
+            />
           </div>
         </div>
       </div>
@@ -275,17 +315,16 @@ async function handleSave() {
       <div class="settings-card">
         <div class="card-header">
           <div class="card-icon-box">
-            <Folder :size="18" />
+            <Folder :size="16" />
           </div>
           <div class="header-text">
-            <h3 class="card-title">文件存储位置</h3>
-            <p class="card-subtitle">视频下载完成后将自动保存至此目录</p>
+            <h3 class="card-title">存储位置</h3>
           </div>
         </div>
 
         <div class="card-body">
           <div class="form-item">
-            <label class="item-label">默认下载路径</label>
+            <label class="item-label">下载目录</label>
             <div class="dir-group">
               <input
                 v-model="form.downloadDir"
@@ -295,7 +334,7 @@ async function handleSave() {
                 @input="scheduleDirectorySave" @blur="saveDirectory" @keydown.enter="saveDirectory"
               />
               <button class="btn-secondary browse-btn" @click="handleBrowseDir">
-                <span>更改目录...</span>
+                <span>更改目录</span>
               </button>
               <button class="btn-secondary open-btn" @click="handleOpenDir" title="在访达/资源管理器中打开">
                 <FolderOpen :size="15" />
@@ -309,56 +348,49 @@ async function handleSave() {
       <div class="settings-card">
         <div class="card-header">
           <div class="card-icon-box">
-            <Cpu :size="18" />
+            <Cpu :size="16" />
           </div>
           <div class="header-text">
-            <h3 class="card-title">下载与画质偏好</h3>
-            <p class="card-subtitle">画质、编码、并发与限速修改后自动保存</p>
+            <h3 class="card-title">下载与画质</h3>
           </div>
         </div>
 
         <div class="card-body">
           <div class="grid-2">
             <div class="form-item">
-              <label class="item-label">默认首选画质</label>
-              <select v-model="form.defaultQuality" class="form-select" @change="savePreference('defaultQuality', form.defaultQuality)">
-                <option value="highest">最高画质 (自动匹配当前账号最高权限)</option>
-                <option value="127">8K 超高清</option>
-                <option value="120">4K 超清</option>
-                <option value="116">1080P 60帧</option>
-                <option value="112">1080P 高码率</option>
-                <option value="80">1080P 高清</option>
-                <option value="64">720P 高清</option>
-                <option value="32">480P 清晰</option>
-              </select>
+              <label class="item-label">首选画质</label>
+              <AppSelect
+                :model-value="form.defaultQuality"
+                :options="qualityOptions"
+                aria-label="首选画质"
+                @update:model-value="val => { form.defaultQuality = String(val); savePreference('defaultQuality', form.defaultQuality) }"
+              />
             </div>
 
             <div class="form-item">
-              <label class="item-label">默认视频编码</label>
-              <select v-model="form.defaultCodec" class="form-select" @change="savePreference('defaultCodec', form.defaultCodec)">
-                <option value="auto">自动选择 (同画质优先兼容)</option>
-                <option value="AVC">AVC / H.264 (兼容性最好)</option>
-                <option value="HEVC">HEVC / H.265 (高压缩比)</option>
-                <option value="AV1">AV1 (高压缩比，需播放器支持)</option>
-              </select>
+              <label class="item-label">视频编码</label>
+              <AppSelect
+                :model-value="form.defaultCodec"
+                :options="codecOptions"
+                aria-label="视频编码"
+                @update:model-value="val => { form.defaultCodec = String(val); savePreference('defaultCodec', form.defaultCodec) }"
+              />
             </div>
           </div>
 
-          <div class="grid-2" style="margin-top: 14px;">
+          <div class="grid-2">
             <div class="form-item">
-              <label class="item-label">单任务分片下载线程数</label>
-              <select v-model.number="form.threadsPerTask" class="form-select" @change="savePreference('threadsPerTask', form.threadsPerTask)">
-                <option :value="1">1 线程 (单流平稳)</option>
-                <option :value="2">2 线程</option>
-                <option :value="3">3 线程</option>
-                <option :value="4">4 线程 (推荐)</option>
-                <option :value="6">6 线程</option>
-                <option :value="8">8 线程 (极速加速)</option>
-              </select>
+              <label class="item-label">分片线程</label>
+              <AppSelect
+                :model-value="form.threadsPerTask"
+                :options="threadOptions"
+                aria-label="分片线程"
+                @update:model-value="val => { form.threadsPerTask = Number(val); savePreference('threadsPerTask', form.threadsPerTask) }"
+              />
             </div>
 
             <div class="form-item">
-              <label class="item-label">最大同时下载任务数</label>
+              <label class="item-label">同时下载数</label>
               <div class="slider-box">
                 <input
                   v-model.number="form.maxConcurrent"
@@ -376,7 +408,7 @@ async function handleSave() {
             <div class="speed-limit-header">
               <div>
                 <label class="item-label" for="limit-enabled">限制下载速度</label>
-                <p class="card-subtitle">{{ limitEnabled ? '为其他应用留出带宽，所有下载任务共享上限' : '不限速，使用可用带宽下载' }}</p>
+                <p class="card-subtitle">{{ limitEnabled ? '所有下载任务共享上限' : '不限速' }}</p>
               </div>
               <label class="speed-switch">
                 <input id="limit-enabled" v-model="limitEnabled" type="checkbox" role="switch" aria-label="限制下载速度" @change="handleLimitToggle" />
@@ -384,15 +416,16 @@ async function handleSave() {
               </label>
             </div>
             <div v-if="limitEnabled" class="speed-limit-controls">
-              <label class="item-label" for="download-limit">下载速度上限</label>
               <div class="speed-limit-input">
-                <input id="download-limit" v-model="downloadLimitInput" type="text" inputmode="decimal" autocomplete="off" class="dir-input" aria-describedby="download-limit-help" @input="scheduleLimitSave" @blur="handleSave" @keydown.enter="handleSave" />
-                <select v-model="limitUnit" class="form-select speed-limit-unit" aria-label="下载速度单位" @change="handleLimitUnitChange">
-                  <option value="MB">MB/s</option>
-                  <option value="KB">KB/s</option>
-                </select>
+                <input id="download-limit" v-model="downloadLimitInput" type="text" inputmode="decimal" autocomplete="off" class="dir-input" aria-label="下载速度上限" @input="scheduleLimitSave" @blur="handleSave" @keydown.enter="handleSave" />
+                <AppSelect
+                  :model-value="limitUnit"
+                  :options="limitUnitOptions"
+                  class="speed-limit-unit"
+                  aria-label="下载速度单位"
+                  @update:model-value="val => { limitUnit = val === 'KB' ? 'KB' : 'MB'; handleLimitUnitChange() }"
+                />
               </div>
-              <p id="download-limit-help" class="card-subtitle">支持小数，例如 2.5 MB/s。修改后自动保存，对正在下载和后续任务生效。</p>
               <p v-if="limitError" class="limit-error" role="alert">{{ limitError }}</p>
             </div>
           </div>
@@ -403,19 +436,21 @@ async function handleSave() {
       <div class="settings-card">
         <div class="card-header">
           <div class="card-icon-box">
-            <ClipboardCheck :size="18" />
+            <ClipboardCheck :size="16" />
           </div>
           <div class="header-text">
-            <h3 class="card-title">系统交互与感应</h3>
-            <p class="card-subtitle">智能识别剪贴板视频链接</p>
+            <h3 class="card-title">交互与感应</h3>
           </div>
         </div>
 
         <div class="card-body">
-          <label class="toggle-item">
-            <input v-model="form.autoClipboard" type="checkbox" @change="savePreference('autoClipboard', form.autoClipboard)" />
-            <span class="toggle-text">开启剪贴板自动感应 (切换到应用时若剪贴板为 B 站链接则自动填入并直接解析)</span>
-          </label>
+          <div class="switch-row">
+            <span class="switch-row-label">自动识别剪贴板 B 站链接</span>
+            <label class="speed-switch">
+              <input v-model="form.autoClipboard" type="checkbox" role="switch" aria-label="自动识别剪贴板 B 站链接" @change="savePreference('autoClipboard', form.autoClipboard)" />
+              <span class="speed-switch-track" aria-hidden="true"></span>
+            </label>
+          </div>
         </div>
       </div>
 
@@ -501,26 +536,24 @@ async function handleSave() {
 
 .settings-card {
   background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-hairline);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--surface-highlight), var(--shadow-sm);
   overflow: hidden;
 }
 
 .card-header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--neutral-015);
+  gap: 10px;
+  padding: 16px 20px 8px 20px;
 }
 
 .card-icon-box {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-sm);
-  background: rgba(251, 114, 153, 0.12);
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(244, 102, 143, 0.12);
   color: var(--bili-pink);
   display: flex;
   align-items: center;
@@ -546,10 +579,10 @@ async function handleSave() {
 }
 
 .card-body {
-  padding: 16px 18px;
+  padding: 8px 20px 20px 20px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .form-item {
@@ -570,11 +603,19 @@ async function handleSave() {
   gap: 8px;
 }
 
-.speed-limit-item { margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--border-subtle); gap: 14px; }
+.speed-limit-item {
+  margin-top: 2px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--neutral-03);
+  gap: 12px;
+}
 .speed-limit-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.speed-limit-header .item-label { display: block; margin-bottom: 4px; }
+.speed-limit-header .item-label { display: block; margin-bottom: 2px; color: var(--text-primary); font-size: 13px; }
 .speed-limit-controls { display: flex; flex-direction: column; gap: 6px; }
-.speed-limit-unit { width: 92px; flex-shrink: 0; }
+.speed-limit-unit { width: 96px; flex-shrink: 0; }
+.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.switch-row-label { font-size: 13px; color: var(--text-primary); }
 .speed-switch { position: relative; display: inline-flex; flex-shrink: 0; width: 36px; height: 21px; cursor: pointer; }
 .speed-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
 .speed-switch-track { width: 100%; height: 100%; border-radius: 999px; background: var(--neutral-12); pointer-events: none; transition: background .18s; }
@@ -590,9 +631,12 @@ async function handleSave() {
 .dir-input {
   flex: 1;
   height: 34px;
-  padding: 0 10px;
+  padding: 0 11px;
   font-size: 12.5px;
   color: var(--text-primary);
+  background: var(--bg-control);
+  border-color: var(--border-subtle);
+  box-shadow: var(--surface-highlight);
 }
 
 .browse-btn, .open-btn {

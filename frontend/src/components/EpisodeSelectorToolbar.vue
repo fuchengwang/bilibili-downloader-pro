@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { LocateFixed, Search, X } from 'lucide-vue-next'
+import AppSelect from './AppSelect.vue'
 import type { bilibili } from '../../wailsjs/go/models'
 
-defineProps<{
+const props = defineProps<{
   qualities: bilibili.QualityOption[]
   canLocate: boolean
 }>()
@@ -10,6 +12,23 @@ const search = defineModel<string>('search', { required: true })
 const quality = defineModel<string>('quality', { required: true })
 const codec = defineModel<string>('codec', { required: true })
 const emit = defineEmits<{ locate: [] }>()
+
+const qualitySelectOptions = computed(() => [
+  { value: 'highest', label: '自动' },
+  ...props.qualities.map(q => ({
+    value: String(q.id),
+    label: q.label,
+    badge: q.isVipRequired ? '大会员' : q.isLoginRequired ? '需登录' : undefined,
+    disabled: !q.isAvailable
+  }))
+])
+
+const codecSelectOptions = [
+  { value: 'auto', label: '自动' },
+  { value: 'AVC', label: 'AVC / H.264' },
+  { value: 'HEVC', label: 'HEVC / H.265' },
+  { value: 'AV1', label: 'AV1' }
+]
 </script>
 
 <template>
@@ -26,20 +45,24 @@ const emit = defineEmits<{ locate: [] }>()
     </div>
     <div class="format-row">
       <label>画质
-        <select v-model="quality" class="quality-select" title="自动为每集选择最高可用画质">
-          <option value="highest">自动</option>
-          <option v-for="q in qualities" :key="q.id" :value="String(q.id)" :disabled="!q.isAvailable">
-            {{ q.label }} {{ q.isVipRequired ? '(大会员)' : q.isLoginRequired ? '(需登录)' : '' }}
-          </option>
-        </select>
+        <AppSelect
+          size="sm"
+          class="quality-select"
+          :model-value="quality"
+          :options="qualitySelectOptions"
+          aria-label="画质"
+          @update:model-value="val => quality = String(val)"
+        />
       </label>
       <label>编码
-        <select v-model="codec">
-          <option value="auto">自动</option>
-          <option value="AVC">AVC / H.264</option>
-          <option value="HEVC">HEVC / H.265</option>
-          <option value="AV1">AV1</option>
-        </select>
+        <AppSelect
+          size="sm"
+          class="codec-select"
+          :model-value="codec"
+          :options="codecSelectOptions"
+          aria-label="编码"
+          @update:model-value="val => codec = String(val)"
+        />
       </label>
     </div>
     <div class="selection-row"><slot /></div>
@@ -54,8 +77,8 @@ const emit = defineEmits<{ locate: [] }>()
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px 16px;
-  padding: 10px 20px;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border-hairline);
 }
 .find-row, .format-row, .format-row label, .selection-row {
   display: flex;
@@ -75,7 +98,8 @@ const emit = defineEmits<{ locate: [] }>()
   padding: 0 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xs);
-  background: var(--bg-card);
+  background: var(--bg-control);
+  box-shadow: var(--surface-highlight);
   color: var(--text-muted);
 }
 .episode-search:focus-within { border-color: var(--bili-pink); }
@@ -101,12 +125,13 @@ const emit = defineEmits<{ locate: [] }>()
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xs);
   color: var(--text-secondary);
-  background: var(--bg-card);
+  background: var(--bg-control);
+  box-shadow: var(--surface-highlight);
 }
-.locate-button:hover { background: var(--bg-card-hover); }
+.locate-button:hover { background: var(--bg-control-hover); }
 .format-row label { white-space: nowrap; color: var(--text-secondary); font-size: 11.5px; }
-.format-row select { width: 120px; height: 30px; padding: 0 8px; font-size: 11.5px; }
-.format-row .quality-select { width: 112px; }
+.format-row .codec-select { width: 124px; }
+.format-row .quality-select { width: 118px; }
 @media (max-width: 600px) {
   .selector-toolbar { grid-template-columns: minmax(0, 1fr); }
 }

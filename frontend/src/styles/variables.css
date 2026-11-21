@@ -1,60 +1,67 @@
 :root {
   /* 品牌与主色调 */
-  --bili-pink: #fb7299;
-  --bili-pink-hover: #ff85ad;
-  --bili-pink-glow: rgba(251, 114, 153, 0.35);
+  --bili-pink: #f4668f;
+  --bili-pink-hover: #ff7ba1;
+  --bili-pink-glow: rgba(244, 102, 143, 0.24);
   
   --bili-blue: #00aeec;
   --bili-blue-hover: #23c9ff;
-  --bili-blue-glow: rgba(0, 174, 236, 0.35);
+  --bili-blue-glow: rgba(0, 174, 236, 0.3);
 
   --vip-gold: #f59e0b;
-  --vip-gold-glow: rgba(245, 158, 11, 0.35);
+  --vip-gold-glow: rgba(245, 158, 11, 0.3);
 
   --success: #10b981;
-  --success-glow: rgba(16, 185, 129, 0.35);
+  --success-glow: rgba(16, 185, 129, 0.3);
   
   --warning: #f59e0b;
   --guest-accent: #efb782;
   --guest-notice-bg: color-mix(in srgb, var(--guest-accent) 4%, var(--bg-card));
   --guest-login-bg: color-mix(in srgb, var(--guest-accent) 9%, transparent);
-  --episode-selected-bg: color-mix(in srgb, var(--bili-pink) 18%, var(--bg-card));
+  --episode-selected-bg: color-mix(in srgb, var(--bili-pink) 16%, var(--bg-card));
   --danger: #ef4444;
-  --danger-glow: rgba(239, 68, 68, 0.35);
+  --danger-glow: rgba(239, 68, 68, 0.3);
 
-  /* 背景体系 (极具质感的深色玻璃拟态) */
-  --bg-app: #0c0e14;
-  --bg-sidebar: rgba(15, 18, 26, 0.85);
-  --bg-card: rgba(24, 29, 43, 0.65);
-  --bg-card-hover: rgba(33, 40, 58, 0.8);
-  --bg-input: rgba(18, 22, 33, 0.7);
-  --bg-modal: rgba(18, 22, 33, 0.95);
+  /* 背景体系 (4-step luminance ladder) */
+  --bg-app: #0b0d12;
+  --bg-sidebar: #0f1218;
+  --bg-card: #151922;
+  --bg-card-hover: #1b202c;
+  --bg-control: #1c2230;
+  --bg-control-hover: #232a3b;
+  --bg-input: #1a1f2b;
+  --bg-modal: #151923;
+  --bg-popover: rgba(24, 29, 41, 0.96);
   --bg-badge: rgba(255, 255, 255, 0.08);
 
   /* 边框体系 */
-  --border-subtle: rgba(255, 255, 255, 0.08);
-  --border-hover: rgba(251, 114, 153, 0.4);
-  --border-focus: #fb7299;
+  --border-subtle: rgba(255, 255, 255, 0.055);
+  --border-hairline: rgba(255, 255, 255, 0.04);
+  --border-popover: rgba(255, 255, 255, 0.1);
+  --border-hover: rgba(244, 102, 143, 0.4);
+  --border-focus: #f4668f;
+  --surface-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 
   /* 文字颜色 */
-  --text-primary: #ffffff;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
+  --text-primary: #f1f5f9;
+  --text-secondary: #9aa6b8;
+  --text-muted: #667387;
   --text-link: #38bdf8;
 
   /* 圆角 */
   --radius-xs: 6px;
   --radius-sm: 10px;
   --radius-md: 14px;
-  --radius-lg: 20px;
+  --radius-lg: 18px;
   --radius-full: 9999px;
 
   /* 阴影 */
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 8px 24px -4px rgba(0, 0, 0, 0.5);
-  --shadow-lg: 0 16px 40px -8px rgba(0, 0, 0, 0.6);
-  --shadow-pink: 0 4px 20px rgba(251, 114, 153, 0.3);
-  --shadow-blue: 0 4px 20px rgba(0, 174, 236, 0.3);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 10px 28px -8px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 24px 56px -12px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-popover: 0 16px 40px -8px rgba(0, 0, 0, 0.68), 0 0 0 1px rgba(255, 255, 255, 0.09);
+  --shadow-pink: 0 4px 16px rgba(232, 80, 125, 0.28);
+  --shadow-blue: 0 4px 16px rgba(0, 174, 236, 0.25);
 
   /* 动效过渡 */
   --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
@@ -62,9 +69,9 @@
   --transition-smooth: 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 
   color-scheme: dark;
-  --bg-header: rgba(12, 14, 20, 0.6);
-  --bg-toast: rgba(22, 27, 39, 0.95);
-  --bg-toast-highlight: rgba(30, 24, 38, 0.96);
+  --bg-header: rgba(11, 13, 18, 0.78);
+  --bg-toast: rgba(24, 29, 41, 0.96);
+  --bg-toast-highlight: rgba(32, 26, 40, 0.96);
   --neutral-015: rgba(255, 255, 255, 0.015);
   --neutral-02: rgba(255, 255, 255, 0.02);
   --neutral-03: rgba(255, 255, 255, 0.03);

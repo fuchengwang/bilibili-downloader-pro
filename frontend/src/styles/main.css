@@ -58,40 +58,41 @@ button:active {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--bili-pink), #ff5c8a);
+  background: linear-gradient(180deg, #f77097, #e8507d);
   color: #fff;
-  box-shadow: var(--shadow-pink);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 10px rgba(232, 80, 125, 0.28);
   padding: 8px 16px;
 }
 
 .btn-primary:hover {
-  background: linear-gradient(135deg, var(--bili-pink-hover), #ff7099);
-  box-shadow: 0 6px 24px rgba(251, 114, 153, 0.45);
+  background: linear-gradient(180deg, #ff7da3, #ee5b86);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26), 0 4px 14px rgba(232, 80, 125, 0.36);
 }
 
 .btn-secondary {
-  background: var(--neutral-08);
+  background: var(--neutral-06);
   color: var(--text-primary);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: var(--surface-highlight);
   padding: 8px 14px;
 }
 
 .btn-secondary:hover {
-  background: var(--neutral-12);
-  border-color: var(--neutral-18);
+  background: var(--neutral-1);
+  border-color: rgba(255, 255, 255, 0.1);
 }
 
 .btn-icon {
   width: 32px;
   height: 32px;
   border-radius: var(--radius-sm);
-  background: var(--neutral-06);
+  background: transparent;
   color: var(--text-secondary);
   padding: 0;
 }
 
 .btn-icon:hover {
-  background: var(--neutral-12);
+  background: var(--neutral-08);
   color: var(--text-primary);
 }
 
@@ -152,8 +153,8 @@ input:focus, textarea:focus, select:focus {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(12px);
+  background: rgba(6, 8, 12, 0.72);
+  backdrop-filter: blur(10px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -163,8 +164,8 @@ input:focus, textarea:focus, select:focus {
 
 .modal-content {
   background: var(--bg-modal);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-popover);
+  border-radius: 16px;
   box-shadow: var(--shadow-lg);
   max-width: 90vw;
   max-height: 85vh;

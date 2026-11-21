@@ -60,7 +60,7 @@ async function changeAutomatic(event: Event) {
 <template>
   <section class="update-card" aria-labelledby="update-title">
     <div class="update-header">
-      <span class="update-icon"><RefreshCw :size="18" /></span>
+      <span class="update-icon"><RefreshCw :size="16" /></span>
       <h3 id="update-title">软件更新</h3>
       <span class="current-version">当前版本 v{{ state.currentVersion }}</span>
     </div>
@@ -115,12 +115,12 @@ async function changeAutomatic(event: Event) {
 </template>
 
 <style scoped>
-.update-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); box-shadow: var(--shadow-sm); overflow: hidden; }
-.update-header { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border-subtle); background: var(--neutral-015); }
+.update-card { background: var(--bg-card); border: 1px solid var(--border-hairline); border-radius: var(--radius-md); box-shadow: var(--surface-highlight), var(--shadow-sm); overflow: hidden; }
+.update-header { display: flex; align-items: center; gap: 10px; padding: 16px 20px 8px 20px; }
 .update-header h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text-primary); }
-.update-icon { width: 32px; height: 32px; border-radius: var(--radius-sm); background: rgba(0,174,236,.12); color: #00aeec; display: flex; align-items: center; justify-content: center; }
-.current-version { margin-left: auto; font-size: 12px; color: var(--text-muted); }
-.update-body { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+.update-icon { width: 28px; height: 28px; border-radius: 8px; background: rgba(0,174,236,.12); color: #00aeec; display: flex; align-items: center; justify-content: center; }
+.current-version { margin-left: auto; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.update-body { padding: 8px 20px 20px 20px; display: flex; flex-direction: column; gap: 14px; }
 .update-controls, .release-row, .ready-heading, .ready-actions { display: flex; align-items: center; gap: 10px; }
 .update-controls, .release-row { justify-content: space-between; }
 .automatic-choice { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary); cursor: pointer; }

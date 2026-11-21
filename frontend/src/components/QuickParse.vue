@@ -11,11 +11,11 @@ import {
   Eye,
   Film,
   Download,
-  Check,
   Calendar,
   AlertCircle,
   UserRound
 } from 'lucide-vue-next'
+import AppSelect from './AppSelect.vue'
 import { bilibili } from '../../wailsjs/go/models'
 import { ParseURL, GetPlaybackInfo, ReadClipboard } from '../../wailsjs/go/main/App'
 import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
@@ -198,19 +198,29 @@ function handleSingleDownload() {
   if (!parsedDetail.value || singleDownloadBlocked.value) return
   const ep = currentEpisode(parsedDetail.value)
   if (!ep) return
-  emit('quick-download-single', parsedDetail.value, ep, displayedQuality.value, props.defaultCodec || 'auto')
+  emit('quick-download-single', parsedDetail.value, ep, String(displayedQuality.value), props.defaultCodec || 'auto')
 }
 
-const displayedQuality = computed({
+const displayedQuality = computed<string | number>({
   get: () => availableQualities.value.some(q => q.isAvailable && String(q.id) === selectedQuality.value)
     ? selectedQuality.value
     : 'highest',
-  set: value => { selectedQuality.value = value }
+  set: value => { selectedQuality.value = String(value) }
 })
+
+const qualitySelectOptions = computed(() => [
+  { value: 'highest', label: automaticQualityLabel.value },
+  ...availableQualities.value.map(q => ({
+    value: q.id.toString(),
+    label: q.label,
+    badge: !q.isAvailable ? (q.isVipRequired ? '需大会员' : (q.isLoginRequired ? '需登录' : '不可用')) : undefined,
+    disabled: !q.isAvailable
+  }))
+])
 
 function handleOpenEpisodes() {
   if (!parsedDetail.value) return
-  const quality = availableQualities.value.length ? displayedQuality.value : selectedQuality.value
+  const quality = availableQualities.value.length ? String(displayedQuality.value) : selectedQuality.value
   emit('open-episodes', parsedDetail.value, quality, props.defaultCodec || 'auto')
 }
 
@@ -253,7 +263,7 @@ defineExpose({
           v-model="inputUrl"
           type="text"
           class="url-input"
-          placeholder="粘贴 B 站链接 / b23.tv 短链 / BV / AV / ep / 手机口令分享文本..."
+          placeholder="粘贴 B 站视频链接、BV 号或分享文本…"
           @keyup.enter="handleParse"
         />
 
@@ -356,21 +366,16 @@ defineExpose({
         <!-- Download Action & Options Area -->
         <div class="action-footer">
           <div v-if="linkedEpisode" class="options-wrapper">
-            <!-- Quality Selector (Clean & Clear with disabled/grey options for locked qualities) -->
             <div class="select-group">
-              <label for="parse-quality" class="select-label">清晰度:</label>
-              <select id="parse-quality" v-model="displayedQuality" :disabled="isFetchingQualities" class="quality-select">
-                <option value="highest">{{ automaticQualityLabel }}</option>
-                <option
-                  v-for="q in availableQualities"
-                  :key="q.id"
-                  :value="q.id.toString()"
-                  :disabled="!q.isAvailable"
-                  :class="{ 'opt-disabled': !q.isAvailable }"
-                >
-                  {{ q.label }} {{ !q.isAvailable ? (q.isVipRequired ? '[需大会员]' : (q.isLoginRequired ? '[需登录]' : '[不可用]')) : '' }}
-                </option>
-              </select>
+              <label for="parse-quality" class="select-label">清晰度</label>
+              <AppSelect
+                id="parse-quality"
+                v-model="displayedQuality"
+                class="quality-select"
+                :options="qualitySelectOptions"
+                :disabled="isFetchingQualities"
+                aria-label="清晰度"
+              />
             </div>
           </div>
 
@@ -405,25 +410,14 @@ defineExpose({
     <!-- Empty / Guide State -->
     <div v-if="!parsedDetail" class="empty-guide">
       <div class="guide-icon-box">
-        <Film :size="32" />
+        <Film :size="26" />
       </div>
-      <h3 class="guide-title">粘贴视频链接即可高速下载</h3>
-      <p class="guide-desc">
-        支持普通视频、番剧动漫、多P合集、课堂课程、电影纪录片以及短链接（b23.tv）
-      </p>
+      <h3 class="guide-title">粘贴链接开始下载</h3>
+      <p class="guide-desc">支持视频、番剧、合集、课堂与 b23.tv 短链</p>
       <div class="features-row">
-        <div class="feature-item">
-          <Check :size="14" class="check-icon" />
-          <span>8K / 4K / 1080P60 极清画质</span>
-        </div>
-        <div class="feature-item">
-          <Check :size="14" class="check-icon" />
-          <span>杜比全景声 / Hi-Res 无损音质</span>
-        </div>
-        <div class="feature-item">
-          <Check :size="14" class="check-icon" />
-          <span>多P批量与合集自由选集</span>
-        </div>
+        <span class="feature-pill">8K / 4K / 1080P60</span>
+        <span class="feature-pill">无损音质</span>
+        <span class="feature-pill">合集批量选集</span>
       </div>
     </div>
   </div>
@@ -443,13 +437,14 @@ defineExpose({
   border-radius: var(--radius-md);
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
-  padding: 4px 6px;
-  box-shadow: var(--shadow-sm);
-  transition: border-color var(--transition-fast);
+  padding: 5px 7px;
+  box-shadow: var(--surface-highlight), var(--shadow-sm);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .input-card:focus-within {
   border-color: var(--border-hover);
+  box-shadow: 0 0 0 2px var(--bili-pink-glow);
 }
 
 .search-wrap {
@@ -503,12 +498,12 @@ defineExpose({
 
 .result-card {
   display: flex;
-  gap: 18px;
-  padding: 16px;
+  gap: 20px;
+  padding: 18px;
   border-radius: var(--radius-md);
   background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border-hairline);
+  box-shadow: var(--surface-highlight), var(--shadow-md);
 }
 
 .card-left {
@@ -595,12 +590,11 @@ defineExpose({
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 10px;
-  margin-top: -8px;
-  padding: 6px 10px 6px 12px;
+  gap: 8px 12px;
+  margin-top: -6px;
+  padding: 8px 14px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background: var(--guest-notice-bg);
+  background: rgba(255, 255, 255, 0.025);
   font-size: 12px;
 }
 
@@ -687,8 +681,7 @@ defineExpose({
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
 }
 
 .options-wrapper {
@@ -700,7 +693,7 @@ defineExpose({
 .select-group {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .select-label {
@@ -710,15 +703,7 @@ defineExpose({
 }
 
 .quality-select {
-  height: 34px;
-  padding: 0 10px;
-  font-size: 12.5px;
-  min-width: 210px;
-}
-
-.quality-select option:disabled {
-  color: var(--text-muted);
-  background: var(--bg-badge);
+  width: 210px;
 }
 
 .action-btn-wrapper {
@@ -739,7 +724,7 @@ defineExpose({
 
 /* Empty State */
 .empty-guide {
-  margin-top: 24px;
+  margin-top: 56px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -748,21 +733,23 @@ defineExpose({
 }
 
 .guide-icon-box {
-  width: 60px;
-  height: 60px;
+  width: 52px;
+  height: 52px;
   border-radius: var(--radius-md);
-  background: rgba(251, 114, 153, 0.12);
+  background: radial-gradient(circle at 30% 20%, rgba(244, 102, 143, 0.2), rgba(244, 102, 143, 0.08));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--bili-pink);
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
 .guide-title {
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-primary);
+  letter-spacing: -0.2px;
   margin-bottom: 6px;
 }
 
@@ -775,20 +762,16 @@ defineExpose({
 
 .features-row {
   display: flex;
-  gap: 16px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: center;
 }
 
-.feature-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
+.feature-pill {
+  padding: 4px 11px;
+  border-radius: var(--radius-full);
+  background: var(--neutral-04);
+  font-size: 11.5px;
   color: var(--text-secondary);
-}
-
-.check-icon {
-  color: var(--success);
 }
 </style>

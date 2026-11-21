@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { FolderOpen, Zap, ClipboardCheck } from 'lucide-vue-next'
+import { FolderOpen, Zap } from 'lucide-vue-next'
 
 defineProps<{
   title: string
@@ -27,7 +27,7 @@ const emit = defineEmits<{
 
       <!-- Auto Clipboard Detection Badge -->
       <div v-if="autoClipboard" class="clipboard-tag" title="剪贴板自动感应已开启">
-        <ClipboardCheck :size="13" />
+        <span class="clipboard-dot" aria-hidden="true"></span>
         <span>剪贴板感应</span>
       </div>
 
@@ -42,13 +42,12 @@ const emit = defineEmits<{
 
 <style scoped>
 .app-header {
-  height: 54px;
-  min-height: 54px;
+  height: 56px;
+  min-height: 56px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px 0 20px;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 0 28px;
   background: var(--bg-header);
   backdrop-filter: blur(16px);
   flex-shrink: 0;
@@ -60,7 +59,7 @@ const emit = defineEmits<{
 }
 
 .page-title {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: -0.2px;
@@ -69,7 +68,7 @@ const emit = defineEmits<{
 .header-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .speed-badge {
@@ -80,20 +79,26 @@ const emit = defineEmits<{
   border-radius: var(--radius-full);
   background: rgba(0, 174, 236, 0.12);
   color: var(--bili-blue);
-  border: 1px solid rgba(0, 174, 236, 0.25);
   font-size: 11.5px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .clipboard-tag {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  border-radius: var(--radius-xs);
-  background: var(--neutral-05);
+  gap: 6px;
+  padding: 4px 6px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 11.5px;
+}
+
+.clipboard-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  opacity: 0.85;
 }
 
 .open-dir-btn {

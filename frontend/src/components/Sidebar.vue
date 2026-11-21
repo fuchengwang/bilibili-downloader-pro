@@ -151,7 +151,7 @@ function handleAccountClick() {
   max-width: 200px;
   height: 100vh;
   background: var(--bg-sidebar);
-  border-right: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-hairline);
   display: flex;
   flex-direction: column;
   padding: 42px 12px 16px 12px; /* Top 42px creates elegant clearance under Mac traffic lights */
@@ -163,9 +163,8 @@ function handleAccountClick() {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 4px 6px 18px 6px;
-  border-bottom: 1px solid var(--border-subtle);
-  margin-bottom: 14px;
+  padding: 4px 8px 20px 8px;
+  margin-bottom: 6px;
 }
 
 .logo-box {
@@ -218,9 +217,9 @@ function handleAccountClick() {
 
 .nav-item {
   width: 100%;
-  height: 38px;
+  height: 36px;
   padding: 0 12px;
-  border-radius: var(--radius-sm);
+  border-radius: 9px;
   background: transparent;
   color: var(--text-secondary);
   display: flex;
@@ -228,7 +227,7 @@ function handleAccountClick() {
   gap: 10px;
   font-size: 13px;
   font-weight: 500;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
   border: none;
   text-align: left;
 }
@@ -239,7 +238,8 @@ function handleAccountClick() {
 }
 
 .nav-item.active {
-  background: rgba(251, 114, 153, 0.12);
+  background: rgba(244, 102, 143, 0.13);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
   color: var(--bili-pink);
   font-weight: 600;
 }
@@ -280,15 +280,15 @@ function handleAccountClick() {
   gap: 10px;
   padding: 8px 10px;
   border-radius: var(--radius-sm);
-  background: var(--neutral-03);
-  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid transparent;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .user-card:hover {
-  background: var(--neutral-07);
-  border-color: rgba(251, 114, 153, 0.3);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-subtle);
 }
 
 .user-card.is-loading { cursor: wait; }

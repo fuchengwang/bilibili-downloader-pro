@@ -341,7 +341,7 @@ function confirmClearAll() {
 .history-container {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
   width: 100%;
   max-width: 920px;
   margin: 0 auto;
@@ -351,19 +351,19 @@ function confirmClearAll() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 4px;
 }
 
 .search-box {
   display: flex;
   align-items: center;
-  gap: 6px;
-  background: var(--bg-input);
+  gap: 7px;
+  background: var(--bg-control);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  padding: 0 10px;
-  width: 220px;
+  box-shadow: var(--surface-highlight);
+  padding: 0 11px;
+  width: 240px;
 }
 
 .search-icon {
@@ -406,24 +406,24 @@ function confirmClearAll() {
 .history-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .history-card {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 10px 12px;
+  padding: 12px 14px;
   background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-hairline);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
-  transition: all var(--transition-fast);
+  box-shadow: var(--surface-highlight), var(--shadow-sm);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .history-card:hover {
   background: var(--bg-card-hover);
-  border-color: var(--neutral-12);
+  border-color: var(--border-subtle);
 }
 .history-card.is-missing .cover-box { cursor: default; }
 .history-card.is-missing .content-box { opacity: .65; }
@@ -538,6 +538,7 @@ function confirmClearAll() {
   align-items: center;
   gap: 12px;
   font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
 }
 
 .meta-item {
@@ -612,8 +613,8 @@ function confirmClearAll() {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(8px);
+  background: rgba(6, 8, 12, 0.72);
+  backdrop-filter: blur(10px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -622,9 +623,9 @@ function confirmClearAll() {
 }
 
 .modal-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  background: var(--bg-modal);
+  border: 1px solid var(--border-popover);
+  border-radius: 16px;
   box-shadow: var(--shadow-lg);
   width: 90%;
   max-width: 460px;

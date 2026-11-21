@@ -951,7 +951,7 @@ function handleLicenseDeactivated(key: string) {
 .page-content {
   flex: 1;
   overflow-y: auto;
-  padding: 18px 24px 30px 24px;
+  padding: 12px 28px 36px 28px;
 }
 
 .tab-view {
