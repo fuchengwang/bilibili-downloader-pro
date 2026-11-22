@@ -40,11 +40,16 @@ func (b connectionBudget) acquire(ctx context.Context) (func(), error) {
 }
 
 type sourceState struct {
-	url      string
-	failures int
-	ready    time.Time
-	missing  bool
-	rejected bool
+	url          string
+	failures     int
+	ready        time.Time
+	demotedUntil time.Time
+	missing      bool
+	rejected     bool
+}
+
+func (s sourceState) preferredAfter() time.Time {
+	return laterTime(s.ready, s.demotedUntil)
 }
 
 // Shared by all workers of one track. URL refresh is single flight and failed
@@ -67,12 +72,16 @@ func newSourcePool(urls []string, refresh URLRefresher) *sourcePool {
 
 func (p *sourcePool) next(ctx context.Context) (string, error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		p.mu.Lock()
 		if len(p.sources) == 0 {
 			p.mu.Unlock()
 			return "", fmt.Errorf("无有效下载 URL")
 		}
 		best := -1
+		available := 0
 		hasRejected := false
 		now := time.Now()
 		for i := range p.sources {
@@ -82,27 +91,42 @@ func (p *sourcePool) next(ctx context.Context) (string, error) {
 			if p.sources[i].missing || p.sources[i].rejected {
 				continue
 			}
+			available++
 			// Preserve the API's preference once a source's cooldown expires.
 			// Comparing timestamps alone makes an untouched backup (zero time)
 			// win forever after a single transient error on the primary.
-			if !p.sources[i].ready.After(now) {
+			ready := p.sources[i].preferredAfter()
+			if !ready.After(now) {
 				best = i
 				break
 			}
-			if best < 0 || p.sources[i].ready.Before(p.sources[best].ready) {
+			if best < 0 || ready.Before(p.sources[best].preferredAfter()) {
 				best = i
 			}
 		}
 		if best < 0 {
+			refresh := p.refresh != nil && (p.refreshing != nil || time.Since(p.refreshed) >= time.Second)
 			p.mu.Unlock()
+			if refresh {
+				if err := p.refreshURLs(ctx, ""); err != nil {
+					return "", fmt.Errorf("刷新下载地址失败: %w", err)
+				}
+				continue
+			}
 			if hasRejected {
 				return "", errAllSourcesRejected
 			}
-			return "", fmt.Errorf("媒体请求 HTTP 404：所有候选地址均未找到媒体")
+			return "", &mediaHTTPError{code: http.StatusNotFound, detail: "：所有候选地址均未找到媒体"}
 		}
 		s := p.sources[best]
 		p.mu.Unlock()
-		if delay := time.Until(s.ready); delay > 0 {
+		ready := s.preferredAfter()
+		// Demotion is a preference. A slow node can still make progress if
+		// all other candidates are gone. Respect ordinary retry delays.
+		if available == 1 {
+			ready = s.ready
+		}
+		if delay := time.Until(ready); delay > 0 {
 			if err := waitForRetry(ctx, delay); err != nil {
 				return "", err
 			}
@@ -115,7 +139,7 @@ func (p *sourcePool) next(ctx context.Context) (string, error) {
 func (p *sourcePool) hasHealthyAlternativeLocked(excludeURL string, now time.Time) bool {
 	for i := range p.sources {
 		s := &p.sources[i]
-		if s.url != excludeURL && !s.missing && !s.rejected && !s.ready.After(now) {
+		if s.url != excludeURL && !s.missing && !s.rejected && !s.preferredAfter().After(now) {
 			return true
 		}
 	}
@@ -132,15 +156,17 @@ func (p *sourcePool) reject(url string) {
 	}
 }
 
-func (p *sourcePool) hasAvailable() bool {
+func (p *sourcePool) candidateURLs() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	urls := make([]string, 0, len(p.sources))
 	for i := range p.sources {
-		if !p.sources[i].missing && !p.sources[i].rejected {
-			return true
+		s := &p.sources[i]
+		if !s.missing && !s.rejected {
+			urls = append(urls, s.url)
 		}
 	}
-	return false
+	return urls
 }
 
 func (p *sourcePool) notFound(url string) {
@@ -168,7 +194,7 @@ func (p *sourcePool) demote(url string, preferDelay time.Duration) {
 			s := &p.sources[i]
 			if s.url == url {
 				s.failures++
-				s.ready = now.Add(preferDelay)
+				s.demotedUntil = laterTime(s.demotedUntil, now.Add(preferDelay))
 			}
 		}
 		return
@@ -190,7 +216,7 @@ func (p *sourcePool) failedLocked(url string, delay time.Duration, now time.Time
 					d = singleSourceBackoff[min(s.failures-1, len(singleSourceBackoff)-1)]
 				}
 			}
-			s.ready = now.Add(d)
+			s.ready = laterTime(s.ready, now.Add(d))
 		}
 	}
 }
@@ -198,12 +224,20 @@ func (p *sourcePool) failedLocked(url string, delay time.Duration, now time.Time
 func (p *sourcePool) succeeded(url string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	now := time.Now()
 	for i := range p.sources {
-		if p.sources[i].url == url {
+		if p.sources[i].url == url && !p.sources[i].ready.After(now) {
 			p.sources[i].failures = 0
 			p.sources[i].ready = time.Time{}
 		}
 	}
+}
+
+func laterTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 func (p *sourcePool) refreshURLs(ctx context.Context, failed string) error {
@@ -231,7 +265,9 @@ func (p *sourcePool) refreshURLs(ctx context.Context, failed string) error {
 	urls, err := p.refresh(ctx)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.refreshed = time.Now()
+	if ctx.Err() == nil {
+		p.refreshed = time.Now()
+	}
 	if clean := filterStreamURLs(urls); err == nil && len(clean) > 0 {
 		next := make([]sourceState, 0, len(clean))
 		for _, u := range clean {

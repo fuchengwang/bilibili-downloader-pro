@@ -17,6 +17,19 @@ import (
 // URLRefresher 动态刷新直链的回调函数 (当遇到 403 Forbidden 或鉴权过期时自动触发无缝刷新)
 type URLRefresher func(ctx context.Context) ([]string, error)
 
+type mediaHTTPError struct {
+	code   int
+	detail string
+}
+
+func (e *mediaHTTPError) Error() string {
+	return fmt.Sprintf("媒体请求 HTTP %d%s", e.code, e.detail)
+}
+
+func isMediaAuthStatus(code int) bool {
+	return code == http.StatusUnauthorized || code == http.StatusForbidden || code == http.StatusGone
+}
+
 // StreamDownloader 单个媒体流 (视频或音频) 的高可靠断点续传下载器
 type StreamDownloader struct {
 	diagnosticMu             sync.Mutex
@@ -180,11 +193,11 @@ func (s *StreamDownloader) probeTotalSizeWithRefresh(ctx context.Context, allowR
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	total, sawAuthExpired, lastErr := s.probeCandidates(ctx)
+	total, refreshNeeded, lastErr := s.probeCandidates(ctx)
 	if lastErr == nil && total > 0 {
 		return total, nil
 	}
-	if allowRefresh && sawAuthExpired && s.refresher != nil && ctx.Err() == nil {
+	if allowRefresh && refreshNeeded && s.refresher != nil && ctx.Err() == nil {
 		fresh, refErr := s.refresher(ctx)
 		if refErr != nil {
 			s.recordDiagnostic(refErr)
@@ -211,38 +224,49 @@ func (s *StreamDownloader) probeTotalSizeWithRefresh(ctx context.Context, allowR
 func (s *StreamDownloader) probeCandidates(ctx context.Context) (int64, bool, error) {
 	var lastErr error
 	sawAuthExpired := false
-	for i := 0; i < len(s.urls); i++ {
+	attempts, missing := 0, 0
+	for i, urlToProbe := range s.urls {
 		if err := ctx.Err(); err != nil {
-			return 0, sawAuthExpired, err
+			return 0, false, err
 		}
-		urlToProbe := s.urls[i]
 		if urlToProbe == "" {
 			continue
 		}
-		total, status, err := s.probeSingleCandidate(ctx, i, urlToProbe)
-		if err == nil && total > 0 {
-			return total, sawAuthExpired, nil
+		attempts++
+		resp, err := s.probeSingleCandidate(ctx, urlToProbe)
+		if err == nil {
+			s.rememberProbeValidators(resp.response)
+			s.setTotalSize(resp.total)
+			s.preferProbeURL(i)
+			return resp.total, false, nil
 		}
 		if ctx.Err() != nil {
-			return 0, sawAuthExpired, ctx.Err()
+			return 0, false, ctx.Err()
 		}
-		if status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusGone {
-			sawAuthExpired = true
+		var status *mediaHTTPError
+		if errors.As(err, &status) {
+			sawAuthExpired = sawAuthExpired || isMediaAuthStatus(status.code)
+			if status.code == http.StatusNotFound {
+				missing++
+			}
 		}
-		if err != nil {
-			lastErr = err
-		}
+		lastErr = err
 	}
-	return 0, sawAuthExpired, lastErr
+	return 0, sawAuthExpired || attempts > 0 && missing == attempts, lastErr
 }
 
-func (s *StreamDownloader) probeSingleCandidate(ctx context.Context, index int, urlToProbe string) (int64, int, error) {
+type mediaProbe struct {
+	total    int64
+	response *http.Response
+}
+
+func (s *StreamDownloader) probeSingleCandidate(ctx context.Context, urlToProbe string) (mediaProbe, error) {
 	candidateCtx, stopCandidate := context.WithTimeout(ctx, 5*time.Second)
 	defer stopCandidate()
 
 	req, err := http.NewRequestWithContext(candidateCtx, http.MethodGet, urlToProbe, nil)
 	if err != nil {
-		return 0, 0, err
+		return mediaProbe{}, err
 	}
 	req.Header.Set("User-Agent", bilibili.BrowserUA)
 	req.Header.Set("Referer", bilibili.Referer)
@@ -252,51 +276,41 @@ func (s *StreamDownloader) probeSingleCandidate(ctx context.Context, index int, 
 	resp, err := s.client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return 0, 0, ctx.Err()
+			return mediaProbe{}, ctx.Err()
 		}
 		s.recordDiagnostic(err)
-		return 0, 0, err
+		return mediaProbe{}, err
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return mediaProbe{}, &mediaHTTPError{code: resp.StatusCode, detail: " " + http.StatusText(resp.StatusCode)}
+	}
 	if encoding := resp.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
-		return 0, resp.StatusCode, fmt.Errorf("探测响应使用了不支持的内容编码")
+		return mediaProbe{}, errUnsupportedEncoding
+	}
+	if isLikelyNonMediaResponse(resp) {
+		return mediaProbe{}, fmt.Errorf("%w: %s", errNonMediaResponse, resp.Header.Get("Content-Type"))
 	}
 
 	// 处理 206 Partial Content：必须严格依赖 Content-Range 头计算文件总大小，严禁读取仅代表分片大小的 Content-Length
 	if resp.StatusCode == http.StatusPartialContent {
-		if isLikelyNonMediaResponse(resp) {
-			return 0, resp.StatusCode, fmt.Errorf("探测响应不是媒体内容: %s", resp.Header.Get("Content-Type"))
-		}
 		cr := resp.Header.Get("Content-Range")
 		first, last, total, pErr := parseContentRange(cr)
 		if pErr == nil && first == 0 && last == 0 && total > 0 && (resp.ContentLength < 0 || resp.ContentLength == 1) {
-			s.rememberProbeValidators(resp)
-			s.setTotalSize(total)
-			s.preferProbeURL(index)
-			return total, resp.StatusCode, nil
+			return mediaProbe{total: total, response: resp}, nil
 		}
 		if pErr != nil {
-			return 0, resp.StatusCode, fmt.Errorf("探测响应 Content-Range 无效 (%q): %w", cr, pErr)
+			return mediaProbe{}, fmt.Errorf("探测响应 Content-Range 无效 (%q): %w", cr, pErr)
 		}
-		return 0, resp.StatusCode, fmt.Errorf("探测响应 Content-Range 缺少有效总长度 (%q)", cr)
+		return mediaProbe{}, fmt.Errorf("探测响应 Content-Range 缺少有效总长度 (%q)", cr)
 	}
 
 	// 处理 200 OK：服务端未按 Range 响应而是返回整个流实体，此时方可读取 Content-Length
-	if resp.StatusCode == http.StatusOK {
-		if isLikelyNonMediaResponse(resp) {
-			return 0, resp.StatusCode, fmt.Errorf("探测响应不是媒体内容: %s", resp.Header.Get("Content-Type"))
-		}
-		if resp.ContentLength > 0 {
-			s.rememberProbeValidators(resp)
-			s.setTotalSize(resp.ContentLength)
-			s.preferProbeURL(index)
-			return resp.ContentLength, resp.StatusCode, nil
-		}
-		return 0, resp.StatusCode, fmt.Errorf("探测响应缺少有效 Content-Length")
+	if resp.ContentLength > 0 {
+		return mediaProbe{total: resp.ContentLength, response: resp}, nil
 	}
-
-	return 0, resp.StatusCode, fmt.Errorf("探测 URL 返回异常: %s", resp.Status)
+	return mediaProbe{}, fmt.Errorf("探测响应缺少有效 Content-Length")
 }
 
 func (s *StreamDownloader) rememberProbeValidators(resp *http.Response) {

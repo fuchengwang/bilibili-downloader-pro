@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -252,30 +253,260 @@ func TestResilience_Startup416WithOversizedHintRecovers(t *testing.T) {
 	}
 }
 
-func TestResilience_ProbeTotalSizeRefreshesOn403(t *testing.T) {
+func TestResilience_RepeatedStartup416UsesBackup(t *testing.T) {
+	const primary = "https://primary.invalid/media"
+	const backup = "https://backup.invalid/media"
+	data := engineData(32 * 1024)
+	path := filepath.Join(t.TempDir(), "media")
+	s := NewStreamDownloader([]string{primary, backup}, path)
+	s.skipSizeProbe = true
+	s.sizeHint = int64(2 * len(data))
+
+	var hits atomic.Int32
+	s.client.Transport = streamRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() == primary {
+			hits.Add(1)
+			return mockRangeRejection(r, len(data)), nil
+		}
+		return mockRangeMedia(r, data), nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := s.DownloadWithConcurrency(ctx, 4, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("expected one corrected retry before failover, got %d primary requests", got)
+	}
+	assertMediaBytes(t, path, data)
+}
+
+func TestResilience_Concurrent416PreservesVerifiedRanges(t *testing.T) {
+	const primary = "https://primary.invalid/media"
+	const backup = "https://backup.invalid/media"
+	data := engineData(64 * 1024)
+	total := int64(len(data))
+	const prefix = 4096
+	path := filepath.Join(t.TempDir(), "media")
+	ranges := []byteRange{
+		{Start: 0, Position: prefix, End: total / 2},
+		{Start: total / 2, Position: total/2 + prefix, End: total},
+	}
+	partial := make([]byte, len(data))
+	for _, r := range ranges {
+		copy(partial[r.Start:r.Position], data[r.Start:r.Position])
+	}
+	if err := os.WriteFile(path, partial, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRangeRecord(path, rangeRecord{Version: 1, Total: total, Ranges: ranges}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewStreamDownloader([]string{primary, backup}, path)
+	both := make(chan struct{})
+	var rejected atomic.Int32
+	s.client.Transport = streamRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != primary {
+			return mockRangeMedia(r, data), nil
+		}
+		if rejected.Add(1) == 2 {
+			close(both)
+		}
+		select {
+		case <-both:
+			return mockRangeRejection(r, len(data)/4), nil
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		}
+	})
+
+	var received int64
+	e, err := s.prepareTransfer(newSourcePool(s.urls, nil), 2, false, func(n int64) { received += n })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.file.Close()
+	e.confirmed, e.canRange = true, true
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := e.run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s.totalSize != total || received != total-2*prefix {
+		t.Fatalf("expected only missing bytes and unchanged size, received=%d size=%d", received, s.totalSize)
+	}
+	assertMediaBytes(t, path, data)
+}
+
+func TestResilience_416RestartRequiresVerifiedSizeChange(t *testing.T) {
+	for _, changed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("size-changed-%t", changed), func(t *testing.T) {
+			t.Parallel()
+			const originalSize = 64 * 1024
+			const prefix = 48 * 1024
+			data := engineData(originalSize)
+			if changed {
+				data = data[:originalSize/2]
+			}
+			path := filepath.Join(t.TempDir(), "media")
+			seedRangeRecord(t, path, originalSize, 1, prefix)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := NewStreamDownloader([]string{"https://cdn.invalid/media"}, path)
+			s.skipSizeProbe = true
+			var probes atomic.Int32
+			s.client.Transport = streamRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				switch r.Header.Get("Range") {
+				case "bytes=0-0":
+					probes.Add(1)
+					return mockRangeMedia(r, data), nil
+				case "bytes=49152-65535":
+					return mockRangeRejection(r, originalSize/2), nil
+				default:
+					return mockRangeMedia(r, data), nil
+				}
+			})
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			err = s.DownloadWithConcurrency(ctx, 2, nil)
+			if probes.Load() != 1 {
+				t.Fatalf("expected a new media probe before deciding whether to reset, got %d: %v", probes.Load(), err)
+			}
+			if changed {
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertMediaBytes(t, path, data)
+				return
+			}
+
+			var status *mediaHTTPError
+			if !errors.As(err, &status) || status.code != http.StatusRequestedRangeNotSatisfiable {
+				t.Fatalf("expected range error with original checkpoint retained, got %v", err)
+			}
+			record, err := readRangeRecord(path)
+			if err != nil || record.Total != originalSize || record.received() != prefix {
+				t.Fatalf("original checkpoint was modified: %+v, %v", record, err)
+			}
+			assertMediaBytes(t, path, before)
+		})
+	}
+}
+
+func mockRangeRejection(r *http.Request, reportedTotal int) *http.Response {
+	w := httptest.NewRecorder()
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", reportedTotal))
+	w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+	resp := w.Result()
+	resp.Request = r
+	return resp
+}
+
+func mockRangeMedia(r *http.Request, data []byte) *http.Response {
+	w := httptest.NewRecorder()
+	http.ServeContent(w, r, "media.mp4", time.Time{}, bytes.NewReader(data))
+	resp := w.Result()
+	resp.Request = r
+	return resp
+}
+
+func TestResilience_ExhaustedPoolWaitsForSharedRefresh(t *testing.T) {
+	for _, mark := range []string{"missing", "rejected"} {
+		t.Run(mark, func(t *testing.T) {
+			const old = "https://old.invalid/media"
+			const fresh = "https://fresh.invalid/media"
+			started, release := make(chan struct{}), make(chan struct{})
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			var refreshes atomic.Int32
+			p := newSourcePool([]string{old}, func(ctx context.Context) ([]string, error) {
+				if refreshes.Add(1) == 1 {
+					close(started)
+				}
+				select {
+				case <-release:
+					return []string{fresh}, nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			})
+			if mark == "missing" {
+				p.notFound(old)
+			} else {
+				p.reject(old)
+			}
+			result := make(chan error, 1)
+			go func() {
+				got, err := p.next(ctx)
+				if err == nil && got != fresh {
+					err = fmt.Errorf("expected fresh URL, got %s", got)
+				}
+				result <- err
+			}()
+			select {
+			case <-started:
+			case err := <-result:
+				t.Fatalf("first worker exited before refreshing: %v", err)
+			case <-ctx.Done():
+				t.Fatal("refresh did not start")
+			}
+
+			waiterCtx, stop := context.WithTimeout(ctx, 40*time.Millisecond)
+			defer stop()
+			if _, err := p.next(waiterCtx); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("second worker exited while refresh was still pending: %v", err)
+			}
+			close(release)
+			if got, err := p.next(ctx); err != nil || got != fresh {
+				t.Fatalf("second worker did not receive fresh URL: %q, %v", got, err)
+			}
+			if err := <-result; err != nil {
+				t.Fatal(err)
+			}
+			if got := refreshes.Load(); got != 1 {
+				t.Fatalf("expected one shared refresh, got %d", got)
+			}
+		})
+	}
+}
+
+func TestResilience_ProbeTotalSizeRefreshes(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			testResilienceProbeRefresh(t, status)
+		})
+	}
+}
+
+func testResilienceProbeRefresh(t *testing.T, status int) {
 	data := []byte("cached-verified-media-track")
 	var expiredHits, freshProbes, freshTransfers, refreshes atomic.Int32
 
-	expired := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		expiredHits.Add(1)
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer expired.Close()
-
-	fresh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	transport := streamRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(r.URL.Query().Get("sig"), "old") {
+			expiredHits.Add(1)
+			w := httptest.NewRecorder()
+			w.WriteHeader(status)
+			return w.Result(), nil
+		}
 		if r.Header.Get("Range") == "bytes=0-0" {
 			freshProbes.Add(1)
 		} else {
 			freshTransfers.Add(1)
 		}
-		w.Header().Set("ETag", `"v1"`)
-		http.ServeContent(w, r, "media", time.Time{}, bytes.NewReader(data))
-	}))
-	defer fresh.Close()
+		resp := mockRangeMedia(r, data)
+		resp.Header.Set("ETag", `"v1"`)
+		return resp, nil
+	})
 
 	path := filepath.Join(t.TempDir(), "media")
-	firstURL := fresh.URL + "/track?sig=1"
+	const firstURL = "https://fresh.invalid/track?sig=1"
 	dl1 := NewStreamDownloader([]string{firstURL}, path)
+	dl1.client.Transport = transport
 	dl1.representation = mediaRepresentationKey([]string{firstURL})
 	dl1.skipSizeProbe = true
 	if err := dl1.DownloadWithConcurrency(context.Background(), 2, nil); err != nil {
@@ -284,10 +515,11 @@ func TestResilience_ProbeTotalSizeRefreshesOn403(t *testing.T) {
 	freshProbes.Store(0)
 	freshTransfers.Store(0)
 
-	expiredURL := expired.URL + "/track?sig=old"
-	refreshedURL := fresh.URL + "/track?sig=2"
-	dl2 := NewStreamDownloader([]string{expiredURL}, path)
-	dl2.representation = mediaRepresentationKey([]string{expiredURL})
+	expiredURLs := []string{"https://old.invalid/track?sig=old1", "https://backup.invalid/track?sig=old2"}
+	const refreshedURL = "https://fresh.invalid/track?sig=2"
+	dl2 := NewStreamDownloader(expiredURLs, path)
+	dl2.client.Transport = transport
+	dl2.representation = mediaRepresentationKey(expiredURLs)
 	dl2.skipSizeProbe = true
 	dl2.SetURLRefresher(func(context.Context) ([]string, error) {
 		refreshes.Add(1)
@@ -297,10 +529,10 @@ func TestResilience_ProbeTotalSizeRefreshesOn403(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := dl2.DownloadWithConcurrency(ctx, 2, nil); err != nil {
-		t.Fatalf("resume verification after 403 refresh failed: %v", err)
+		t.Fatalf("resume verification after refresh failed: %v", err)
 	}
 	assertMediaBytes(t, path, data)
-	if expiredHits.Load() != 1 || refreshes.Load() != 1 || freshProbes.Load() != 1 || freshTransfers.Load() != 0 {
+	if expiredHits.Load() != int32(len(expiredURLs)) || refreshes.Load() != 1 || freshProbes.Load() != 1 || freshTransfers.Load() != 0 {
 		t.Fatalf("unexpected verify counts: expired=%d refreshes=%d freshProbes=%d freshTransfers=%d",
 			expiredHits.Load(), refreshes.Load(), freshProbes.Load(), freshTransfers.Load())
 	}
@@ -313,10 +545,20 @@ func TestResilience_SlowStreamDemotesSlowPrimary(t *testing.T) {
 		p.demote("https://primary.invalid/a", 30*time.Second)
 
 		p.mu.Lock()
-		cooldown := p.sources[0].ready.Sub(before)
+		cooldown := p.sources[0].demotedUntil.Sub(before)
 		p.mu.Unlock()
 		if cooldown < 29*time.Second {
 			t.Fatalf("expected ~30s cooldown when healthy backup exists, got %v", cooldown)
+		}
+
+		// Requests started before the demotion can finish in either order.
+		p.failed("https://primary.invalid/a", time.Millisecond)
+		p.succeeded("https://primary.invalid/a")
+		p.mu.Lock()
+		cooldownAfterLateResponses := p.sources[0].preferredAfter().Sub(before)
+		p.mu.Unlock()
+		if cooldownAfterLateResponses < cooldown {
+			t.Fatalf("late responses shortened cooldown to %v", cooldownAfterLateResponses)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -324,6 +566,11 @@ func TestResilience_SlowStreamDemotesSlowPrimary(t *testing.T) {
 		got, err := p.next(ctx)
 		if err != nil || got != "https://backup.invalid/b" {
 			t.Fatalf("expected immediate switch to backup, got %q err=%v", got, err)
+		}
+		p.notFound("https://backup.invalid/b")
+		got, err = p.next(ctx)
+		if err != nil || got != "https://primary.invalid/a" {
+			t.Fatalf("expected a slow but usable primary when the backup is gone, got %q err=%v", got, err)
 		}
 	})
 
@@ -441,14 +688,17 @@ func TestResilience_FriendlyErrorsClearAndUserFacing(t *testing.T) {
 		{name: "conn-reset", err: syscall.ECONNRESET, wantContains: "连接中断"},
 		{name: "broken-pipe", err: syscall.EPIPE, wantContains: "连接中断"},
 		{name: "conn-aborted", err: syscall.ECONNABORTED, wantContains: "连接中断"},
-		{name: "http-403", err: errors.New("媒体请求 HTTP 403"), wantContains: "过期"},
-		{name: "http-401", err: errors.New("媒体请求 HTTP 401"), wantContains: "过期"},
-		{name: "http-410", err: errors.New("媒体请求 HTTP 410"), wantContains: "过期"},
-		{name: "http-429", err: errors.New("下载连续重试耗尽: 媒体请求 HTTP 429"), wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
-		{name: "http-404", err: errors.New("媒体请求 HTTP 404：所有候选地址均未找到媒体"), wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
-		{name: "http-400", err: errors.New("媒体请求 HTTP 400"), wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
-		{name: "http-451", err: errors.New("媒体请求 HTTP 451"), wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
-		{name: "http-503", err: errors.New("下载连续重试耗尽: 媒体请求 HTTP 503"), wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
+		{name: "http-403", err: &mediaHTTPError{code: 403}, wantContains: "过期"},
+		{name: "http-401", err: &mediaHTTPError{code: 401}, wantContains: "过期"},
+		{name: "http-410", err: &mediaHTTPError{code: 410}, wantContains: "过期"},
+		{name: "http-429", err: fmt.Errorf("下载连续重试耗尽: %w", &mediaHTTPError{code: 429}), wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
+		{name: "http-404", err: &mediaHTTPError{code: 404}, wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
+		{name: "http-400", err: &mediaHTTPError{code: 400}, wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
+		{name: "http-416", err: &mediaHTTPError{code: 416}, wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
+		{name: "http-451", err: &mediaHTTPError{code: 451}, wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
+		{name: "http-503", err: fmt.Errorf("下载连续重试耗尽: %w", &mediaHTTPError{code: 503}), wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
+		{name: "status-in-url", err: &url.Error{Op: "Get", URL: "https://cdn.invalid/403?token=503&tag=timeout", Err: errors.New("transport failure")}, wantExact: "下载意外中断，请检查网络后点击重试"},
+		{name: "digits-in-untyped-error", err: errors.New("Get https://cdn.invalid/403: transport failure"), wantExact: "下载意外中断，请检查网络后点击重试"},
 		{name: "non-media-html", err: errors.New("媒体响应类型异常: text/html"), wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
 		{name: "track-changed", err: errors.New("刷新后的媒体轨道发生变化，请重试任务"), wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
 		{name: "unknown-fallback", err: errors.New("something unexpected happened"), wantExact: "下载意外中断，请检查网络后点击重试"},

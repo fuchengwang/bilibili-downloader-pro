@@ -111,6 +111,19 @@ func (s *StreamDownloader) downloadCore(ctx context.Context, threads int, progre
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		var status *mediaHTTPError
+		if errors.As(err, &status) && status.code == http.StatusRequestedRangeNotSatisfiable && e.total > 0 {
+			// An error response cannot establish a new media size. Only recheck
+			// after failover is exhausted and all range writers have stopped.
+			urls := pool.candidateURLs()
+			if s.verifyChangedRangeTotal(ctx, e.total, urls) {
+				pool = newSourcePool(urls, s.refresher)
+				err = errEntityChanged
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+		}
 		if errors.Is(err, errRangeUnsupported) || errors.Is(err, errEntityChanged) {
 			initial = e.received()
 			if initial != 0 {
@@ -145,6 +158,31 @@ func (s *StreamDownloader) downloadCore(ctx context.Context, threads int, progre
 		return err
 	}
 	return fmt.Errorf("媒体范围或内容反复变化，已保留缓存，请稍后重试")
+}
+
+func (s *StreamDownloader) verifyChangedRangeTotal(ctx context.Context, previousTotal int64, urls []string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	for i, url := range urls {
+		release, err := s.connections.acquire(ctx)
+		if err != nil {
+			return false
+		}
+		probe, err := s.probeSingleCandidate(ctx, url)
+		release()
+		if err != nil {
+			continue
+		}
+		if probe.total == previousTotal {
+			return false
+		}
+		s.rememberProbeValidators(probe.response)
+		s.setTotalSize(probe.total)
+		copy(urls[1:i+1], urls[:i])
+		urls[0] = url
+		return true
+	}
+	return false
 }
 
 func (s *StreamDownloader) reportRestored(delta int64, progress DownloadProgressFn) {
@@ -452,6 +490,7 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 	var last error
 	failures := 0
 	ignoredRanges := 0
+	hintAdjusted := false
 	for failures < 8 {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -531,63 +570,41 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 		if status != 200 && status != 206 {
 			_ = resp.Body.Close()
 			release()
-			last = fmt.Errorf("媒体请求 HTTP %d", status)
+			last = &mediaHTTPError{code: status}
 			e.s.recordDiagnostic(last)
 			if status == http.StatusRequestedRangeNotSatisfiable {
-				_, _, realTotal, pErr := parseContentRange(resp.Header.Get("Content-Range"))
+				first, _, reportedTotal, pErr := parseContentRange(resp.Header.Get("Content-Range"))
+				validTotal := pErr == nil && first == -1 && reportedTotal > 0
 				e.mu.Lock()
-				confirmed := e.confirmed
-				knownTotal := e.total
-				if start == 0 && !confirmed {
-					if pErr == nil && realTotal > 0 {
-						e.s.sizeHint = realTotal
-					} else {
-						e.s.sizeHint = 0
+				unverified := !e.confirmed && e.total <= 0
+				adjustHint := unverified && start == 0 && ranged && end > 0 && !hintAdjusted &&
+					(!validTotal || reportedTotal < min(end, maximumRequestSize))
+				if adjustHint {
+					e.s.sizeHint = 0
+					if validTotal {
+						e.s.sizeHint = reportedTotal
 					}
-					e.mu.Unlock()
-					if pErr != nil || realTotal <= 0 {
-						e.pool.failed(url, 0)
-					}
-					failures++
-					continue
+					hintAdjusted = true
 				}
 				e.mu.Unlock()
-				if pErr == nil && realTotal > 0 && realTotal != knownTotal {
-					e.s.setTotalSize(realTotal)
+				// An untracked legacy prefix beyond the end of the resource
+				// cannot be resumed. Restart without adopting the reported size.
+				if unverified && validTotal && start >= reportedTotal {
+					return errEntityChanged
 				}
-				return errEntityChanged
-			}
-			if status == http.StatusNotFound {
+				if !adjustHint {
+					e.pool.failed(url, 0)
+				}
+			} else if status == http.StatusNotFound {
 				e.pool.notFound(url)
-				if !e.pool.hasAvailable() && e.pool.refresh != nil {
-					if err := e.pool.refreshURLs(ctx, url); err != nil {
-						e.s.recordDiagnostic(err)
-					}
-				}
-				failures++
-				continue
-			}
-			if status == 400 || status == 405 || status == 451 {
+			} else if status == http.StatusBadRequest || status == http.StatusMethodNotAllowed || status == http.StatusUnavailableForLegalReasons {
 				e.pool.reject(url)
-				if !e.pool.hasAvailable() {
-					if e.pool.refresh != nil {
-						if err := e.pool.refreshURLs(ctx, url); err != nil {
-							e.s.recordDiagnostic(err)
-						}
-					}
-					if !e.pool.hasAvailable() {
-						return last
-					}
-				}
-				failures++
-				continue
-			}
-			if status == 429 || status == 503 {
+			} else if status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable {
 				e.pool.failed(url, retryAfter(resp.Header))
 			} else {
 				e.pool.failed(url, 0)
 			}
-			if status == 401 || status == 403 || status == 410 {
+			if isMediaAuthStatus(status) {
 				if err := e.pool.refreshURLs(ctx, url); err != nil {
 					e.s.recordDiagnostic(err)
 				}
@@ -636,16 +653,6 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 		e.s.recordDiagnostic(err)
 		if !advanced && (errors.Is(err, errNonMediaResponse) || errors.Is(err, errUnsupportedEncoding)) {
 			e.pool.reject(url)
-			if !e.pool.hasAvailable() {
-				if e.pool.refresh != nil {
-					if refErr := e.pool.refreshURLs(ctx, url); refErr != nil {
-						e.s.recordDiagnostic(refErr)
-					}
-				}
-				if !e.pool.hasAvailable() {
-					return err
-				}
-			}
 		} else if errors.Is(err, errSlowStream) {
 			e.pool.demote(url, 30*time.Second)
 		} else if errors.Is(err, errIdleStream) {

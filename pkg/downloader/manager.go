@@ -10,6 +10,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -890,8 +892,25 @@ func formatFriendlyError(err error) string {
 	if err == nil {
 		return ""
 	}
+	var requestErr *url.Error
+	if errors.As(err, &requestErr) && requestErr.Err != nil {
+		err = requestErr.Err
+	}
 	if isDiskSpaceError(err) {
 		return diskSpaceMessage
+	}
+	var status *mediaHTTPError
+	if errors.As(err, &status) {
+		if isMediaAuthStatus(status.code) {
+			return "下载地址已过期，请点击重试重新获取"
+		}
+		switch status.code {
+		case http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed,
+			http.StatusRequestedRangeNotSatisfiable, http.StatusTooManyRequests,
+			http.StatusUnavailableForLegalReasons, http.StatusInternalServerError,
+			http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return "视频服务器暂时繁忙，请稍后点击重试"
+		}
 	}
 	errStr := strings.ToLower(err.Error())
 	if errors.Is(err, os.ErrPermission) ||
@@ -939,20 +958,7 @@ func formatFriendlyError(err error) string {
 		strings.Contains(errStr, "broken pipe") {
 		return "网络连接中断，请点击重试继续下载"
 	}
-	if strings.Contains(errStr, "401") ||
-		strings.Contains(errStr, "403") ||
-		strings.Contains(errStr, "410") {
-		return "下载地址已过期，请点击重试重新获取"
-	}
-	if strings.Contains(errStr, "400") ||
-		strings.Contains(errStr, "404") ||
-		strings.Contains(errStr, "405") ||
-		strings.Contains(errStr, "429") ||
-		strings.Contains(errStr, "451") ||
-		strings.Contains(errStr, "500") ||
-		strings.Contains(errStr, "502") ||
-		strings.Contains(errStr, "503") ||
-		strings.Contains(errStr, "504") ||
+	if errors.Is(err, errAllSourcesRejected) ||
 		strings.Contains(errStr, "媒体响应类型异常") ||
 		strings.Contains(errStr, "不支持的内容编码") ||
 		strings.Contains(errStr, "媒体范围或内容反复变化") ||
