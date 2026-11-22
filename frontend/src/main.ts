@@ -1,6 +1,15 @@
 import { createApp } from 'vue'
 import App from './App.vue'
 import './styles/main.css'
+import { Environment } from '../wailsjs/runtime/runtime'
+
+Environment()
+  .then((env) => {
+    if (env?.platform) {
+      document.documentElement.dataset.platform = env.platform
+    }
+  })
+  .catch(() => {})
 
 document.addEventListener('contextmenu', (event) => {
   const target = event.target as HTMLElement | null

@@ -159,6 +159,11 @@ function handleAccountClick() {
   flex-shrink: 0;
 }
 
+:global(:root[data-platform='windows']) .sidebar,
+:global(:root[data-platform='linux']) .sidebar {
+  padding-top: 14px;
+}
+
 .brand {
   display: flex;
   align-items: center;

@@ -72,14 +72,14 @@ test('native background follows explicit and changing system appearance', () => 
   const { context, root, backgrounds, media } = appearanceContext('system', false)
   vm.runInContext(themeCode, context)
   assert.equal(root.dataset.theme, 'light')
-  assert.deepEqual(backgrounds.at(-1), [244, 246, 250, 255])
+  assert.deepEqual(backgrounds.at(-1), [245, 245, 247, 255])
   media.matches = true
   media.changed()
   assert.equal(root.dataset.theme, 'dark')
-  assert.deepEqual(backgrounds.at(-1), [12, 14, 20, 255])
+  assert.deepEqual(backgrounds.at(-1), [13, 13, 15, 255])
   context.exports.theme.value = 'light'
   assert.equal(root.dataset.theme, 'light')
-  assert.deepEqual(backgrounds.at(-1), [244, 246, 250, 255])
+  assert.deepEqual(backgrounds.at(-1), [245, 245, 247, 255])
 })
 
 const app = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')

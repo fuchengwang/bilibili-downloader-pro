@@ -21,7 +21,7 @@ function applyTheme() {
   const runtime = (window as any).runtime
   if (runtime) {
     // Keep the native backing colour in sync, including system-light startup.
-    const background = resolved === 'light' ? [244, 246, 250] : [12, 14, 20]
+    const background = resolved === 'light' ? [245, 245, 247] : [13, 13, 15]
     runtime.WindowSetBackgroundColour?.(...background, 255)
     if (resolved === 'light') runtime.WindowSetLightTheme?.()
     else runtime.WindowSetDarkTheme?.()

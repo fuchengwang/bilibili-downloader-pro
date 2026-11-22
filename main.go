@@ -69,13 +69,16 @@ func main() {
 	}
 
 	appearance := mac.NSAppearanceNameDarkAqua
-	background := &options.RGBA{R: 12, G: 14, B: 20, A: 255}
+	windowsTheme := windows.Dark
+	background := &options.RGBA{R: 13, G: 13, B: 15, A: 255}
 	switch app.cfgMgr.Get().Theme {
 	case "light":
 		appearance = mac.NSAppearanceNameAqua
-		background = &options.RGBA{R: 244, G: 246, B: 250, A: 255}
+		windowsTheme = windows.Light
+		background = &options.RGBA{R: 245, G: 245, B: 247, A: 255}
 	case "system":
 		appearance = mac.DefaultAppearance
+		windowsTheme = windows.SystemDefault
 	}
 	err = wails.Run(&options.App{
 		Title:            "BBDown Pro",
@@ -112,6 +115,19 @@ func main() {
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
 			BackdropType:         windows.Mica,
+			Theme:                windowsTheme,
+			CustomTheme: &windows.ThemeSettings{
+				DarkModeTitleBar:          windows.RGB(13, 13, 15),
+				DarkModeTitleBarInactive:  windows.RGB(13, 13, 15),
+				DarkModeTitleText:         windows.RGB(244, 244, 246),
+				DarkModeTitleTextInactive: windows.RGB(161, 161, 170),
+				DarkModeBorder:            windows.RGB(32, 32, 38),
+				LightModeTitleBar:         windows.RGB(245, 245, 247),
+				LightModeTitleBarInactive: windows.RGB(245, 245, 247),
+				LightModeTitleText:        windows.RGB(24, 24, 27),
+				LightModeTitleTextInactive: windows.RGB(113, 113, 122),
+				LightModeBorder:           windows.RGB(224, 224, 230),
+			},
 		},
 	})
 
