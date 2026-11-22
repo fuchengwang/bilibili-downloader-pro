@@ -801,9 +801,10 @@ async function handleLogout() {
   width: 190px;
   height: 190px;
   background: #ffffff;
+  border: 1px solid var(--border-subtle);
   padding: 10px;
   border-radius: var(--radius-md);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -820,12 +821,7 @@ async function handleLogout() {
 .qr-loading-mask,
 .qr-expired-mask {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(15, 23, 42, 0.85);
-  color: #fff;
+  inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -833,6 +829,16 @@ async function handleLogout() {
   gap: 8px;
   font-size: 13px;
   text-align: center;
+}
+
+.qr-loading-mask {
+  background: rgba(255, 255, 255, 0.96);
+  color: #52525b;
+}
+
+.qr-expired-mask {
+  background: rgba(24, 24, 27, 0.8);
+  color: #fff;
   backdrop-filter: blur(2px);
 }
 

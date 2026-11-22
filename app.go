@@ -383,7 +383,11 @@ func (a *App) GetSettings() config.Settings {
 
 // SaveSettings 保存设置
 func (a *App) SaveSettings(s config.Settings) error {
-	return a.cfgMgr.Save(s)
+	if err := a.cfgMgr.Save(s); err != nil {
+		return err
+	}
+	applyNativeWindowAppearance(s.Theme)
+	return nil
 }
 
 // SelectDirectory 弹出系统原生文件夹选择对话框
