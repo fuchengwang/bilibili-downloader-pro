@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import vm from 'node:vm'
 import ts from 'typescript'
-import { ref, createSSRApp } from 'vue'
+import { ref, computed, createSSRApp } from 'vue'
 
 const source = readFileSync(new URL('../src/utils/task-queue.ts', import.meta.url), 'utf8')
 const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText
@@ -185,7 +185,7 @@ const iconStubs = Object.fromEntries(
     .map(name => [name, { render: () => null }])
 )
 
-async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all', viewMode = 'comfortable', selectionMode = false, selectedIds = new Set(), batchBusy = false, showBatchDeleteModal = false }) {
+async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all', viewMode = 'comfortable', selectionMode = false, selectedIds = new Set(), batchBusy = false, showBatchDeleteModal = false, showDeleteModal = false, deleteTargetTask = null }) {
   const activeQueueCount = tasks.filter(t => t.status !== 'completed').length
   const downloadingCount = tasks.filter(t => t.status === 'downloading' || t.status === 'merging').length
   const pausedCount = tasks.filter(t => t.status === 'paused' || t.status === 'queued').length
@@ -193,6 +193,9 @@ async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all'
   const ordered = orderedQueueTasks(tasks)
   const selectionSummary = summarizeQueueSelection(filteredTasks, selectedIds, ordered)
   const posMap = new Map(ordered.map((t, idx) => [t.id, idx + 1]))
+  const formatStatusContext = vm.createContext({})
+  const queueScript = ts.createSourceFile('DownloadQueue.ts', component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1], ts.ScriptTarget.Latest, true)
+  vm.runInContext(compileFunctions(queueScript, 'formatDeleteTargetStatus'), formatStatusContext)
   return renderToString(createSSRApp({
     ssrRender: rendered.exports.ssrRender,
     components: iconStubs,
@@ -210,6 +213,12 @@ async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all'
       batchDeletePreviewTasks: selectionSummary.selectedTasks.slice(0, 4),
       batchBusy,
       showBatchDeleteModal,
+      showDeleteModal,
+      deleteTargetTask,
+      formatDeleteTargetStatus: formatStatusContext.formatDeleteTargetStatus,
+      openDeleteModal: () => {},
+      closeDeleteModal: () => {},
+      confirmDeleteSingle: () => {},
       isDragging: false,
       dropTargetId: null,
       dropPosition: 'before',
@@ -374,4 +383,61 @@ test('pruneSelectedHistoryIds keeps only completed tasks present in list', () =>
   const tasks = [task('H1', 1, 'completed'), task('H2', 2, 'paused'), task('H3', 3, 'completed')]
   const pruned = pruneSelectedHistoryIds(new Set(['H1', 'H2', 'H3', 'MISSING']), tasks)
   assert.deepEqual([...pruned], ['H1', 'H3'])
+})
+
+test('single task delete modal highlights progress for downloading and paused tasks', async () => {
+  for (const [status, statusLabel] of [['downloading', '下载中 · 90%'], ['paused', '已暂停 · 90%']]) {
+    const target = { ...task('T90', 1, status), title: '长视频合集', partTitle: 'P1 关键章节', progress: 90 }
+    const html = await renderQueue({
+      tasks: [target],
+      showDeleteModal: true,
+      deleteTargetTask: target
+    })
+    assert.ok(html.includes('删除下载任务'), html)
+    assert.ok(html.includes('当前已下载'), html)
+    assert.ok(html.includes('90%'), html)
+    assert.ok(html.includes('长视频合集'), html)
+    assert.ok(html.includes('P1 关键章节'), html)
+    assert.ok(html.includes(statusLabel), html)
+  }
+})
+
+test('single task delete requires confirmation and aborts if task completes before confirm', () => {
+  const script = ts.createSourceFile('DownloadQueue.ts',
+    component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1], ts.ScriptTarget.Latest, true)
+  const emitted = []
+  const props = { tasks: ref([{ ...task('D1', 1, 'downloading'), progress: 90 }]) }
+  const context = vm.createContext({
+    ref,
+    computed,
+    props: { get tasks() { return props.tasks.value } },
+    showDeleteModal: ref(false),
+    deleteTargetId: ref(null),
+    emit: (...args) => emitted.push(args)
+  })
+  const deleteTargetDecl = script.statements.find(node =>
+    ts.isVariableStatement(node) && node.declarationList.declarations[0]?.name?.getText(script) === 'deleteTargetTask'
+  ).getText(script)
+  const deleteTargetJs = ts.transpileModule(deleteTargetDecl, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  vm.runInContext(deleteTargetJs + '\n' + compileFunctions(script, 'openDeleteModal', 'closeDeleteModal', 'confirmDeleteSingle'), context)
+
+  context.openDeleteModal(props.tasks.value[0])
+  assert.equal(context.showDeleteModal.value, true)
+  assert.equal(emitted.length, 0)
+
+  context.closeDeleteModal()
+  assert.equal(context.showDeleteModal.value, false)
+  assert.equal(emitted.length, 0)
+
+  context.openDeleteModal(props.tasks.value[0])
+  context.confirmDeleteSingle()
+  assert.equal(context.showDeleteModal.value, false)
+  assert.deepEqual(JSON.parse(JSON.stringify(emitted)), [['delete-task', 'D1', false]])
+
+  emitted.length = 0
+  context.openDeleteModal(props.tasks.value[0])
+  props.tasks.value = [{ ...task('D1', 1, 'completed'), progress: 100 }]
+  context.confirmDeleteSingle()
+  assert.equal(context.showDeleteModal.value, false)
+  assert.equal(emitted.length, 0)
 })

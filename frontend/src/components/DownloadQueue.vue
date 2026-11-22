@@ -71,6 +71,8 @@ const selectionMode = ref(false)
 const selectedIds = ref<Set<string>>(new Set())
 const lastAnchorId = ref<string | null>(null)
 const showBatchDeleteModal = ref(false)
+const showDeleteModal = ref(false)
+const deleteTargetId = ref<string | null>(null)
 
 // Pointer Drag & Drop State
 const draggingTaskIds = ref<string[]>([])
@@ -360,6 +362,52 @@ function openBatchDeleteModal() {
   showBatchDeleteModal.value = true
 }
 
+const deleteTargetTask = computed(() => {
+  if (!deleteTargetId.value) return null
+  return props.tasks.find(t => t.id === deleteTargetId.value && t.status !== 'completed') ?? null
+})
+
+function formatDeleteTargetStatus(task: downloader.DownloadTask): string {
+  const pct = Math.max(0, Math.min(100, Math.round(task.progress || 0)))
+  switch (task.status) {
+    case 'downloading':
+      return `下载中 · ${pct}%`
+    case 'merging':
+      return `混流中 · ${pct}%`
+    case 'paused':
+      return `已暂停 · ${pct}%`
+    case 'queued':
+      return '等待中'
+    case 'error':
+      return '下载失败'
+    case 'cancelled':
+      return '已取消'
+    default:
+      return ''
+  }
+}
+
+function openDeleteModal(task: downloader.DownloadTask) {
+  deleteTargetId.value = task.id
+  showDeleteModal.value = true
+}
+
+function closeDeleteModal() {
+  showDeleteModal.value = false
+  deleteTargetId.value = null
+}
+
+function confirmDeleteSingle() {
+  const task = deleteTargetTask.value
+  if (!task) {
+    closeDeleteModal()
+    return
+  }
+  const id = task.id
+  closeDeleteModal()
+  emit('delete-task', id, false)
+}
+
 function confirmBatchDelete() {
   const ids = [...selectionSummary.value.deletableIds]
   if (ids.length === 0) {
@@ -385,9 +433,17 @@ watch(() => props.tasks, (nextTasks) => {
   if (currentFilter.value === 'error' && !nextTasks.some(t => t.status === 'error' || t.status === 'cancelled')) {
     currentFilter.value = 'all'
   }
+  if (showDeleteModal.value && !deleteTargetTask.value) {
+    closeDeleteModal()
+  }
 }, { deep: true })
 
 function handleKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && showDeleteModal.value) {
+    event.preventDefault()
+    closeDeleteModal()
+    return
+  }
   if (!selectionMode.value) return
   if (!queueContainerRef.value || queueContainerRef.value.getClientRects().length === 0) return
   const target = event.target as HTMLElement | null
@@ -818,8 +874,8 @@ onUnmounted(() => {
 
           <button
             class="btn-icon task-btn delete-btn"
-            @click="emit('delete-task', task.id, false)"
-            title="清除记录"
+            @click="openDeleteModal(task)"
+            title="删除任务"
           >
             <Trash2 :size="15" />
           </button>
@@ -847,6 +903,55 @@ onUnmounted(() => {
         <span v-if="dropTargetLabel" class="drag-pill-target">{{ dropTargetLabel }}</span>
       </div>
     </Teleport>
+
+    <!-- Single Delete Confirmation Modal -->
+    <div v-if="showDeleteModal && deleteTargetTask" class="modal-overlay" @click.self="closeDeleteModal">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-title-box">
+            <AlertTriangle :size="18" class="modal-icon-danger" />
+            <h3 class="modal-title">删除下载任务</h3>
+          </div>
+          <button class="btn-close" @click="closeDeleteModal">
+            <X :size="16" />
+          </button>
+        </div>
+
+        <div class="modal-body">
+          <p v-if="(deleteTargetTask.status === 'downloading' || deleteTargetTask.status === 'merging' || deleteTargetTask.status === 'paused') && deleteTargetTask.progress > 0" class="modal-desc">
+            确定要删除该下载任务吗？当前已下载 <strong>{{ Math.round(deleteTargetTask.progress) }}%</strong>，删除后将中止任务并清理未完成的临时缓存文件。
+          </p>
+          <p v-else class="modal-desc">
+            确定要从下载队列中删除此任务吗？未完成的临时缓存文件也会一并清理。
+          </p>
+
+          <div class="batch-preview-list single-delete-preview">
+            <div class="single-delete-title" :title="deleteTargetTask.title">
+              {{ deleteTargetTask.title }}
+            </div>
+            <div
+              v-if="deleteTargetTask.partTitle && deleteTargetTask.partTitle !== deleteTargetTask.title"
+              class="single-delete-part"
+              :title="deleteTargetTask.partTitle"
+            >
+              {{ deleteTargetTask.partTitle }}
+            </div>
+            <div v-if="formatDeleteTargetStatus(deleteTargetTask)" class="single-delete-status">
+              {{ formatDeleteTargetStatus(deleteTargetTask) }}
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn-secondary" @click="closeDeleteModal">
+            取消
+          </button>
+          <button class="btn-danger" @click="confirmDeleteSingle">
+            确认删除
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- Batch Delete Confirmation Modal -->
     <div v-if="showBatchDeleteModal" class="modal-overlay" @click.self="showBatchDeleteModal = false">
@@ -1830,6 +1935,33 @@ onUnmounted(() => {
 .batch-preview-more {
   font-size: 11.5px;
   color: var(--text-muted);
+}
+
+.single-delete-preview {
+  gap: 4px;
+}
+
+.single-delete-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.single-delete-part {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.single-delete-status {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .modal-footer {
