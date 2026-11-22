@@ -43,6 +43,108 @@ export interface QueueSelectionSummary<T extends QueueTask> {
   totalCount: number
   allSelected: boolean
   someSelected: boolean
+  canMoveUp: boolean
+  canMoveDown: boolean
+  canMoveTop: boolean
+  canMoveBottom: boolean
+}
+
+export type QueueMoveAction =
+  | { type: 'top' | 'bottom' | 'up' | 'down' }
+  | { type: 'drop'; targetId: string; position: 'before' | 'after' }
+
+export function applyQueueOrderIds<T extends QueueTask>(tasks: T[], nextActiveOrderIds: string[]): T[] {
+  const activeOrdered = orderedQueueTasks(tasks)
+  if (activeOrdered.length <= 1) return tasks
+
+  const activeById = new Map(activeOrdered.map(task => [task.id, task]))
+  const seen = new Set<string>()
+  const reorderedActive: T[] = []
+
+  for (const id of nextActiveOrderIds) {
+    const task = activeById.get(id)
+    if (task && !seen.has(id)) {
+      seen.add(id)
+      reorderedActive.push(task)
+    }
+  }
+  for (const task of activeOrdered) {
+    if (!seen.has(task.id)) {
+      seen.add(task.id)
+      reorderedActive.push(task)
+    }
+  }
+
+  const unchanged = reorderedActive.every((task, idx) => task.id === activeOrdered[idx]?.id)
+  if (unchanged) return tasks
+
+  const existingOrders = activeOrdered
+    .map(task => task.queueOrder || 0)
+    .filter(order => order > 0)
+    .sort((a, b) => a - b)
+
+  const orderPool = existingOrders.length === reorderedActive.length
+    ? existingOrders
+    : reorderedActive.map((_, idx) => idx + 1)
+
+  const nextOrderById = new Map<string, number>()
+  reorderedActive.forEach((task, idx) => {
+    nextOrderById.set(task.id, orderPool[idx])
+  })
+
+  return tasks.map(task => {
+    const nextOrder = nextOrderById.get(task.id)
+    if (nextOrder === undefined || task.queueOrder === nextOrder) return task
+    return { ...task, queueOrder: nextOrder }
+  })
+}
+
+export function moveQueueTasks<T extends QueueTask>(
+  tasks: T[],
+  targetIds: Iterable<string>,
+  action: QueueMoveAction
+): T[] {
+  const activeOrdered = orderedQueueTasks(tasks)
+  if (activeOrdered.length <= 1) return tasks
+
+  const orderedIds = activeOrdered.map(task => task.id)
+  const movingSet = new Set(targetIds)
+  const movingIds = orderedIds.filter(id => movingSet.has(id))
+  if (movingIds.length === 0) return tasks
+
+  let nextIds = [...orderedIds]
+
+  if (action.type === 'top') {
+    nextIds = [...movingIds, ...orderedIds.filter(id => !movingSet.has(id))]
+  } else if (action.type === 'bottom') {
+    nextIds = [...orderedIds.filter(id => !movingSet.has(id)), ...movingIds]
+  } else if (action.type === 'up') {
+    for (let i = 1; i < nextIds.length; i++) {
+      if (movingSet.has(nextIds[i]) && !movingSet.has(nextIds[i - 1])) {
+        const tmp = nextIds[i - 1]
+        nextIds[i - 1] = nextIds[i]
+        nextIds[i] = tmp
+      }
+    }
+  } else if (action.type === 'down') {
+    for (let i = nextIds.length - 2; i >= 0; i--) {
+      if (movingSet.has(nextIds[i]) && !movingSet.has(nextIds[i + 1])) {
+        const tmp = nextIds[i + 1]
+        nextIds[i + 1] = nextIds[i]
+        nextIds[i] = tmp
+      }
+    }
+  } else if (action.type === 'drop') {
+    if (movingSet.has(action.targetId)) return tasks
+    const remaining = orderedIds.filter(id => !movingSet.has(id))
+    const targetIdx = remaining.indexOf(action.targetId)
+    if (targetIdx === -1) return tasks
+    const insertIdx = action.position === 'before' ? targetIdx : targetIdx + 1
+    remaining.splice(insertIdx, 0, ...movingIds)
+    nextIds = remaining
+  }
+
+  return applyQueueOrderIds(tasks, nextIds)
 }
 
 export function isPausableQueueTask(task: QueueTask): boolean {
@@ -139,6 +241,33 @@ export function summarizeQueueSelection<T extends QueueTask>(
   const deletableIds = selectedTasks.map(task => task.id)
   const selectedCount = selectedTasks.length
   const totalCount = visibleTasks.length
+
+  let canMoveUp = false
+  let seenUnselected = false
+  for (let i = 0; i < visibleTasks.length; i++) {
+    if (selectedIds.has(visibleTasks[i].id)) {
+      if (seenUnselected) {
+        canMoveUp = true
+        break
+      }
+    } else {
+      seenUnselected = true
+    }
+  }
+
+  let canMoveDown = false
+  let seenUnselectedFromEnd = false
+  for (let i = visibleTasks.length - 1; i >= 0; i--) {
+    if (selectedIds.has(visibleTasks[i].id)) {
+      if (seenUnselectedFromEnd) {
+        canMoveDown = true
+        break
+      }
+    } else {
+      seenUnselectedFromEnd = true
+    }
+  }
+
   return {
     selectedTasks,
     pausableIds,
@@ -147,6 +276,10 @@ export function summarizeQueueSelection<T extends QueueTask>(
     selectedCount,
     totalCount,
     allSelected: totalCount > 0 && selectedCount === totalCount,
-    someSelected: selectedCount > 0 && selectedCount < totalCount
+    someSelected: selectedCount > 0 && selectedCount < totalCount,
+    canMoveUp,
+    canMoveDown,
+    canMoveTop: canMoveUp,
+    canMoveBottom: canMoveDown
   }
 }

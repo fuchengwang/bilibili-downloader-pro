@@ -66,9 +66,13 @@ export function PauseUpdateDownload():Promise<void>;
 
 export function PollQRCode(arg1:string):Promise<bilibili.QRStatus>;
 
+export function PrioritizeTasks(arg1:Array<string>):Promise<void>;
+
 export function ReadClipboard():Promise<string>;
 
 export function RemoveMissingHistoryRecords(arg1:Record<string, string>):Promise<Array<string>>;
+
+export function ReorderTasks(arg1:Array<string>):Promise<void>;
 
 export function RestartForUpdate():Promise<void>;
 

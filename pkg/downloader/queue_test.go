@@ -328,6 +328,149 @@ func TestQueueCompletedDuplicateDoesNotEmitAnotherCompletion(t *testing.T) {
 	}
 }
 
+func TestQueueReorderPersistsAndPreemptsOverflowDownloading(t *testing.T) {
+	m := newTestManager(t)
+	cfg := m.cfgMgr.Get()
+	cfg.MaxConcurrent = 2
+	if err := m.cfgMgr.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	a := queueBatch(t, m, "A", 10, 4)
+	cancelled1, cancelled2 := false, false
+	m.mu.Lock()
+	a[0].Status = StatusDownloading
+	a[1].Status = StatusDownloading
+	m.workers[a[0].ID] = workerHandle{token: "w1", cancel: func() { cancelled1 = true }}
+	m.workers[a[1].ID] = workerHandle{token: "w2", cancel: func() { cancelled2 = true }}
+	m.mu.Unlock()
+
+	if err := m.ReorderTasks([]string{a[3].ID, a[0].ID, a[1].ID, a[2].ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	wantOrder := []string{"A4", "A1", "A2", "A3"}
+	if got := queueTitles(m); !reflect.DeepEqual(got, wantOrder) {
+		t.Fatalf("unexpected queue order: %v", got)
+	}
+	if got := queueTitles(NewDownloadManager(m.cfgMgr)); !reflect.DeepEqual(got, wantOrder) {
+		t.Fatalf("reloaded queue order mismatch: %v", got)
+	}
+
+	m.mu.RLock()
+	w1 := m.workers[a[0].ID]
+	w2 := m.workers[a[1].ID]
+	s1 := a[0].Status
+	s2 := a[1].Status
+	m.mu.RUnlock()
+
+	if s1 != StatusDownloading || cancelled1 || w1.invalidated {
+		t.Fatalf("A1 should keep downloading untouched: status=%s cancelled=%v invalidated=%v", s1, cancelled1, w1.invalidated)
+	}
+	if s2 != StatusQueued || !cancelled2 || !w2.invalidated {
+		t.Fatalf("A2 should be softly preempted back to queued: status=%s cancelled=%v invalidated=%v", s2, cancelled2, w2.invalidated)
+	}
+
+	// Even before the invalidated worker finishes exiting, the vacated slot immediately starts A4.
+	if got := captureQueueStarts(t, m); !reflect.DeepEqual(got, []string{"A4"}) {
+		t.Fatalf("expected prioritized A4 to spawn immediately, got %v", got)
+	}
+}
+
+func TestQueuePrioritizeResumesPausedAndErrorAndNeverPreemptsMerging(t *testing.T) {
+	m := newTestManager(t)
+	cfg := m.cfgMgr.Get()
+	cfg.MaxConcurrent = 2
+	if err := m.cfgMgr.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	a := queueBatch(t, m, "A", 10, 4)
+	cancelledMerging, cancelledDownloading := false, false
+	m.mu.Lock()
+	a[0].Status = StatusMerging
+	a[1].Status = StatusDownloading
+	a[2].Status = StatusPaused
+	a[3].Status = StatusError
+	a[3].ErrorMsg = "boom"
+	m.workers[a[0].ID] = workerHandle{token: "w1", cancel: func() { cancelledMerging = true }}
+	m.workers[a[1].ID] = workerHandle{token: "w2", cancel: func() { cancelledDownloading = true }}
+	m.mu.Unlock()
+
+	// Passing [A4, A3] must preserve their existing relative order (A3 before A4) at the front.
+	if err := m.PrioritizeTasks([]string{a[3].ID, a[2].ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	wantOrder := []string{"A3", "A4", "A1", "A2"}
+	if got := queueTitles(m); !reflect.DeepEqual(got, wantOrder) {
+		t.Fatalf("unexpected prioritized order: %v", got)
+	}
+
+	m.mu.RLock()
+	s1, s2, s3, s4 := a[0].Status, a[1].Status, a[2].Status, a[3].Status
+	err4 := a[3].ErrorMsg
+	w1 := m.workers[a[0].ID]
+	w2 := m.workers[a[1].ID]
+	m.mu.RUnlock()
+
+	if s3 != StatusQueued || s4 != StatusQueued || err4 != "" {
+		t.Fatalf("prioritized tasks should resume cleanly: A3=%s A4=%s err4=%q", s3, s4, err4)
+	}
+	if s1 != StatusMerging || cancelledMerging || w1.invalidated {
+		t.Fatalf("merging task A1 must never be preempted: status=%s cancelled=%v invalidated=%v", s1, cancelledMerging, w1.invalidated)
+	}
+	if s2 != StatusQueued || !cancelledDownloading || !w2.invalidated {
+		t.Fatalf("downloading task A2 should be preempted: status=%s cancelled=%v invalidated=%v", s2, cancelledDownloading, w2.invalidated)
+	}
+}
+
+func TestQueueReorderPersistenceFailureRollsBackWithoutCancellingWorkers(t *testing.T) {
+	m := newTestManager(t)
+	cfg := m.cfgMgr.Get()
+	cfg.MaxConcurrent = 2
+	if err := m.cfgMgr.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	a := queueBatch(t, m, "A", 10, 3)
+	cancelled1, cancelled2 := false, false
+	m.mu.Lock()
+	a[0].Status = StatusDownloading
+	a[1].Status = StatusDownloading
+	a[2].Status = StatusPaused
+	m.workers[a[0].ID] = workerHandle{token: "w1", cancel: func() { cancelled1 = true }}
+	m.workers[a[1].ID] = workerHandle{token: "w2", cancel: func() { cancelled2 = true }}
+	origOrders := []uint64{a[0].QueueOrder, a[1].QueueOrder, a[2].QueueOrder}
+	m.mu.Unlock()
+
+	if err := os.Remove(m.cfgMgr.GetTasksPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(m.cfgMgr.GetTasksPath(), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.PrioritizeTasks([]string{a[2].ID}); err == nil {
+		t.Fatal("expected persistence failure to return an error")
+	}
+
+	if got := queueTitles(m); !reflect.DeepEqual(got, []string{"A1", "A2", "A3"}) {
+		t.Fatalf("queue order changed despite persistence failure: %v", got)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if a[0].QueueOrder != origOrders[0] || a[1].QueueOrder != origOrders[1] || a[2].QueueOrder != origOrders[2] {
+		t.Fatalf("queueOrder mutated after rollback")
+	}
+	if a[0].Status != StatusDownloading || a[1].Status != StatusDownloading || a[2].Status != StatusPaused {
+		t.Fatalf("statuses mutated after rollback: %s %s %s", a[0].Status, a[1].Status, a[2].Status)
+	}
+	if cancelled1 || cancelled2 || m.workers[a[0].ID].invalidated || m.workers[a[1].ID].invalidated {
+		t.Fatal("workers were cancelled/invalidated despite persistence failure")
+	}
+}
+
 func BenchmarkQueueBatch1000(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		m := NewDownloadManager(config.NewConfigManager(b.TempDir()))

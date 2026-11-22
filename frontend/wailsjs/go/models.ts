@@ -1,5 +1,5 @@
 export namespace bilibili {
-
+	
 	export class EpisodeInfo {
 	    index: number;
 	    page: number;
@@ -15,11 +15,11 @@ export namespace bilibili {
 	    badge: string;
 	    videoTitle?: string;
 	    partCount?: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new EpisodeInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.index = source["index"];
@@ -43,11 +43,11 @@ export namespace bilibili {
 	    title: string;
 	    bvid: string;
 	    parts: EpisodeInfo[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CollectionVideo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.index = source["index"];
@@ -55,7 +55,7 @@ export namespace bilibili {
 	        this.bvid = source["bvid"];
 	        this.parts = this.convertValues(source["parts"], EpisodeInfo);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -74,17 +74,17 @@ export namespace bilibili {
 		    return a;
 		}
 	}
-
+	
 	export class PlaybackError {
 	    kind: string;
 	    message: string;
 	    hint: string;
 	    detail?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new PlaybackError(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.kind = source["kind"];
@@ -100,11 +100,11 @@ export namespace bilibili {
 	    isVipRequired: boolean;
 	    isLoginRequired: boolean;
 	    isAvailable: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new QualityOption(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -118,17 +118,17 @@ export namespace bilibili {
 	export class PlaybackInfo {
 	    qualities: QualityOption[];
 	    error?: PlaybackError;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new PlaybackInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.qualities = this.convertValues(source["qualities"], QualityOption);
 	        this.error = this.convertValues(source["error"], PlaybackError);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -150,11 +150,11 @@ export namespace bilibili {
 	export class QRCodeInfo {
 	    url: string;
 	    qrcodeKey: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new QRCodeInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.url = source["url"];
@@ -166,11 +166,11 @@ export namespace bilibili {
 	    message: string;
 	    isSuccess: boolean;
 	    isExpired: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new QRStatus(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.code = source["code"];
@@ -179,7 +179,7 @@ export namespace bilibili {
 	        this.isExpired = source["isExpired"];
 	    }
 	}
-
+	
 	export class UserInfo {
 	    isLogin: boolean;
 	    mid: number;
@@ -192,11 +192,11 @@ export namespace bilibili {
 	    vipDueDate: number;
 	    vipDueStr: string;
 	    money: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new UserInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.isLogin = source["isLogin"];
@@ -238,11 +238,11 @@ export namespace bilibili {
 	    collectionId?: number;
 	    collectionIncomplete?: boolean;
 	    isDefaultPart: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new VideoDetail(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
@@ -271,7 +271,7 @@ export namespace bilibili {
 	        this.collectionIncomplete = source["collectionIncomplete"];
 	        this.isDefaultPart = source["isDefaultPart"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -294,7 +294,7 @@ export namespace bilibili {
 }
 
 export namespace config {
-
+	
 	export class Settings {
 	    downloadDir: string;
 	    defaultQuality: string;
@@ -307,11 +307,11 @@ export namespace config {
 	    autoClipboard: boolean;
 	    fileNameTemplate: string;
 	    theme: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.downloadDir = source["downloadDir"];
@@ -331,7 +331,7 @@ export namespace config {
 }
 
 export namespace downloader {
-
+	
 	export class DownloadRequest {
 	    bvid: string;
 	    aid: number;
@@ -348,11 +348,11 @@ export namespace downloader {
 	    nestedVideos?: string[];
 	    collectionId?: number;
 	    isCollection?: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new DownloadRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.bvid = source["bvid"];
@@ -416,11 +416,11 @@ export namespace downloader {
 	    collectionDir?: string;
 	    videoTmpPath: string;
 	    audioTmpPath: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new DownloadTask(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -472,7 +472,7 @@ export namespace downloader {
 }
 
 export namespace license {
-
+	
 	export class LicenseStatus {
 	    is_activated: boolean;
 	    license_key: string;
@@ -492,11 +492,11 @@ export namespace license {
 	    last_verified_at?: any;
 	    is_offline_valid: boolean;
 	    message: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new LicenseStatus(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.is_activated = source["is_activated"];
@@ -515,7 +515,7 @@ export namespace license {
 	        this.is_offline_valid = source["is_offline_valid"];
 	        this.message = source["message"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -538,23 +538,23 @@ export namespace license {
 }
 
 export namespace main {
-
+	
 	export class LicenseResult {
 	    success: boolean;
 	    message: string;
 	    data?: license.LicenseStatus;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new LicenseResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.success = source["success"];
 	        this.message = source["message"];
 	        this.data = this.convertValues(source["data"], license.LicenseStatus);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -577,7 +577,7 @@ export namespace main {
 }
 
 export namespace updater {
-
+	
 	export class State {
 	    revision: number;
 	    checked: boolean;
@@ -590,11 +590,11 @@ export namespace updater {
 	    downloaded: number;
 	    total: number;
 	    hasUpdate: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new State(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.revision = source["revision"];

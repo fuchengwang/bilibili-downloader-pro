@@ -434,6 +434,16 @@ func (m *DownloadManager) schedulerLoop() {
 	}
 }
 
+func (m *DownloadManager) activeWorkerCountLocked() int {
+	count := 0
+	for _, w := range m.workers {
+		if !w.invalidated {
+			count++
+		}
+	}
+	return count
+}
+
 func (m *DownloadManager) checkAndSpawnTasks() {
 	m.mu.Lock()
 	cfg := m.cfgMgr.Get()
@@ -442,7 +452,7 @@ func (m *DownloadManager) checkAndSpawnTasks() {
 		maxCon = 3
 	}
 
-	if len(m.workers) >= maxCon {
+	if m.activeWorkerCountLocked() >= maxCon {
 		m.mu.Unlock()
 		return
 	}
@@ -454,7 +464,7 @@ func (m *DownloadManager) checkAndSpawnTasks() {
 		done  chan struct{}
 	}
 	var starts []start
-	for len(m.workers) < maxCon {
+	for m.activeWorkerCountLocked() < maxCon {
 		var nextTask *DownloadTask
 		for _, t := range m.tasks {
 			if t == nil || t.Status != StatusQueued {

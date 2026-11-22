@@ -358,6 +358,30 @@ func (a *App) ResumeAllTasks() error {
 	return a.currentDownloadManager().ResumeAll()
 }
 
+// ReorderTasks 调整下载队列顺序（持久化并按新顺序调度）
+func (a *App) ReorderTasks(orderedIDs []string) error {
+	if err := a.requireLicense(); err != nil {
+		return err
+	}
+	downMgr := a.currentDownloadManager()
+	if downMgr == nil {
+		return nil
+	}
+	return downMgr.ReorderTasks(orderedIDs)
+}
+
+// PrioritizeTasks 将指定任务置顶优先下载（必要时温和抢占末位下载槽位）
+func (a *App) PrioritizeTasks(ids []string) error {
+	if err := a.requireLicense(); err != nil {
+		return err
+	}
+	downMgr := a.currentDownloadManager()
+	if downMgr == nil {
+		return nil
+	}
+	return downMgr.PrioritizeTasks(ids)
+}
+
 // ClearCompletedTasks 清理已完成任务列表 (可选择是否同时删除本地文件)
 func (a *App) ClearCompletedTasks(deleteFile bool) error {
 	downMgr := a.currentDownloadManager()

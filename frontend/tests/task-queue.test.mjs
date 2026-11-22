@@ -18,7 +18,8 @@ const {
   parseSizeStringToBytes,
   formatHistoryTotalSize,
   toggleQueueTaskSelection,
-  summarizeQueueSelection
+  summarizeQueueSelection,
+  moveQueueTasks
 } = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`)
 const task = (id, queueOrder, status = 'queued') => ({ id, queueOrder, status, createdAt: 10 })
 
@@ -132,7 +133,7 @@ const rendered=vm.createContext({exports:{},require:vueRequire})
 vm.runInContext(ts.transpileModule(template.code,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,rendered)
 
 const iconStubs = Object.fromEntries(
-  ['Play', 'Pause', 'RotateCcw', 'Trash2', 'FolderOpen', 'AlertCircle', 'AlertTriangle', 'Clock', 'Zap', 'HardDrive', 'Film', 'ExternalLink', 'ListChecks', 'Check', 'Minus', 'X', 'LayoutList', 'List']
+  ['Play', 'Pause', 'RotateCcw', 'Trash2', 'FolderOpen', 'AlertCircle', 'AlertTriangle', 'Clock', 'Zap', 'HardDrive', 'Film', 'ExternalLink', 'ListChecks', 'Check', 'Minus', 'X', 'LayoutList', 'List', 'GripVertical', 'ArrowUpToLine', 'ArrowDownToLine', 'ArrowUp', 'ArrowDown']
     .map(name => [name, { render: () => null }])
 )
 
@@ -142,6 +143,8 @@ async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all'
   const pausedCount = tasks.filter(t => t.status === 'paused' || t.status === 'queued').length
   const errorCount = tasks.filter(t => t.status === 'error' || t.status === 'cancelled').length
   const selectionSummary = summarizeQueueSelection(filteredTasks, selectedIds)
+  const ordered = orderedQueueTasks(tasks)
+  const posMap = new Map(ordered.map((t, idx) => [t.id, idx + 1]))
   return renderToString(createSSRApp({
     ssrRender: rendered.exports.ssrRender,
     components: iconStubs,
@@ -159,6 +162,16 @@ async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all'
       batchDeletePreviewTasks: selectionSummary.selectedTasks.slice(0, 4),
       batchBusy,
       showBatchDeleteModal,
+      isDragging: false,
+      dropTargetId: null,
+      dropPosition: 'before',
+      draggingTaskIds: [],
+      dragPointerX: 0,
+      dragPointerY: 0,
+      dropTargetLabel: '',
+      getQueuePosition: id => posMap.get(id) || 1,
+      canPrioritizeSingleTask: t => t.status !== 'merging' && (posMap.get(t.id) || 1) > 1,
+      isTaskBeingDragged: () => false,
       isTaskSelected: id => selectedIds.has(id),
       isLegacyPlaybackError: () => false
     })
@@ -195,9 +208,43 @@ test('normal mode shows multi-select trigger without batch bar; selection mode r
   assert.ok(selectedHtml.includes('退出多选'), selectedHtml)
   assert.ok(selectedHtml.includes('class="batch-bar"'), selectedHtml)
   assert.ok(selectedHtml.includes('role="checkbox"'), selectedHtml)
+  assert.ok(selectedHtml.includes('优先置顶'), selectedHtml)
   assert.ok(selectedHtml.includes('继续 (1)'), selectedHtml)
   assert.ok(selectedHtml.includes('暂停 (1)'), selectedHtml)
   assert.ok(selectedHtml.includes('删除 (2)'), selectedHtml)
+})
+
+test('moveQueueTasks supports top, bottom, step up, step down, and drag-drop before/after', () => {
+  const initial = [
+    task('T1', 10, 'downloading'),
+    task('T2', 20, 'queued'),
+    task('T3', 30, 'paused'),
+    task('T4', 40, 'queued'),
+    task('DONE', 5, 'completed')
+  ]
+
+  const movedTop = moveQueueTasks(initial, ['T3', 'T4'], { type: 'top' })
+  assert.deepEqual(orderedQueueTasks(movedTop).map(t => [t.id, t.queueOrder]), [
+    ['T3', 10],
+    ['T4', 20],
+    ['T1', 30],
+    ['T2', 40]
+  ])
+
+  const movedBottom = moveQueueTasks(initial, ['T1', 'T3'], { type: 'bottom' })
+  assert.deepEqual(orderedQueueTasks(movedBottom).map(t => t.id), ['T2', 'T4', 'T1', 'T3'])
+
+  const movedUp = moveQueueTasks(initial, ['T2', 'T4'], { type: 'up' })
+  assert.deepEqual(orderedQueueTasks(movedUp).map(t => t.id), ['T2', 'T1', 'T4', 'T3'])
+
+  const movedDown = moveQueueTasks(initial, ['T1', 'T3'], { type: 'down' })
+  assert.deepEqual(orderedQueueTasks(movedDown).map(t => t.id), ['T2', 'T1', 'T4', 'T3'])
+
+  const droppedBefore = moveQueueTasks(initial, ['T4'], { type: 'drop', targetId: 'T2', position: 'before' })
+  assert.deepEqual(orderedQueueTasks(droppedBefore).map(t => t.id), ['T1', 'T4', 'T2', 'T3'])
+
+  const droppedAfter = moveQueueTasks(initial, ['T1', 'T2'], { type: 'drop', targetId: 'T3', position: 'after' })
+  assert.deepEqual(orderedQueueTasks(droppedAfter).map(t => t.id), ['T3', 'T1', 'T2', 'T4'])
 })
 
 test('parseSizeStringToBytes and formatHistoryTotalSize format MB below 1GB and GB at or above 1GB', () => {
