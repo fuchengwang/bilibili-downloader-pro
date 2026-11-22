@@ -70,16 +70,16 @@ button:active {
 }
 
 .btn-secondary {
-  background: rgba(255, 255, 255, 0.065);
+  background: var(--neutral-06);
   color: var(--text-primary);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--border-subtle);
   box-shadow: var(--surface-highlight);
   padding: 8px 14px;
 }
 
 .btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.11);
-  border-color: rgba(255, 255, 255, 0.11);
+  background: var(--neutral-1);
+  border-color: var(--neutral-12);
 }
 
 .btn-icon {

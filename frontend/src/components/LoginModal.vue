@@ -345,8 +345,9 @@ async function handleLogout() {
             :class="{ active: activeTab === 'qr' }"
             @click="switchTab('qr')"
           >
-            <QrCode :size="15" />
-            <span>扫码登录 (推荐)</span>
+            <QrCode :size="14" />
+            <span>扫码登录</span>
+            <span class="tab-rec-badge">推荐</span>
           </button>
 
           <button
@@ -452,7 +453,7 @@ async function handleLogout() {
 
 <style scoped>
 .login-modal {
-  width: 440px;
+  width: 460px;
   max-width: 95vw;
   max-height: 92vh;
   overflow-y: auto;
@@ -735,44 +736,57 @@ async function handleLogout() {
 
 /* Login Tabs */
 .login-body {
-  padding: 16px 20px;
+  padding: 16px 20px 20px;
 }
 
 .login-tabs {
   display: flex;
-  gap: 8px;
-  background: var(--bg-tertiary);
-  padding: 4px;
-  border-radius: var(--radius-sm);
-  margin-bottom: 12px;
+  gap: 3px;
+  background: var(--segmented-track-bg);
+  border: 1px solid var(--border-hairline);
+  padding: 3px;
+  border-radius: 10px;
+  margin-bottom: 14px;
 }
 
 .tab-btn {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 8px 12px;
-  font-size: 13px;
+  gap: 5px;
+  padding: 7px 10px;
+  font-size: 12.5px;
   font-weight: 500;
   color: var(--text-muted);
   background: transparent;
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: 7px;
+  white-space: nowrap;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
-.tab-btn:hover {
+.tab-btn:hover:not(.active) {
   color: var(--text-primary);
 }
 
 .tab-btn.active {
-  background: var(--bg-card);
-  color: var(--primary);
+  background: var(--segmented-active-bg);
+  color: var(--text-primary);
   font-weight: 600;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--segmented-active-shadow);
+}
+
+.tab-rec-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(242, 93, 142, 0.14);
+  color: var(--bili-pink);
+  line-height: 1.2;
 }
 
 .tab-pane {

@@ -98,19 +98,19 @@
   gap: 8px;
   padding: 11px 12px;
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--neutral-03);
   border: 1px solid transparent;
   cursor: pointer;
   transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .ep-card:hover:not([aria-disabled="true"]):not(.selected) {
-  background: rgba(255, 255, 255, 0.065);
+  background: var(--neutral-06);
 }
 
 .ep-card.selected {
-  background: rgba(242, 93, 142, 0.12);
-  border-color: rgba(242, 93, 142, 0.55);
+  background: var(--episode-selected-bg);
+  border-color: var(--border-hover);
 }
 
 .ep-card[aria-disabled="true"] { cursor: default; }

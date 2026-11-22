@@ -232,13 +232,13 @@ function handleAccountClick() {
 }
 
 .nav-item:hover {
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--neutral-05);
   color: var(--text-primary);
 }
 
 .nav-item.active {
-  background: rgba(255, 255, 255, 0.085);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  background: var(--nav-active-bg);
+  box-shadow: var(--surface-highlight);
   color: var(--text-primary);
   font-weight: 600;
 }
@@ -283,14 +283,14 @@ function handleAccountClick() {
   gap: 10px;
   padding: 8px 10px;
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--neutral-03);
   border: 1px solid transparent;
   cursor: pointer;
   transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .user-card:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--neutral-06);
   border-color: var(--border-subtle);
 }
 

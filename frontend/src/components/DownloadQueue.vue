@@ -16,7 +16,9 @@ import {
   ListChecks,
   Check,
   Minus,
-  X
+  X,
+  LayoutList,
+  List
 } from 'lucide-vue-next'
 import { downloader } from '../../wailsjs/go/models'
 import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
@@ -58,6 +60,27 @@ const selectionMode = ref(false)
 const selectedIds = ref<Set<string>>(new Set())
 const lastAnchorId = ref<string | null>(null)
 const showBatchDeleteModal = ref(false)
+
+function readSavedViewMode(): 'comfortable' | 'compact' {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem('bbdown-queue-view') === 'compact'
+      ? 'compact'
+      : 'comfortable'
+  } catch {
+    return 'comfortable'
+  }
+}
+
+const viewMode = ref<'comfortable' | 'compact'>(readSavedViewMode())
+
+function setViewMode(mode: 'comfortable' | 'compact') {
+  viewMode.value = mode
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem('bbdown-queue-view', mode)
+  } catch {
+    // ignore storage errors
+  }
+}
 
 function isLegacyPlaybackError(task: downloader.DownloadTask) {
   return !task.errorKind && /解析媒体流失败|DASH|playurl/.test(task.errorMsg || '')
@@ -267,6 +290,29 @@ onUnmounted(() => {
       </div>
 
       <div class="queue-actions">
+        <div v-if="activeQueueCount > 0" class="view-toggle" role="group" aria-label="视图切换">
+          <button
+            type="button"
+            class="view-toggle-btn"
+            :class="{ active: viewMode === 'comfortable' }"
+            title="卡片视图"
+            aria-label="卡片视图"
+            @click="setViewMode('comfortable')"
+          >
+            <LayoutList :size="13" />
+          </button>
+          <button
+            type="button"
+            class="view-toggle-btn"
+            :class="{ active: viewMode === 'compact' }"
+            title="紧凑列表"
+            aria-label="紧凑列表"
+            @click="setViewMode('compact')"
+          >
+            <List :size="13" />
+          </button>
+        </div>
+
         <button
           v-if="activeQueueCount > 0"
           class="btn-secondary q-action-btn q-select-toggle"
@@ -353,14 +399,14 @@ onUnmounted(() => {
     </div>
 
     <!-- Task List -->
-    <div v-if="filteredTasks.length > 0" class="task-list">
+    <div v-if="filteredTasks.length > 0" class="task-list" :class="{ 'is-compact': viewMode === 'compact' }">
       <div
         v-for="task in filteredTasks"
         :key="task.id"
         class="task-card"
         :class="[
           'status-' + task.status,
-          { 'is-selectable': selectionMode, 'is-selected': isTaskSelected(task.id) }
+          { 'is-compact': viewMode === 'compact', 'is-selectable': selectionMode, 'is-selected': isTaskSelected(task.id) }
         ]"
         @click="handleTaskCardClick(task.id, $event)"
       >
@@ -378,7 +424,7 @@ onUnmounted(() => {
           </span>
         </button>
 
-        <div class="task-cover-box">
+        <div v-if="viewMode !== 'compact'" class="task-cover-box">
           <img
             v-if="task.cover"
             :src="normalizeImg(task.cover)"
@@ -394,6 +440,7 @@ onUnmounted(() => {
 
         <div class="task-info">
           <div class="task-title-row">
+            <span v-if="viewMode === 'compact' && task.qualityLabel" class="compact-quality">{{ task.qualityLabel }}</span>
             <span class="task-title" :title="task.partTitle || task.title">{{ (task as any).partCount > 1 ? `P${(task as any).partPage} · ` : '' }}{{ task.partTitle || task.title }}</span>
             <span v-if="task.partTitle && task.partTitle !== task.title" class="part-badge" :title="(task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? `${task.title} › ${(task as any).videoTitle}` : task.title">
               {{ (task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? (task as any).videoTitle : task.title }}
@@ -586,7 +633,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 2px;
   padding: 3px;
-  background: var(--bg-card);
+  background: var(--segmented-track-bg);
   border: 1px solid var(--border-hairline);
   border-radius: 10px;
   flex-wrap: wrap;
@@ -606,10 +653,10 @@ onUnmounted(() => {
 }
 
 .tab-btn.active {
-  background: var(--bg-control-hover);
+  background: var(--segmented-active-bg);
   color: var(--text-primary);
   font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow: var(--segmented-active-shadow);
 }
 
 .tab-btn-error.active {
@@ -622,6 +669,36 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--segmented-track-bg);
+  border: 1px solid var(--border-hairline);
+}
+
+.view-toggle-btn {
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.view-toggle-btn:hover:not(.active) {
+  color: var(--text-primary);
+}
+
+.view-toggle-btn.active {
+  background: var(--segmented-active-bg);
+  color: var(--text-primary);
+  box-shadow: var(--segmented-active-shadow);
 }
 
 .q-action-btn {
@@ -797,6 +874,79 @@ onUnmounted(() => {
   border-color: var(--border-hover);
 }
 
+.task-list.is-compact {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  gap: 0;
+  overflow: hidden;
+  box-shadow: var(--surface-highlight), var(--shadow-sm);
+}
+
+.task-card.is-compact {
+  padding: 9px 14px;
+  gap: 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.task-card.is-compact + .task-card.is-compact {
+  border-top: 1px solid var(--border-hairline);
+}
+
+.task-card.is-compact:hover {
+  background: var(--bg-card-hover);
+}
+
+.task-card.is-compact.is-selected {
+  background: var(--episode-selected-bg);
+}
+
+.task-card.is-compact:not(.status-error) .task-info {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+.task-card.is-compact:not(.status-error) .task-title-row {
+  flex: 1;
+  min-width: 0;
+}
+
+.task-card.is-compact:not(.status-error) .progress-wrap {
+  width: 84px;
+  flex-shrink: 0;
+}
+
+.task-card.is-compact:not(.status-error) .metrics-row {
+  flex-shrink: 0;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.task-card.is-compact .eta-metric,
+.task-card.is-compact .size-metric svg {
+  display: none;
+}
+
+.task-card.is-compact .task-btn {
+  width: 26px;
+  height: 26px;
+}
+
+.compact-quality {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--neutral-08);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .task-cover-box {
   position: relative;
   width: 96px;
@@ -805,7 +955,7 @@ onUnmounted(() => {
   overflow: hidden;
   flex-shrink: 0;
   background: rgba(0, 0, 0, 0.35);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  box-shadow: var(--cover-ring);
 }
 
 .task-cover {

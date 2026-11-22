@@ -14,6 +14,9 @@ const {
   isPausableQueueTask,
   isResumableQueueTask,
   pruneSelectedQueueIds,
+  pruneSelectedHistoryIds,
+  parseSizeStringToBytes,
+  formatHistoryTotalSize,
   toggleQueueTaskSelection,
   summarizeQueueSelection
 } = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`)
@@ -129,11 +132,11 @@ const rendered=vm.createContext({exports:{},require:vueRequire})
 vm.runInContext(ts.transpileModule(template.code,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,rendered)
 
 const iconStubs = Object.fromEntries(
-  ['Play', 'Pause', 'RotateCcw', 'Trash2', 'FolderOpen', 'AlertCircle', 'AlertTriangle', 'Clock', 'Zap', 'HardDrive', 'Film', 'ExternalLink', 'ListChecks', 'Check', 'Minus', 'X']
+  ['Play', 'Pause', 'RotateCcw', 'Trash2', 'FolderOpen', 'AlertCircle', 'AlertTriangle', 'Clock', 'Zap', 'HardDrive', 'Film', 'ExternalLink', 'ListChecks', 'Check', 'Minus', 'X', 'LayoutList', 'List']
     .map(name => [name, { render: () => null }])
 )
 
-async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all', selectionMode = false, selectedIds = new Set(), batchBusy = false, showBatchDeleteModal = false }) {
+async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all', viewMode = 'comfortable', selectionMode = false, selectedIds = new Set(), batchBusy = false, showBatchDeleteModal = false }) {
   const activeQueueCount = tasks.filter(t => t.status !== 'completed').length
   const downloadingCount = tasks.filter(t => t.status === 'downloading' || t.status === 'merging').length
   const pausedCount = tasks.filter(t => t.status === 'paused' || t.status === 'queued').length
@@ -146,6 +149,7 @@ async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all'
       tasks,
       filteredTasks,
       currentFilter,
+      viewMode,
       activeQueueCount,
       downloadingCount,
       pausedCount,
@@ -194,4 +198,29 @@ test('normal mode shows multi-select trigger without batch bar; selection mode r
   assert.ok(selectedHtml.includes('继续 (1)'), selectedHtml)
   assert.ok(selectedHtml.includes('暂停 (1)'), selectedHtml)
   assert.ok(selectedHtml.includes('删除 (2)'), selectedHtml)
+})
+
+test('parseSizeStringToBytes and formatHistoryTotalSize format MB below 1GB and GB at or above 1GB', () => {
+  assert.equal(parseSizeStringToBytes('20.68 MB'), Math.round(20.68 * 1024 * 1024))
+  assert.equal(parseSizeStringToBytes('1.5 GB / 2.0 GB'), Math.round(1.5 * 1024 * 1024 * 1024))
+  assert.equal(parseSizeStringToBytes(''), 0)
+
+  const mbOnly = [
+    { totalBytes: 500 * 1024 * 1024 },
+    { sizeStr: '20.5 MB' }
+  ]
+  assert.equal(formatHistoryTotalSize(mbOnly), '520.5 MB')
+
+  const gbAndFallback = [
+    { totalBytes: 1024 * 1024 * 1024 },
+    { downloadedBytes: 512 * 1024 * 1024 }
+  ]
+  assert.equal(formatHistoryTotalSize(gbAndFallback), '1.50 GB')
+  assert.equal(formatHistoryTotalSize([]), '')
+})
+
+test('pruneSelectedHistoryIds keeps only completed tasks present in list', () => {
+  const tasks = [task('H1', 1, 'completed'), task('H2', 2, 'paused'), task('H3', 3, 'completed')]
+  const pruned = pruneSelectedHistoryIds(new Set(['H1', 'H2', 'H3', 'MISSING']), tasks)
+  assert.deepEqual([...pruned], ['H1', 'H3'])
 })

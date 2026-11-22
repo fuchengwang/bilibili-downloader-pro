@@ -633,6 +633,21 @@ async function onBatchDeleteTasks(ids: string[]) {
   }
 }
 
+async function onBatchDeleteHistory(ids: string[], deleteFiles: boolean) {
+  const { succeeded, failed, lastError } = await runBatchQueueAction(ids, id => DeleteTask(id, deleteFiles))
+  if (succeeded.length > 0) {
+    const removed = new Set(succeeded)
+    tasks.value = tasks.value.filter(t => !removed.has(t.id))
+  }
+  if (failed === 0 && succeeded.length > 0) {
+    showToast(deleteFiles ? `已删除 ${succeeded.length} 条记录及本地文件` : `已移除 ${succeeded.length} 条记录`, 'info')
+  } else if (failed > 0 && succeeded.length > 0) {
+    showToast(`已处理 ${succeeded.length} 条记录，${failed} 条失败: ${lastError}`, 'error')
+  } else if (failed > 0) {
+    showToast('批量删除失败: ' + lastError, 'error')
+  }
+}
+
 async function onClearCompleted(deleteFiles: boolean = false) {
   try {
     await ClearCompletedTasks(deleteFiles)
@@ -761,10 +776,12 @@ function handleLicenseDeactivated(key: string) {
           <HistoryList
             :tasks="tasks"
             :active="activeTab === 'history'"
+            :batch-busy="queueBatchBusy"
             @open-file="onOpenFile"
             @open-dir="onOpenDir"
             @delete-task="onDeleteTask"
             @clear-completed="onClearCompleted"
+            @batch-delete="onBatchDeleteHistory"
             @records-removed="tasks = tasks.filter(t => !$event.includes(t.id))"
           />
         </div>

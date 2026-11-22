@@ -603,7 +603,7 @@ defineExpose({
   border-radius: var(--radius-sm);
   overflow: hidden;
   background: rgba(0, 0, 0, 0.35);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  box-shadow: var(--cover-ring);
 }
 
 .video-cover {
@@ -681,7 +681,7 @@ defineExpose({
   margin-top: -6px;
   padding: 8px 14px;
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--guest-notice-bg);
   font-size: 12px;
 }
 

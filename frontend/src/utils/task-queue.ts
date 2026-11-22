@@ -62,6 +62,53 @@ export function pruneSelectedQueueIds<T extends QueueTask>(selectedIds: Readonly
   return next
 }
 
+export function pruneSelectedHistoryIds<T extends QueueTask>(selectedIds: ReadonlySet<string>, tasks: T[]): Set<string> {
+  const completedIds = new Set(tasks.filter(task => task.status === 'completed').map(task => task.id))
+  const next = new Set<string>()
+  for (const id of selectedIds) {
+    if (completedIds.has(id)) next.add(id)
+  }
+  return next
+}
+
+export function parseSizeStringToBytes(sizeStr?: string): number {
+  if (!sizeStr) return 0
+  const leading = sizeStr.split('/')[0]?.trim() || ''
+  const match = leading.match(/^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\b/i)
+  if (!match) return 0
+  const value = Number(match[1])
+  if (!Number.isFinite(value) || value <= 0) return 0
+  const unit = match[2].toUpperCase()
+  const multipliers: Record<string, number> = {
+    B: 1,
+    KB: 1024,
+    MB: 1024 ** 2,
+    GB: 1024 ** 3,
+    TB: 1024 ** 4
+  }
+  return Math.round(value * (multipliers[unit] || 1))
+}
+
+export function getCompletedTaskBytes(task: { totalBytes?: number; downloadedBytes?: number; sizeStr?: string }): number {
+  if (task.totalBytes && task.totalBytes > 0) return task.totalBytes
+  if (task.downloadedBytes && task.downloadedBytes > 0) return task.downloadedBytes
+  return parseSizeStringToBytes(task.sizeStr)
+}
+
+export function formatHistoryTotalSize(tasks: Array<{ totalBytes?: number; downloadedBytes?: number; sizeStr?: string }>): string {
+  let total = 0
+  for (const task of tasks) {
+    total += getCompletedTaskBytes(task)
+  }
+  if (total <= 0) return ''
+  const gb = 1024 ** 3
+  const mb = 1024 ** 2
+  if (total >= gb) {
+    return `${(total / gb).toFixed(2)} GB`
+  }
+  return `${(total / mb).toFixed(1)} MB`
+}
+
 export function toggleQueueTaskSelection(
   selectedIds: ReadonlySet<string>,
   visibleIds: string[],

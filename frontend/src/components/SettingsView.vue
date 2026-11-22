@@ -673,7 +673,7 @@ const limitUnitOptions = [
   gap: 2px;
   padding: 3px;
   border-radius: 9px;
-  background: var(--bg-app);
+  background: var(--segmented-track-bg);
   border: 1px solid var(--border-hairline);
 }
 
@@ -693,9 +693,9 @@ const limitUnitOptions = [
 }
 
 .segmented-btn.active {
-  background: var(--bg-control-hover);
+  background: var(--segmented-active-bg);
   color: var(--text-primary);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow: var(--segmented-active-shadow);
 }
 
 /* Slider */

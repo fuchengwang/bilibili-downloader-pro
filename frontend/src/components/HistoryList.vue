@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { CheckHistoryFiles, RemoveMissingHistoryRecords } from '../../wailsjs/go/main/App'
 import {
   Play,
@@ -12,14 +12,28 @@ import {
   Film,
   FileX2,
   AlertTriangle,
-  X
+  X,
+  ListChecks,
+  Check,
+  Minus,
+  LayoutList,
+  List
 } from 'lucide-vue-next'
 import { downloader } from '../../wailsjs/go/models'
+import {
+  formatHistoryTotalSize,
+  pruneSelectedHistoryIds,
+  summarizeQueueSelection,
+  toggleQueueTaskSelection
+} from '../utils/task-queue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   tasks: downloader.DownloadTask[]
   active: boolean
-}>()
+  batchBusy?: boolean
+}>(), {
+  batchBusy: false
+})
 
 const emit = defineEmits<{
   (e: 'open-file', path: string, task?: downloader.DownloadTask): void
@@ -27,6 +41,7 @@ const emit = defineEmits<{
   (e: 'delete-task', id: string, deleteFile: boolean): void
   (e: 'request-delete', task: downloader.DownloadTask): void
   (e: 'clear-completed', deleteFiles?: boolean): void
+  (e: 'batch-delete', ids: string[], deleteFiles: boolean): void
   (e: 'records-removed', ids: string[]): void
 }>()
 
@@ -36,6 +51,34 @@ const checking = ref(false)
 const cleaning = ref(false)
 const cleanupError = ref('')
 let checkVersion = 0
+
+function readSavedViewMode(): 'comfortable' | 'compact' {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem('bbdown-history-view') === 'compact'
+      ? 'compact'
+      : 'comfortable'
+  } catch {
+    return 'comfortable'
+  }
+}
+
+const viewMode = ref<'comfortable' | 'compact'>(readSavedViewMode())
+
+function setViewMode(mode: 'comfortable' | 'compact') {
+  viewMode.value = mode
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem('bbdown-history-view', mode)
+  } catch {
+    // ignore storage errors
+  }
+}
+
+const selectionMode = ref(false)
+const selectedIds = ref<Set<string>>(new Set())
+const lastAnchorId = ref<string | null>(null)
+const showBatchDeleteModal = ref(false)
+const batchDeleteLocalFiles = ref(false)
+
 const allCompleted = computed(() => props.tasks.filter(t => t.status === 'completed'))
 const missingTasks = computed(() => allCompleted.value.filter(t => t.outputPath && fileStates.value[t.outputPath] === 'missing'))
 
@@ -96,6 +139,137 @@ const completedTasks = computed(() => {
   return list.filter(t => (t.title || '').toLowerCase().includes(kw) || (t.partTitle || '').toLowerCase().includes(kw) || ((t as any).videoTitle || '').toLowerCase().includes(kw))
 })
 
+const totalSizeText = computed(() => formatHistoryTotalSize(completedTasks.value))
+const selectionSummary = computed(() => summarizeQueueSelection(completedTasks.value, selectedIds.value))
+const batchDeletePreviewTasks = computed(() => selectionSummary.value.selectedTasks.slice(0, 4))
+
+function isTaskSelected(id: string) {
+  return selectedIds.value.has(id)
+}
+
+function exitSelectionMode() {
+  selectionMode.value = false
+  selectedIds.value = new Set()
+  lastAnchorId.value = null
+  showBatchDeleteModal.value = false
+  batchDeleteLocalFiles.value = false
+}
+
+function toggleSelectionMode() {
+  if (selectionMode.value) exitSelectionMode()
+  else selectionMode.value = true
+}
+
+function applySelection(taskId: string, shiftKey: boolean) {
+  const visibleIds = completedTasks.value.map(t => t.id)
+  const next = toggleQueueTaskSelection(selectedIds.value, visibleIds, taskId, {
+    shiftKey,
+    anchorId: lastAnchorId.value
+  })
+  selectedIds.value = next.selected
+  lastAnchorId.value = next.anchorId
+}
+
+function handleCheckClick(taskId: string, event: MouseEvent) {
+  applySelection(taskId, event.shiftKey)
+}
+
+function handleCardClick(taskId: string, event: MouseEvent) {
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.btn-group, .cover-box, button, a')) return
+  const shortcutSelect = event.metaKey || event.ctrlKey || event.shiftKey
+  if (!selectionMode.value && !shortcutSelect) return
+  if (!selectionMode.value) selectionMode.value = true
+  applySelection(taskId, event.shiftKey)
+}
+
+function selectAllVisible() {
+  const next = new Set(selectedIds.value)
+  for (const task of completedTasks.value) {
+    next.add(task.id)
+  }
+  selectedIds.value = next
+  lastAnchorId.value = completedTasks.value[completedTasks.value.length - 1]?.id ?? null
+}
+
+function toggleSelectAllVisible() {
+  const next = new Set(selectedIds.value)
+  if (selectionSummary.value.allSelected) {
+    for (const task of completedTasks.value) {
+      next.delete(task.id)
+    }
+    selectedIds.value = next
+    lastAnchorId.value = null
+    return
+  }
+  selectAllVisible()
+}
+
+function invertSelection() {
+  const next = new Set(selectedIds.value)
+  for (const task of completedTasks.value) {
+    if (next.has(task.id)) next.delete(task.id)
+    else next.add(task.id)
+  }
+  selectedIds.value = next
+  lastAnchorId.value = null
+}
+
+function openBatchDeleteModal() {
+  if (props.batchBusy || selectionSummary.value.deletableIds.length === 0) return
+  batchDeleteLocalFiles.value = false
+  showBatchDeleteModal.value = true
+}
+
+function confirmBatchDelete() {
+  const ids = [...selectionSummary.value.deletableIds]
+  if (ids.length === 0) {
+    showBatchDeleteModal.value = false
+    return
+  }
+  const removed = new Set(ids)
+  const next = new Set(selectedIds.value)
+  for (const id of removed) next.delete(id)
+  selectedIds.value = next
+  lastAnchorId.value = null
+  const deleteFiles = batchDeleteLocalFiles.value
+  showBatchDeleteModal.value = false
+  emit('batch-delete', ids, deleteFiles)
+}
+
+watch(() => props.tasks, (nextTasks) => {
+  if (selectedIds.value.size > 0) {
+    selectedIds.value = pruneSelectedHistoryIds(selectedIds.value, nextTasks)
+  }
+  if (!nextTasks.some(t => t.status === 'completed')) {
+    exitSelectionMode()
+  }
+}, { deep: true })
+
+function handleKeydown(event: KeyboardEvent) {
+  if (!props.active || !selectionMode.value) return
+  const target = event.target as HTMLElement | null
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    if (showBatchDeleteModal.value) showBatchDeleteModal.value = false
+    else exitSelectionMode()
+    return
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a' && completedTasks.value.length > 0) {
+    event.preventDefault()
+    selectAllVisible()
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleKeydown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown)
+})
+
 function formatCompletedDate(timestamp: number): string {
   if (!timestamp) return ''
   const date = new Date(timestamp * 1000)
@@ -141,7 +315,43 @@ function confirmClearAll() {
       </div>
 
       <div class="header-actions">
-        <span class="count-text">共 {{ completedTasks.length }} 个文件</span>
+        <span class="count-text">
+          共 {{ completedTasks.length }} 个文件<template v-if="totalSizeText"> · {{ totalSizeText }}</template>
+        </span>
+
+        <div v-if="completedTasks.length > 0" class="view-toggle" role="group" aria-label="视图切换">
+          <button
+            type="button"
+            class="view-toggle-btn"
+            :class="{ active: viewMode === 'comfortable' }"
+            title="卡片视图"
+            aria-label="卡片视图"
+            @click="setViewMode('comfortable')"
+          >
+            <LayoutList :size="13" />
+          </button>
+          <button
+            type="button"
+            class="view-toggle-btn"
+            :class="{ active: viewMode === 'compact' }"
+            title="紧凑列表"
+            aria-label="紧凑列表"
+            @click="setViewMode('compact')"
+          >
+            <List :size="13" />
+          </button>
+        </div>
+
+        <button
+          v-if="completedTasks.length > 0"
+          class="btn-secondary q-action-btn q-select-toggle"
+          :class="{ active: selectionMode }"
+          @click="toggleSelectionMode"
+        >
+          <ListChecks :size="13" />
+          <span>{{ selectionMode ? '退出多选' : '多选' }}</span>
+        </button>
+
         <button v-if="missingTasks.length" class="btn-secondary clear-btn missing-clear-btn" :disabled="checking || cleaning" @click="confirmMissingCleanup" :title="cleanupError || '仅清除原位置未找到文件的记录'">
           {{ cleaning ? '正在检查…' : `清理失效记录（${missingTasks.length}）` }}
         </button>
@@ -156,16 +366,81 @@ function confirmClearAll() {
       </div>
     </div>
 
+    <!-- Contextual Batch Action Bar -->
+    <div v-if="selectionMode && completedTasks.length > 0" class="batch-bar">
+      <div class="batch-left">
+        <button
+          type="button"
+          class="batch-select-all"
+          @click="toggleSelectAllVisible"
+        >
+          <span
+            class="queue-check-box"
+            :class="{ checked: selectionSummary.allSelected, mixed: selectionSummary.someSelected }"
+            aria-hidden="true"
+          >
+            <Check v-if="selectionSummary.allSelected" :size="12" :stroke-width="3" />
+            <Minus v-else-if="selectionSummary.someSelected" :size="12" :stroke-width="3" />
+          </span>
+          <span>全选</span>
+        </button>
+
+        <button
+          type="button"
+          class="btn-secondary batch-chip-btn"
+          @click="invertSelection"
+        >
+          反选
+        </button>
+
+        <span class="batch-count">
+          已选 <strong>{{ selectionSummary.selectedCount }}</strong> / {{ selectionSummary.totalCount }} 项
+        </span>
+      </div>
+
+      <div class="batch-right">
+        <button
+          type="button"
+          class="btn-secondary batch-action-btn batch-delete-btn"
+          :disabled="batchBusy || selectionSummary.deletableIds.length === 0"
+          @click="openBatchDeleteModal"
+        >
+          <Trash2 :size="13" />
+          <span>删除{{ selectionSummary.deletableIds.length > 0 ? ` (${selectionSummary.deletableIds.length})` : '' }}</span>
+        </button>
+      </div>
+    </div>
+
     <!-- History Task List -->
-    <div v-if="completedTasks.length > 0" class="history-list">
+    <div v-if="completedTasks.length > 0" class="history-list" :class="{ 'is-compact': viewMode === 'compact' }">
       <div
         v-for="task in completedTasks"
         :key="task.id"
         class="history-card"
-        :class="{ 'is-missing': fileStates[task.outputPath] === 'missing' }"
+        :class="{
+          'is-missing': fileStates[task.outputPath] === 'missing',
+          'is-compact': viewMode === 'compact',
+          'is-selectable': selectionMode,
+          'is-selected': isTaskSelected(task.id)
+        }"
         :title="fileStates[task.outputPath] === 'missing' ? '原位置未找到文件' : ''"
+        @click="handleCardClick(task.id, $event)"
       >
-        <div class="cover-box" @click="fileStates[task.outputPath] !== 'missing' && emit('open-file', task.outputPath, task)">
+        <button
+          v-if="selectionMode"
+          type="button"
+          class="queue-check-btn"
+          role="checkbox"
+          :aria-checked="isTaskSelected(task.id)"
+          :aria-label="`选择记录 ${task.partTitle || task.title}`"
+          @click.stop="handleCheckClick(task.id, $event)"
+        >
+          <span class="queue-check-box" :class="{ checked: isTaskSelected(task.id) }">
+            <Check v-if="isTaskSelected(task.id)" :size="12" :stroke-width="3" />
+          </span>
+        </button>
+
+        <div v-if="viewMode !== 'compact'" class="cover-box" @click="fileStates[task.outputPath] !== 'missing' && emit('open-file', task.outputPath, task)">
           <img
             v-if="task.cover"
             :src="normalizeImg(task.cover)"
@@ -185,6 +460,7 @@ function confirmClearAll() {
 
         <div class="content-box">
           <div class="title-row">
+            <span v-if="viewMode === 'compact' && task.qualityLabel" class="compact-quality">{{ task.qualityLabel }}</span>
             <span class="item-title" :title="task.partTitle || task.title">{{ (task as any).partCount > 1 ? `P${(task as any).partPage} · ` : '' }}{{ task.partTitle || task.title }}</span>
             <span v-if="task.partTitle && task.partTitle !== task.title" class="part-badge" :title="(task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? `${task.title} › ${(task as any).videoTitle}` : task.title">
               {{ (task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? (task as any).videoTitle : task.title }}
@@ -192,18 +468,18 @@ function confirmClearAll() {
           </div>
 
           <div class="meta-row">
-            <span class="meta-item">
+            <span class="meta-item status-meta">
               <AlertTriangle v-if="fileStates[task.outputPath] === 'missing'" :size="12" class="missing-icon" aria-label="原位置未找到文件" />
               <CheckCircle2 v-else :size="12" class="success-icon" />
-              <span>下载完成</span>
+              <span>{{ fileStates[task.outputPath] === 'missing' ? '文件缺失' : '下载完成' }}</span>
             </span>
 
-            <span v-if="task.sizeStr" class="meta-item">
+            <span v-if="task.sizeStr" class="meta-item size-meta">
               <HardDrive :size="11" />
               <span>{{ task.sizeStr.split('/')[0]?.trim() || task.sizeStr }}</span>
             </span>
 
-            <span v-if="task.completedAt" class="meta-item">
+            <span v-if="task.completedAt" class="meta-item date-meta">
               <Clock :size="11" />
               <span>{{ formatCompletedDate(task.completedAt) }}</span>
             </span>
@@ -211,7 +487,22 @@ function confirmClearAll() {
         </div>
 
         <div class="btn-group">
-          <button class="btn-primary play-btn" :disabled="fileStates[task.outputPath] === 'missing'" @click="emit('open-file', task.outputPath, task)" :title="fileStates[task.outputPath] === 'missing' ? '原位置未找到文件' : '播放视频'">
+          <button
+            v-if="viewMode === 'compact'"
+            class="btn-icon compact-play-btn"
+            :disabled="fileStates[task.outputPath] === 'missing'"
+            @click="emit('open-file', task.outputPath, task)"
+            :title="fileStates[task.outputPath] === 'missing' ? '原位置未找到文件' : '播放视频'"
+          >
+            <Play :size="13" />
+          </button>
+          <button
+            v-else
+            class="btn-primary play-btn"
+            :disabled="fileStates[task.outputPath] === 'missing'"
+            @click="emit('open-file', task.outputPath, task)"
+            :title="fileStates[task.outputPath] === 'missing' ? '原位置未找到文件' : '播放视频'"
+          >
             <Play :size="13" />
             <span>播放</span>
           </button>
@@ -290,6 +581,57 @@ function confirmClearAll() {
       </div>
     </div>
 
+    <!-- 批量删除确认模态框 -->
+    <div v-if="showBatchDeleteModal" class="modal-overlay" @click.self="showBatchDeleteModal = false">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-title-box">
+            <AlertTriangle :size="18" class="modal-icon-danger" />
+            <h3 class="modal-title">删除选中的已完成记录</h3>
+          </div>
+          <button class="btn-close" @click="showBatchDeleteModal = false">
+            <X :size="16" />
+          </button>
+        </div>
+
+        <div class="modal-body">
+          <p class="modal-desc">
+            确定要从下载历史中删除选中的 <strong>{{ selectionSummary.deletableIds.length }}</strong> 条记录吗？
+          </p>
+
+          <div class="batch-preview-list">
+            <div v-for="task in batchDeletePreviewTasks" :key="task.id" class="batch-preview-item">
+              <span class="batch-preview-title">{{ task.partTitle || task.title }}</span>
+            </div>
+            <div v-if="selectionSummary.deletableIds.length > batchDeletePreviewTasks.length" class="batch-preview-more">
+              以及其余 {{ selectionSummary.deletableIds.length - batchDeletePreviewTasks.length }} 条记录
+            </div>
+          </div>
+
+          <label class="checkbox-label">
+            <input
+              v-model="batchDeleteLocalFiles"
+              type="checkbox"
+              class="custom-checkbox"
+            />
+            <div class="checkbox-text">
+              <span class="checkbox-main danger-text">同时删除这 {{ selectionSummary.deletableIds.length }} 个本地视频源文件</span>
+              <span class="checkbox-sub">注意：勾选后对应的本地视频文件将被永久删除！</span>
+            </div>
+          </label>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn-secondary" @click="showBatchDeleteModal = false">
+            取消
+          </button>
+          <button class="btn-danger" :disabled="batchBusy" @click="confirmBatchDelete">
+            {{ batchDeleteLocalFiles ? `删除记录与文件 (${selectionSummary.deletableIds.length})` : `仅移除记录 (${selectionSummary.deletableIds.length})` }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- 批量清空确认模态框 -->
     <div v-if="showClearAllModal" class="modal-overlay" @click.self="showClearAllModal = false">
       <div class="modal-card">
@@ -351,6 +693,8 @@ function confirmClearAll() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
   padding-bottom: 4px;
 }
 
@@ -387,26 +731,189 @@ function confirmClearAll() {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .count-text {
   font-size: 12px;
   color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-right: 4px;
 }
 
+.view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--segmented-track-bg);
+  border: 1px solid var(--border-hairline);
+}
+
+.view-toggle-btn {
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.view-toggle-btn:hover:not(.active) {
+  color: var(--text-primary);
+}
+
+.view-toggle-btn.active {
+  background: var(--segmented-active-bg);
+  color: var(--text-primary);
+  box-shadow: var(--segmented-active-shadow);
+}
+
+.q-action-btn,
 .clear-btn {
   height: 28px;
   font-size: 11.5px;
-  padding: 0 8px;
+  padding: 0 9px;
   gap: 4px;
 }
+
+.q-select-toggle.active {
+  background: rgba(242, 93, 142, 0.14);
+  border-color: rgba(242, 93, 142, 0.38);
+  color: var(--bili-pink);
+}
+
 .missing-clear-btn { justify-content: center; padding-inline: 10px; text-align: center; }
+
+/* Batch Action Bar */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid rgba(242, 93, 142, 0.28);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.batch-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.batch-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 6px 0 2px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: var(--radius-xs);
+}
+
+.batch-select-all:hover {
+  background: var(--neutral-05);
+}
+
+.batch-chip-btn {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 11.5px;
+  border-radius: var(--radius-xs);
+}
+
+.batch-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.batch-count strong {
+  color: var(--bili-pink);
+  font-weight: 600;
+}
+
+.batch-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.batch-action-btn {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  gap: 4px;
+}
+
+.batch-action-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.batch-delete-btn:not(:disabled) {
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.batch-delete-btn:not(:disabled):hover {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.queue-check-btn {
+  display: grid;
+  place-items: center;
+  padding: 2px;
+  background: transparent;
+  flex-shrink: 0;
+  border-radius: var(--radius-xs);
+}
+
+.queue-check-box {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--neutral-25);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--bg-app);
+  transition: all var(--transition-fast);
+}
+
+.queue-check-box.checked,
+.queue-check-box.mixed {
+  border-color: var(--bili-pink);
+  background: var(--bili-pink);
+  color: var(--bg-app);
+}
 
 .history-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.history-list.is-compact {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  gap: 0;
+  overflow: hidden;
+  box-shadow: var(--surface-highlight), var(--shadow-sm);
 }
 
 .history-card {
@@ -425,13 +932,93 @@ function confirmClearAll() {
   background: var(--bg-card-hover);
   border-color: var(--border-subtle);
 }
+
+.history-card.is-selectable {
+  cursor: pointer;
+}
+
+.history-card.is-selected {
+  background: var(--episode-selected-bg);
+  border-color: var(--border-hover);
+}
+
+.history-card.is-compact {
+  padding: 9px 14px;
+  gap: 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.history-card.is-compact + .history-card.is-compact {
+  border-top: 1px solid var(--border-hairline);
+}
+
+.history-card.is-compact:hover {
+  background: var(--bg-card-hover);
+}
+
+.history-card.is-compact.is-selected {
+  background: var(--episode-selected-bg);
+}
+
+.history-card.is-compact .content-box {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+.history-card.is-compact .title-row {
+  flex: 1;
+  min-width: 0;
+}
+
+.history-card.is-compact .meta-row {
+  flex-shrink: 0;
+  gap: 10px;
+}
+
+.history-card.is-compact .status-meta {
+  display: none;
+}
+
+.history-card.is-compact.is-missing .status-meta {
+  display: flex;
+  color: var(--warning);
+}
+
+.history-card.is-compact .size-meta svg,
+.history-card.is-compact .date-meta svg {
+  display: none;
+}
+
+.history-card.is-compact .dir-btn,
+.history-card.is-compact .del-btn,
+.history-card.is-compact .compact-play-btn {
+  width: 26px;
+  height: 26px;
+}
+
+.compact-quality {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--neutral-08);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .history-card.is-missing .cover-box { cursor: default; }
 .history-card.is-missing .content-box { opacity: .65; }
 .missing-cover-mark { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: white; }
 .missing-cover-mark svg { box-sizing: content-box; padding: 5px; border-radius: 50%; background: rgba(28, 39, 58, .7); }
 .history-card.is-missing .cover-box:hover .play-overlay { opacity: 0; }
 .history-card.is-missing .cover-box:hover .cover-img { transform: none; }
-.history-card.is-missing .play-btn { background: var(--neutral-05); color: var(--text-muted); box-shadow: none; opacity: 1; cursor: not-allowed; }
+.history-card.is-missing .play-btn,
+.history-card.is-missing .compact-play-btn { background: var(--neutral-05); color: var(--text-muted); box-shadow: none; opacity: 1; cursor: not-allowed; }
 .missing-icon { color: #bd802e; }
 .cleanup-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
 
@@ -444,7 +1031,7 @@ function confirmClearAll() {
   flex-shrink: 0;
   cursor: pointer;
   background: rgba(0, 0, 0, 0.35);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  box-shadow: var(--cover-ring);
 }
 
 .cover-img {
@@ -568,6 +1155,10 @@ function confirmClearAll() {
   padding: 0 12px;
   font-size: 12px;
   gap: 4px;
+}
+
+.compact-play-btn {
+  color: var(--bili-pink);
 }
 
 .dir-btn, .del-btn {
@@ -698,14 +1289,35 @@ function confirmClearAll() {
   margin: 0;
 }
 
-.task-preview-box {
+.task-preview-box,
+.batch-preview-list {
   background: var(--neutral-03);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
+}
+
+.batch-preview-item {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.batch-preview-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.batch-preview-more {
+  font-size: 11.5px;
+  color: var(--text-muted);
 }
 
 .preview-title {
@@ -781,7 +1393,7 @@ function confirmClearAll() {
   gap: 10px;
   padding: 14px 20px;
   border-top: 1px solid var(--border-subtle);
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--neutral-02);
 }
 
 .btn-danger {
@@ -797,18 +1409,18 @@ function confirmClearAll() {
   transition: all var(--transition-fast);
 }
 
-.btn-danger:hover {
+.btn-danger:hover:not(:disabled) {
   filter: brightness(1.15);
   box-shadow: 0 2px 8px rgba(239, 68, 68, 0.4);
+}
+
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
-}
-
-@keyframes scaleIn {
-  from { transform: scale(0.95); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
 }
 </style>
