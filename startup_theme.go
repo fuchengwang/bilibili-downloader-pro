@@ -27,7 +27,7 @@ func startupThemeMiddleware(getTheme func() string, getAccount ...func() *bilibi
 				return
 			}
 			theme := getTheme()
-			if theme != "light" && theme != "system" {
+			if theme != "light" && theme != "midnight" && theme != "system" {
 				theme = "dark"
 			}
 			root := fmt.Sprintf(`<html data-startup-theme="%s" data-theme="%s"`, theme, theme)

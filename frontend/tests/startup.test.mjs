@@ -33,16 +33,17 @@ function appearanceContext(saved, dark = false, storageUnavailable = false, star
   return { context, root, backgrounds, media }
 }
 
-for (const [saved, dark, expected] of [
-  ['light', true, 'light'], ['dark', false, 'dark'],
-  ['system', false, 'light'], ['system', true, 'dark'],
-  [null, false, 'dark'], ['invalid', false, 'dark'],
+for (const [saved, dark, expected, expectedScheme] of [
+  ['light', true, 'light', 'light'], ['dark', false, 'dark', 'dark'],
+  ['midnight', false, 'midnight', 'dark'],
+  ['system', false, 'light', 'light'], ['system', true, 'dark', 'dark'],
+  [null, false, 'dark', 'dark'], ['invalid', false, 'dark', 'dark'],
 ]) {
   test(`initial HTML uses ${expected} with saved appearance ${saved} and system dark=${dark}`, () => {
     const { context, root } = appearanceContext(saved, dark)
     vm.runInContext(bootstrap, context)
     assert.equal(root.dataset.theme, expected)
-    assert.equal(root.style.colorScheme, expected)
+    assert.equal(root.style.colorScheme, expectedScheme)
   })
 }
 
@@ -77,6 +78,10 @@ test('native background follows explicit and changing system appearance', () => 
   media.changed()
   assert.equal(root.dataset.theme, 'dark')
   assert.deepEqual(backgrounds.at(-1), [13, 13, 15, 255])
+  context.exports.theme.value = 'midnight'
+  assert.equal(root.dataset.theme, 'midnight')
+  assert.equal(root.style.colorScheme, 'dark')
+  assert.deepEqual(backgrounds.at(-1), [12, 14, 20, 255])
   context.exports.theme.value = 'light'
   assert.equal(root.dataset.theme, 'light')
   assert.deepEqual(backgrounds.at(-1), [245, 245, 247, 255])

@@ -31,10 +31,10 @@ func TestStartupHTMLUsesSavedThemeAndKeepsWailsRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, preference := range []string{"light", "dark", "system", `invalid"value`} {
+	for _, preference := range []string{"light", "dark", "midnight", "system", `invalid"value`} {
 		theme = preference
 		want := preference
-		if want != "light" && want != "system" {
+		if want != "light" && want != "midnight" && want != "system" {
 			want = "dark"
 		}
 		for _, path := range []string{"/", "/index.html"} {

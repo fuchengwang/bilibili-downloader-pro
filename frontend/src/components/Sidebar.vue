@@ -149,7 +149,7 @@ function handleAccountClick() {
   width: 200px;
   min-width: 200px;
   max-width: 200px;
-  height: 100vh;
+  height: 100%;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-hairline);
   display: flex;
@@ -243,8 +243,8 @@ function handleAccountClick() {
 
 .nav-item.active {
   background: var(--nav-active-bg);
-  box-shadow: var(--surface-highlight);
-  color: var(--text-primary);
+  box-shadow: var(--nav-active-shadow, var(--surface-highlight));
+  color: var(--nav-active-text, var(--text-primary));
   font-weight: 600;
 }
 

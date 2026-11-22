@@ -32,7 +32,7 @@ func applyNativeWindowAppearance(theme string) {
 	switch theme {
 	case "light":
 		mode = 1
-	case "dark":
+	case "dark", "midnight":
 		mode = 2
 	}
 	C.setAppAppearance(C.int(mode))

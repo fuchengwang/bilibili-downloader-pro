@@ -71,7 +71,15 @@ func main() {
 	appearance := mac.NSAppearanceNameDarkAqua
 	windowsTheme := windows.Dark
 	background := &options.RGBA{R: 13, G: 13, B: 15, A: 255}
+	darkTitleBar := windows.RGB(24, 24, 29)
+	darkTitleBarInactive := windows.RGB(20, 20, 25)
+	darkBorder := windows.RGB(44, 44, 52)
 	switch app.cfgMgr.Get().Theme {
+	case "midnight":
+		background = &options.RGBA{R: 12, G: 14, B: 20, A: 255}
+		darkTitleBar = windows.RGB(24, 29, 41)
+		darkTitleBarInactive = windows.RGB(20, 24, 34)
+		darkBorder = windows.RGB(42, 51, 68)
 	case "light":
 		appearance = mac.NSAppearanceNameAqua
 		windowsTheme = windows.Light
@@ -117,16 +125,16 @@ func main() {
 			BackdropType:         windows.Mica,
 			Theme:                windowsTheme,
 			CustomTheme: &windows.ThemeSettings{
-				DarkModeTitleBar:          windows.RGB(13, 13, 15),
-				DarkModeTitleBarInactive:  windows.RGB(13, 13, 15),
-				DarkModeTitleText:         windows.RGB(244, 244, 246),
-				DarkModeTitleTextInactive: windows.RGB(161, 161, 170),
-				DarkModeBorder:            windows.RGB(32, 32, 38),
-				LightModeTitleBar:         windows.RGB(245, 245, 247),
-				LightModeTitleBarInactive: windows.RGB(245, 245, 247),
-				LightModeTitleText:        windows.RGB(24, 24, 27),
+				DarkModeTitleBar:           darkTitleBar,
+				DarkModeTitleBarInactive:   darkTitleBarInactive,
+				DarkModeTitleText:          windows.RGB(244, 244, 246),
+				DarkModeTitleTextInactive:  windows.RGB(161, 161, 170),
+				DarkModeBorder:             darkBorder,
+				LightModeTitleBar:          windows.RGB(232, 232, 237),
+				LightModeTitleBarInactive:  windows.RGB(238, 238, 242),
+				LightModeTitleText:         windows.RGB(24, 24, 27),
 				LightModeTitleTextInactive: windows.RGB(113, 113, 122),
-				LightModeBorder:           windows.RGB(224, 224, 230),
+				LightModeBorder:            windows.RGB(214, 214, 222),
 			},
 		},
 	})

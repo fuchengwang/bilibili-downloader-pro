@@ -1013,6 +1013,11 @@ function handleLicenseDeactivated(key: string) {
   background-color: var(--bg-app);
 }
 
+:global(:root[data-platform='windows']) .app-layout,
+:global(:root[data-platform='linux']) .app-layout {
+  border-top: 1px solid var(--border-top-divider);
+}
+
 .main-wrapper {
   flex: 1;
   display: flex;

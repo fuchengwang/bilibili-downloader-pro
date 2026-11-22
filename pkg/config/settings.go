@@ -23,7 +23,7 @@ type Settings struct {
 	DeleteTempFiles  bool   `json:"deleteTempFiles"`  // 合成后是否自动删除临时分块文件
 	AutoClipboard    bool   `json:"autoClipboard"`    // 是否自动检测剪贴板 B 站链接
 	FileNameTemplate string `json:"fileNameTemplate"` // 文件名命名格式: "{title} - {part}"
-	Theme            string `json:"theme"`            // 主题: "dark", "light", "system"
+	Theme            string `json:"theme"`            // 主题: "dark", "midnight", "light", "system"
 }
 
 // ConfigManager 负责配置的持久化与线程安全读取
@@ -90,7 +90,7 @@ func normalizeSettings(s Settings, fallbackDownloadDir string) Settings {
 		s.FileNameTemplate = "{title} - {part}"
 	}
 	s.Theme = strings.ToLower(strings.TrimSpace(s.Theme))
-	if s.Theme != "dark" && s.Theme != "light" && s.Theme != "system" {
+	if s.Theme != "dark" && s.Theme != "midnight" && s.Theme != "light" && s.Theme != "system" {
 		s.Theme = "dark"
 	}
 	return s

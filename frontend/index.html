@@ -10,15 +10,15 @@
         // The desktop supplies its saved theme in the initial HTML.
         (function() {
             let theme = document.documentElement.dataset.startupTheme;
-            if (theme !== 'dark' && theme !== 'light' && theme !== 'system') {
+            if (theme !== 'dark' && theme !== 'midnight' && theme !== 'light' && theme !== 'system') {
                 try { theme = localStorage.getItem('bbdown-theme'); } catch (e) {}
-                if (theme !== 'light' && theme !== 'system') theme = 'dark';
+                if (theme !== 'midnight' && theme !== 'light' && theme !== 'system') theme = 'dark';
             }
             const resolved = theme === 'system'
                 ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
                 : theme;
             document.documentElement.dataset.theme = resolved;
-            document.documentElement.style.colorScheme = resolved;
+            document.documentElement.style.colorScheme = resolved === 'light' ? 'light' : 'dark';
         })();
     </script>
     <style>
@@ -29,6 +29,10 @@
         :root[data-theme='light'] {
             --bg-app: #f5f5f7;
             --text-primary: #18181b;
+        }
+        :root[data-theme='midnight'] {
+            --bg-app: #0c0e14;
+            --text-primary: #f8fafc;
         }
         html, body {
             margin: 0;

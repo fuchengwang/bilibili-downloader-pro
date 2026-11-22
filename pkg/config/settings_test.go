@@ -82,7 +82,7 @@ func TestSettingsSaveNormalizesEmptyValues(t *testing.T) {
 }
 
 func TestThemeNormalizationAndPersistence(t *testing.T) {
-	for _, tc := range []struct{ input, want string }{{"light", "light"}, {"dark", "dark"}, {"system", "system"}, {" LIGHT ", "light"}, {"invalid", "dark"}} {
+	for _, tc := range []struct{ input, want string }{{"light", "light"}, {"dark", "dark"}, {"midnight", "midnight"}, {"system", "system"}, {" LIGHT ", "light"}, {" MIDNIGHT ", "midnight"}, {"invalid", "dark"}} {
 		t.Run(tc.input, func(t *testing.T) {
 			dir := t.TempDir()
 			m := NewConfigManager(dir)

@@ -128,6 +128,7 @@ function savePreference<K extends keyof config.Settings>(key: K, value: config.S
         if (key === 'downloadLimitKB' && limitDraft === `${limitEnabled.value}|${downloadLimitInput.value}|${limitUnit.value}`) {
           restoreLimitControls(form.value.downloadLimitKB)
         }
+        if (key === 'theme') emit('theme-changed', String(form.value.theme))
       }
       saveStatus.value = '保存失败，请重新修改后重试'
       emit('show-toast', '自动保存失败: ' + (err?.message || err), 'error')
@@ -244,8 +245,9 @@ async function handleSave() {
 }
 
 const themeOptions = [
-  { value: 'light', label: '浅色' },
-  { value: 'dark', label: '深色' },
+  { value: 'light', label: '晨雾白' },
+  { value: 'dark', label: '曜石黑' },
+  { value: 'midnight', label: '午夜蓝' },
   { value: 'system', label: '跟随系统' }
 ]
 
@@ -303,7 +305,7 @@ const limitUnitOptions = [
                   class="segmented-btn"
                   :class="{ active: form.theme === opt.value }"
                   :aria-checked="form.theme === opt.value"
-                  @click="() => { form.theme = opt.value; savePreference('theme', opt.value) }"
+                  @click="() => { form.theme = opt.value; emit('theme-changed', opt.value); savePreference('theme', opt.value) }"
                 >
                   {{ opt.label }}
                 </button>
