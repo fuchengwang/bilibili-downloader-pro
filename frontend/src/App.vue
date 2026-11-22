@@ -26,6 +26,8 @@ import {
   DeleteTask,
   PauseAllTasks,
   ResumeAllTasks,
+  ReorderTasks,
+  PrioritizeTasks,
   ClearCompletedTasks,
   OpenDirectory,
   OpenFile,
@@ -37,7 +39,7 @@ import {
 import { EventsOn, EventsEmit } from '../wailsjs/runtime/runtime'
 import { theme, normalizeTheme } from './theme'
 import { readStartupAccount } from './startup-account'
-import { mergeTaskSnapshots } from './utils/task-queue'
+import { mergeTaskSnapshots, moveQueueTasks, orderedQueueTasks, type QueueMoveAction } from './utils/task-queue'
 
 // State
 const activeTab = ref<'parse' | 'queue' | 'history' | 'settings'>('parse')
@@ -639,6 +641,35 @@ async function onBatchResumeTasks(ids: string[]) {
   }
 }
 
+async function onMoveQueueTasks(ids: string[], action: QueueMoveAction) {
+  if (queueBatchBusy.value || !ids.length) return
+  const next = moveQueueTasks(tasks.value, ids, action)
+  if (next === tasks.value) return
+  const orderedIds = orderedQueueTasks(next).map(t => t.id)
+  // The backend publishes task updates after it saves the new order.
+  queueBatchBusy.value = true
+  try {
+    await ReorderTasks(orderedIds)
+  } catch (err: any) {
+    showToast('调整队列顺序失败: ' + (err?.message || err), 'error')
+  } finally {
+    queueBatchBusy.value = false
+  }
+}
+
+async function onPrioritizeQueueTasks(ids: string[]) {
+  if (queueBatchBusy.value || !ids.length) return
+  queueBatchBusy.value = true
+  try {
+    await PrioritizeTasks(ids)
+    showToast(ids.length > 1 ? `已将 ${ids.length} 个任务置顶优先` : '已将该任务置顶优先', 'info')
+  } catch (err: any) {
+    showToast('置顶优先失败: ' + (err?.message || err), 'error')
+  } finally {
+    queueBatchBusy.value = false
+  }
+}
+
 async function onBatchDeleteTasks(ids: string[]) {
   const { succeeded, failed, lastError } = await runBatchQueueAction(ids, id => DeleteTask(id, false))
   if (succeeded.length > 0) {
@@ -790,6 +821,8 @@ function handleLicenseDeactivated(key: string) {
             @batch-pause="onBatchPauseTasks"
             @batch-resume="onBatchResumeTasks"
             @batch-delete="onBatchDeleteTasks"
+            @move-tasks="onMoveQueueTasks"
+            @prioritize-tasks="onPrioritizeQueueTasks"
             @clear-completed="onClearCompleted"
           />
         </div>

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -231,6 +232,195 @@ func (m *DownloadManager) resumeTasks(id string, all bool) error {
 		m.triggerSchedule()
 	}
 	return nil
+}
+
+// ReorderTasks updates active queue positions to match orderedIDs and preempts
+// overflowing downloads cleanly back into queued status.
+func (m *DownloadManager) ReorderTasks(orderedIDs []string) error {
+	return m.rearrangeQueue(orderedIDs, false)
+}
+
+// PrioritizeTasks moves target tasks to the front of the active queue in their
+// existing relative order, resumes paused/failed selections, and softly preempts
+// overflowing downloads.
+func (m *DownloadManager) PrioritizeTasks(ids []string) error {
+	return m.rearrangeQueue(ids, true)
+}
+
+func (m *DownloadManager) rearrangeQueue(targetIDs []string, prioritize bool) error {
+	if len(targetIDs) == 0 {
+		return nil
+	}
+
+	modified, err := func() ([]*DownloadTask, error) {
+		m.saveMu.Lock()
+		defer m.saveMu.Unlock()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		var active []*DownloadTask
+		for _, task := range m.tasks {
+			if task != nil && task.Status != StatusCompleted {
+				active = append(active, task)
+			}
+		}
+		if len(active) == 0 {
+			return nil, nil
+		}
+
+		sort.SliceStable(active, func(i, j int) bool {
+			return active[i].QueueOrder < active[j].QueueOrder
+		})
+
+		orderPool := make([]uint64, len(active))
+		for i, task := range active {
+			q := task.QueueOrder
+			if i == 0 {
+				if q == 0 {
+					q = 1
+				}
+			} else if q <= orderPool[i-1] {
+				q = orderPool[i-1] + 1
+			}
+			orderPool[i] = q
+		}
+
+		targetSet := make(map[string]bool, len(targetIDs))
+		for _, id := range targetIDs {
+			if id != "" {
+				targetSet[id] = true
+			}
+		}
+
+		reordered := make([]*DownloadTask, 0, len(active))
+		if prioritize {
+			for _, task := range active {
+				if targetSet[task.ID] {
+					reordered = append(reordered, task)
+				}
+			}
+			for _, task := range active {
+				if !targetSet[task.ID] {
+					reordered = append(reordered, task)
+				}
+			}
+		} else {
+			activeByID := make(map[string]*DownloadTask, len(active))
+			for _, task := range active {
+				activeByID[task.ID] = task
+			}
+			seen := make(map[string]bool, len(active))
+			for _, id := range targetIDs {
+				if id == "" || seen[id] {
+					continue
+				}
+				if task := activeByID[id]; task != nil {
+					seen[id] = true
+					reordered = append(reordered, task)
+				}
+			}
+			for _, task := range active {
+				if !seen[task.ID] {
+					seen[task.ID] = true
+					reordered = append(reordered, task)
+				}
+			}
+		}
+
+		before := make(map[*DownloadTask]DownloadTask)
+		recordBefore := func(task *DownloadTask) {
+			if _, exists := before[task]; !exists {
+				before[task] = *task
+			}
+		}
+
+		for i, task := range reordered {
+			if task.QueueOrder != orderPool[i] {
+				recordBefore(task)
+				task.QueueOrder = orderPool[i]
+			}
+			if prioritize && targetSet[task.ID] {
+				if task.Status == StatusPaused || task.Status == StatusError || task.Status == StatusCancelled {
+					recordBefore(task)
+					task.Status = StatusQueued
+					task.ErrorMsg, task.ErrorKind, task.ErrorHint, task.ErrorDetail = "", "", "", ""
+					task.ResumeOnStartup = false
+				}
+			}
+		}
+
+		preemptedIDs := m.preemptOverflowDownloadingLocked(reordered, recordBefore)
+		if len(before) == 0 {
+			return nil, nil
+		}
+
+		if err := m.writeTaskSnapshot(m.tasks); err != nil {
+			for task, state := range before {
+				*task = state
+			}
+			return nil, err
+		}
+
+		for _, id := range preemptedIDs {
+			if w, ok := m.workers[id]; ok {
+				if w.cancel != nil {
+					w.cancel()
+				}
+				w.invalidated = true
+				m.workers[id] = w
+			}
+		}
+
+		modified := make([]*DownloadTask, 0, len(before))
+		for _, task := range reordered {
+			if _, changed := before[task]; changed {
+				modified = append(modified, task)
+			}
+		}
+		return modified, nil
+	}()
+	if err != nil {
+		return err
+	}
+	for _, task := range modified {
+		m.notifyChange(task)
+	}
+	if len(modified) > 0 {
+		m.triggerSchedule()
+	}
+	return nil
+}
+
+func (m *DownloadManager) preemptOverflowDownloadingLocked(reordered []*DownloadTask, recordBefore func(*DownloadTask)) []string {
+	maxCon := m.cfgMgr.Get().MaxConcurrent
+	if maxCon <= 0 {
+		maxCon = 3
+	}
+	// Merges keep their slots even when a reorder puts them at the end.
+	downloadSlots := maxCon
+	for _, task := range reordered {
+		if task.Status == StatusMerging {
+			downloadSlots--
+		}
+	}
+
+	var preemptedIDs []string
+	for _, task := range reordered {
+		if task.Status != StatusDownloading && task.Status != StatusQueued {
+			continue
+		}
+		if downloadSlots > 0 {
+			downloadSlots--
+		} else if task.Status == StatusDownloading {
+			recordBefore(task)
+			task.Status = StatusQueued
+			task.Speed = 0
+			task.SpeedStr = "0 KB/s"
+			task.ETAStr = "--"
+			preemptedIDs = append(preemptedIDs, task.ID)
+		}
+	}
+	return preemptedIDs
 }
 
 func (m *DownloadManager) prepareDownloadTask(req *DownloadRequest, ep *bilibili.EpisodeInfo, cfg config.Settings) (*DownloadTask, error) {

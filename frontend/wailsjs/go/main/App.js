@@ -122,12 +122,20 @@ export function PollQRCode(arg1) {
   return window['go']['main']['App']['PollQRCode'](arg1);
 }
 
+export function PrioritizeTasks(arg1) {
+  return window['go']['main']['App']['PrioritizeTasks'](arg1);
+}
+
 export function ReadClipboard() {
   return window['go']['main']['App']['ReadClipboard']();
 }
 
 export function RemoveMissingHistoryRecords(arg1) {
   return window['go']['main']['App']['RemoveMissingHistoryRecords'](arg1);
+}
+
+export function ReorderTasks(arg1) {
+  return window['go']['main']['App']['ReorderTasks'](arg1);
 }
 
 export function RestartForUpdate() {

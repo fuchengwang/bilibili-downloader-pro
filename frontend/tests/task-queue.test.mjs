@@ -18,7 +18,8 @@ const {
   parseSizeStringToBytes,
   formatHistoryTotalSize,
   toggleQueueTaskSelection,
-  summarizeQueueSelection
+  summarizeQueueSelection,
+  moveQueueTasks
 } = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`)
 const task = (id, queueOrder, status = 'queued') => ({ id, queueOrder, status, createdAt: 10 })
 
@@ -100,8 +101,13 @@ test('pruneSelectedQueueIds drops completed and removed tasks while preserving a
 
 const app=readFileSync(new URL('../src/App.vue',import.meta.url),'utf8')
 const ast=ts.createSourceFile('App.ts',app.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1],ts.ScriptTarget.Latest,true)
-const initialize=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name.text==='initializeAuthorizedApp')
-const initializeCode=ts.transpileModule(initialize.getText(ast),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
+function compileFunctions(script, ...names) {
+  const source = names.map(name => script.statements.find(node =>
+    ts.isFunctionDeclaration(node) && node.name?.text === name
+  ).getText(script)).join('\n')
+  return ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+}
+
 test('real application subscribes before reading tasks and merges updates arriving during IPC',async()=>{
   const handlers={}
   let finish
@@ -112,7 +118,7 @@ test('real application subscribes before reading tasks and merges updates arrivi
     window:{addEventListener(){}},nextTick(){},checkAndAutoParseClipboard(){},console:{error(){}},
     activeTab:ref('queue'),unreadCompletedCount:ref(0),showToast(){},triggerConfetti(){},
   })
-  vm.runInContext(initializeCode,context)
+  vm.runInContext(compileFunctions(ast, 'initializeAuthorizedApp'), context)
   const pending=context.initializeAuthorizedApp()
   assert.equal(typeof handlers['task:update'],'function')
   handlers['task:update'](task('A1',1,'downloading'))
@@ -120,6 +126,49 @@ test('real application subscribes before reading tasks and merges updates arrivi
   finish([task('A1',1)])
   await pending
   assert.deepEqual(Array.from(orderedQueueTasks(context.tasks.value),t=>[t.id,t.status]),[['A1','downloading'],['A2','queued']])
+})
+
+test('failed queue changes preserve task events and release the controls for retry', async () => {
+  for (const [method, binding, args] of [
+    ['onMoveQueueTasks', 'ReorderTasks', [['B'], { type: 'up' }]],
+    ['onPrioritizeQueueTasks', 'PrioritizeTasks', [['B']]]
+  ]) {
+    const handlers = {}
+    const calls = []
+    const toasts = []
+    let rejectChange
+    const context = vm.createContext({
+      appInitialized: false, tasks: ref([]), queueBatchBusy: ref(false),
+      mergeTaskSnapshots, moveQueueTasks, orderedQueueTasks,
+      EventsOn: (name, handler) => { handlers[name] = handler },
+      GetTasks: async () => [task('A', 1, 'downloading'), task('B', 2)],
+      [binding]: ids => {
+        calls.push(Array.from(ids))
+        return new Promise((_, reject) => { rejectChange = reject })
+      },
+      window: { addEventListener() {} }, nextTick() {}, checkAndAutoParseClipboard() {},
+      showToast: (message, type) => toasts.push({ message, type })
+    })
+    vm.runInContext(compileFunctions(ast, 'initializeAuthorizedApp', method), context)
+    await context.initializeAuthorizedApp()
+
+    const pending = context[method](...args)
+    assert.equal(context.queueBatchBusy.value, true)
+    assert.deepEqual(calls, [binding === 'ReorderTasks' ? ['B', 'A'] : ['B']])
+    assert.deepEqual(orderedQueueTasks(context.tasks.value).map(t => t.id), ['A', 'B'])
+    await context[method](...args)
+    assert.equal(calls.length, 1)
+
+    handlers['task:update'](task('A', 1, 'completed'))
+    handlers['task:update'](task('C', 3))
+    rejectChange(new Error('save failed'))
+    await pending
+    assert.deepEqual(context.tasks.value.map(t => [t.id, t.status]), [
+      ['C', 'queued'], ['A', 'completed'], ['B', 'queued']
+    ])
+    assert.equal(context.queueBatchBusy.value, false)
+    assert.equal(toasts[0].type, 'error')
+  }
 })
 
 const vueRequire=createRequire(import.meta.resolve('vue/package.json'))
@@ -132,7 +181,7 @@ const rendered=vm.createContext({exports:{},require:vueRequire})
 vm.runInContext(ts.transpileModule(template.code,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,rendered)
 
 const iconStubs = Object.fromEntries(
-  ['Play', 'Pause', 'RotateCcw', 'Trash2', 'FolderOpen', 'AlertCircle', 'AlertTriangle', 'Clock', 'Zap', 'HardDrive', 'Film', 'ExternalLink', 'ListChecks', 'Check', 'Minus', 'X', 'LayoutList', 'List']
+  ['Play', 'Pause', 'RotateCcw', 'Trash2', 'FolderOpen', 'AlertCircle', 'AlertTriangle', 'Clock', 'Zap', 'HardDrive', 'Film', 'ExternalLink', 'ListChecks', 'Check', 'Minus', 'X', 'LayoutList', 'List', 'GripVertical', 'ArrowUpToLine', 'ArrowDownToLine', 'ArrowUp', 'ArrowDown']
     .map(name => [name, { render: () => null }])
 )
 
@@ -141,7 +190,9 @@ async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all'
   const downloadingCount = tasks.filter(t => t.status === 'downloading' || t.status === 'merging').length
   const pausedCount = tasks.filter(t => t.status === 'paused' || t.status === 'queued').length
   const errorCount = tasks.filter(t => t.status === 'error' || t.status === 'cancelled').length
-  const selectionSummary = summarizeQueueSelection(filteredTasks, selectedIds)
+  const ordered = orderedQueueTasks(tasks)
+  const selectionSummary = summarizeQueueSelection(filteredTasks, selectedIds, ordered)
+  const posMap = new Map(ordered.map((t, idx) => [t.id, idx + 1]))
   return renderToString(createSSRApp({
     ssrRender: rendered.exports.ssrRender,
     components: iconStubs,
@@ -159,6 +210,16 @@ async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all'
       batchDeletePreviewTasks: selectionSummary.selectedTasks.slice(0, 4),
       batchBusy,
       showBatchDeleteModal,
+      isDragging: false,
+      dropTargetId: null,
+      dropPosition: 'before',
+      draggingTaskIds: [],
+      dragPointerX: 0,
+      dragPointerY: 0,
+      dropTargetLabel: '',
+      getQueuePosition: id => posMap.get(id) || 1,
+      canPrioritizeSingleTask: t => t.status !== 'merging' && (posMap.get(t.id) || 1) > 1,
+      isTaskBeingDragged: () => false,
       isTaskSelected: id => selectedIds.has(id),
       isLegacyPlaybackError: () => false
     })
@@ -195,9 +256,99 @@ test('normal mode shows multi-select trigger without batch bar; selection mode r
   assert.ok(selectedHtml.includes('退出多选'), selectedHtml)
   assert.ok(selectedHtml.includes('class="batch-bar"'), selectedHtml)
   assert.ok(selectedHtml.includes('role="checkbox"'), selectedHtml)
+  assert.ok(selectedHtml.includes('优先置顶'), selectedHtml)
   assert.ok(selectedHtml.includes('继续 (1)'), selectedHtml)
   assert.ok(selectedHtml.includes('暂停 (1)'), selectedHtml)
   assert.ok(selectedHtml.includes('删除 (2)'), selectedHtml)
+})
+
+test('moveQueueTasks supports top, bottom, step up, step down, and drag-drop before/after', () => {
+  const initial = [
+    task('T1', 10, 'downloading'),
+    task('T2', 20, 'queued'),
+    task('T3', 30, 'paused'),
+    task('T4', 40, 'queued'),
+    task('DONE', 5, 'completed')
+  ]
+
+  const movedTop = moveQueueTasks(initial, ['T3', 'T4'], { type: 'top' })
+  assert.deepEqual(orderedQueueTasks(movedTop).map(t => [t.id, t.queueOrder]), [
+    ['T3', 10],
+    ['T4', 20],
+    ['T1', 30],
+    ['T2', 40]
+  ])
+
+  const movedBottom = moveQueueTasks(initial, ['T1', 'T3'], { type: 'bottom' })
+  assert.deepEqual(orderedQueueTasks(movedBottom).map(t => t.id), ['T2', 'T4', 'T1', 'T3'])
+
+  const movedUp = moveQueueTasks(initial, ['T2', 'T4'], { type: 'up' })
+  assert.deepEqual(orderedQueueTasks(movedUp).map(t => t.id), ['T2', 'T1', 'T4', 'T3'])
+
+  const movedDown = moveQueueTasks(initial, ['T1', 'T3'], { type: 'down' })
+  assert.deepEqual(orderedQueueTasks(movedDown).map(t => t.id), ['T2', 'T1', 'T4', 'T3'])
+
+  const droppedBefore = moveQueueTasks(initial, ['T4'], { type: 'drop', targetId: 'T2', position: 'before' })
+  assert.deepEqual(orderedQueueTasks(droppedBefore).map(t => t.id), ['T1', 'T4', 'T2', 'T3'])
+
+  const droppedAfter = moveQueueTasks(initial, ['T1', 'T2'], { type: 'drop', targetId: 'T3', position: 'after' })
+  assert.deepEqual(orderedQueueTasks(droppedAfter).map(t => t.id), ['T3', 'T1', 'T2', 'T4'])
+})
+
+test('filtered step changes the visible order while keeping hidden tasks in their slots', () => {
+  const initial = [task('A', 1), task('X', 2, 'downloading'), task('B', 3)]
+  const visible = [initial[0], initial[2]]
+  const visibleIds = visible.map(t => t.id)
+  assert.equal(summarizeQueueSelection(visible, new Set(['B']), initial).canMoveUp, true)
+  assert.equal(summarizeQueueSelection(visible, new Set(['A']), initial).canMoveUp, false)
+
+  for (const [id, type] of [['B', 'up'], ['A', 'down']]) {
+    const moved = moveQueueTasks(initial, [id], { type, visibleIds })
+    assert.deepEqual(orderedQueueTasks(moved).map(t => t.id), ['B', 'X', 'A'])
+  }
+
+  const allVisibleSelected = summarizeQueueSelection(visible, new Set(['A', 'B']), initial)
+  assert.equal(allVisibleSelected.canMoveUp, false)
+  assert.equal(allVisibleSelected.canMoveDown, false)
+  assert.equal(allVisibleSelected.canMoveTop, true)
+  assert.equal(allVisibleSelected.canMoveBottom, true)
+})
+
+test('pointer cancellation clears the drag without sending a queue change', () => {
+  const script = ts.createSourceFile('DownloadQueue.ts',
+    component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1], ts.ScriptTarget.Latest, true)
+  const listeners = new Map()
+  const emitted = []
+  const context = vm.createContext({
+    window: {
+      addEventListener: (name, listener) => listeners.set(name, listener),
+      removeEventListener: (name, listener) => {
+        assert.equal(listeners.get(name), listener)
+        listeners.delete(name)
+      }
+    },
+    document: { body: { style: {} } },
+    emit: (...args) => emitted.push(args),
+    props: { batchBusy: false }, filteredTasks: ref([task('A', 1), task('B', 2)]),
+    dragPendingTaskId: null, dragStartX: 0, dragStartY: 0,
+    dragPointerX: ref(0), dragPointerY: ref(0),
+    isDragging: ref(false), draggingTaskIds: ref([]), dropTargetId: ref(null), dropPosition: ref('before'),
+    resolveDragGroupIds: id => [id],
+    updateDropTargetFromPointer: () => { context.dropTargetId.value = 'A' }
+  })
+  vm.runInContext(compileFunctions(script, 'startTaskDrag', 'handleGlobalPointerMove', 'handleGlobalPointerUp', 'resetTaskDrag'), context)
+
+  for (const event of ['pointercancel', 'pointerup']) {
+    context.startTaskDrag('B', { button: 0, clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} })
+    listeners.get('pointermove')({ clientX: 0, clientY: 20 })
+    assert.equal(context.dropTargetId.value, 'A')
+    listeners.get(event)()
+    assert.equal(context.isDragging.value, false)
+    assert.equal(context.dropTargetId.value, null)
+    assert.equal(listeners.size, 0)
+    assert.equal(emitted.length, event === 'pointerup' ? 1 : 0)
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(emitted)), [['move-tasks', ['B'], { type: 'drop', targetId: 'A', position: 'before' }]])
 })
 
 test('parseSizeStringToBytes and formatHistoryTotalSize format MB below 1GB and GB at or above 1GB', () => {

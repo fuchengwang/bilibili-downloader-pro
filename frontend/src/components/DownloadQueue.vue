@@ -18,7 +18,12 @@ import {
   Minus,
   X,
   LayoutList,
-  List
+  List,
+  GripVertical,
+  ArrowUpToLine,
+  ArrowDownToLine,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-vue-next'
 import { downloader } from '../../wailsjs/go/models'
 import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
@@ -27,7 +32,8 @@ import {
   orderedQueueTasks,
   pruneSelectedQueueIds,
   summarizeQueueSelection,
-  toggleQueueTaskSelection
+  toggleQueueTaskSelection,
+  type QueueMoveAction
 } from '../utils/task-queue'
 
 const props = withDefaults(defineProps<{
@@ -52,6 +58,8 @@ const emit = defineEmits<{
   (e: 'batch-pause', ids: string[]): void
   (e: 'batch-resume', ids: string[]): void
   (e: 'batch-delete', ids: string[]): void
+  (e: 'move-tasks', ids: string[], action: QueueMoveAction): void
+  (e: 'prioritize-tasks', ids: string[]): void
   (e: 'update:view-mode', mode: 'comfortable' | 'compact'): void
   (e: 'clear-completed'): void
   (e: 'open-login'): void
@@ -63,6 +71,17 @@ const selectionMode = ref(false)
 const selectedIds = ref<Set<string>>(new Set())
 const lastAnchorId = ref<string | null>(null)
 const showBatchDeleteModal = ref(false)
+
+// Pointer Drag & Drop State
+const draggingTaskIds = ref<string[]>([])
+const isDragging = ref(false)
+const dropTargetId = ref<string | null>(null)
+const dropPosition = ref<'before' | 'after'>('before')
+const dragPointerY = ref(0)
+const dragPointerX = ref(0)
+let dragPendingTaskId: string | null = null
+let dragStartY = 0
+let dragStartX = 0
 
 function isLegacyPlaybackError(task: downloader.DownloadTask) {
   return !task.errorKind && /解析媒体流失败|DASH|playurl/.test(task.errorMsg || '')
@@ -79,13 +98,22 @@ function normalizeImg(url?: string) {
   return url
 }
 
-const activeQueueCount = computed(() => props.tasks.filter(t => t.status !== 'completed').length)
+const allOrderedActiveTasks = computed(() => orderedQueueTasks(props.tasks))
+const queuePositionById = computed(() => {
+  const map = new Map<string, number>()
+  allOrderedActiveTasks.value.forEach((task, idx) => {
+    map.set(task.id, idx + 1)
+  })
+  return map
+})
+
+const activeQueueCount = computed(() => allOrderedActiveTasks.value.length)
 const downloadingCount = computed(() => props.tasks.filter(t => t.status === 'downloading' || t.status === 'merging').length)
 const pausedCount = computed(() => props.tasks.filter(t => t.status === 'paused' || t.status === 'queued').length)
 const errorCount = computed(() => props.tasks.filter(t => t.status === 'error' || t.status === 'cancelled').length)
 
 const filteredTasks = computed(() => {
-  const activeTasks = orderedQueueTasks(props.tasks)
+  const activeTasks = allOrderedActiveTasks.value
   if (currentFilter.value === 'all') return activeTasks
   if (currentFilter.value === 'downloading') return activeTasks.filter(t => t.status === 'downloading' || t.status === 'merging')
   if (currentFilter.value === 'paused') return activeTasks.filter(t => t.status === 'paused' || t.status === 'queued')
@@ -93,8 +121,158 @@ const filteredTasks = computed(() => {
   return activeTasks
 })
 
-const selectionSummary = computed(() => summarizeQueueSelection(filteredTasks.value, selectedIds.value))
+const selectionSummary = computed(() =>
+  summarizeQueueSelection(filteredTasks.value, selectedIds.value, allOrderedActiveTasks.value)
+)
 const batchDeletePreviewTasks = computed(() => selectionSummary.value.selectedTasks.slice(0, 4))
+
+function getQueuePosition(taskId: string): number {
+  return queuePositionById.value.get(taskId) || 1
+}
+
+function canPrioritizeSingleTask(task: downloader.DownloadTask): boolean {
+  if (task.status === 'merging') return false
+  return getQueuePosition(task.id) > 1
+}
+
+function triggerSinglePrioritize(taskId: string) {
+  if (props.batchBusy) return
+  emit('prioritize-tasks', [taskId])
+}
+
+function triggerBatchMove(type: 'top' | 'bottom' | 'up' | 'down') {
+  if (props.batchBusy || selectionSummary.value.selectedCount === 0) return
+  const ids = selectionSummary.value.selectedTasks.map(t => t.id)
+  if (type === 'top') {
+    emit('prioritize-tasks', ids)
+    return
+  }
+  if (type === 'bottom') {
+    emit('move-tasks', ids, { type })
+  } else {
+    emit('move-tasks', ids, { type, visibleIds: filteredTasks.value.map(t => t.id) })
+  }
+}
+
+function isTaskBeingDragged(taskId: string): boolean {
+  return isDragging.value && draggingTaskIds.value.includes(taskId)
+}
+
+function startTaskDrag(taskId: string, event: PointerEvent) {
+  if (props.batchBusy || event.button !== 0 || filteredTasks.value.length <= 1) return
+  event.preventDefault()
+  event.stopPropagation()
+  dragPendingTaskId = taskId
+  dragStartX = event.clientX
+  dragStartY = event.clientY
+  dragPointerX.value = event.clientX
+  dragPointerY.value = event.clientY
+  window.addEventListener('pointermove', handleGlobalPointerMove)
+  window.addEventListener('pointerup', handleGlobalPointerUp)
+  window.addEventListener('pointercancel', resetTaskDrag)
+}
+
+function resolveDragGroupIds(anchorTaskId: string): string[] {
+  if (selectionMode.value && selectedIds.value.has(anchorTaskId)) {
+    return filteredTasks.value.filter(t => selectedIds.value.has(t.id)).map(t => t.id)
+  }
+  return [anchorTaskId]
+}
+
+function updateDropTargetFromPointer(clientY: number) {
+  if (!queueContainerRef.value) return
+  const cardEls = Array.from(queueContainerRef.value.querySelectorAll<HTMLElement>('.task-card[data-task-id]'))
+  const draggingSet = new Set(draggingTaskIds.value)
+  const candidateEls = cardEls.filter(el => {
+    const id = el.dataset.taskId
+    return id && !draggingSet.has(id)
+  })
+  if (candidateEls.length === 0) {
+    dropTargetId.value = null
+    return
+  }
+
+  let closestId: string | null = null
+  let closestPos: 'before' | 'after' = 'before'
+  let minDistance = Number.POSITIVE_INFINITY
+
+  for (const el of candidateEls) {
+    const rect = el.getBoundingClientRect()
+    const midY = rect.top + rect.height / 2
+    const dist = Math.abs(clientY - midY)
+    if (dist < minDistance) {
+      minDistance = dist
+      closestId = el.dataset.taskId || null
+      closestPos = clientY < midY ? 'before' : 'after'
+    }
+  }
+
+  dropTargetId.value = closestId
+  dropPosition.value = closestPos
+
+  // Auto-scroll page container near top/bottom viewport edges
+  const scrollContainer = queueContainerRef.value.closest('.page-content') as HTMLElement | null
+  if (scrollContainer) {
+    const sRect = scrollContainer.getBoundingClientRect()
+    const edgeThreshold = 48
+    if (clientY < sRect.top + edgeThreshold) {
+      scrollContainer.scrollTop -= 10
+    } else if (clientY > sRect.bottom - edgeThreshold) {
+      scrollContainer.scrollTop += 10
+    }
+  }
+}
+
+function handleGlobalPointerMove(event: PointerEvent) {
+  if (!dragPendingTaskId && !isDragging.value) return
+  dragPointerX.value = event.clientX
+  dragPointerY.value = event.clientY
+
+  if (!isDragging.value && dragPendingTaskId) {
+    const dy = Math.abs(event.clientY - dragStartY)
+    const dx = Math.abs(event.clientX - dragStartX)
+    if (dy < 4 && dx < 4) return
+    draggingTaskIds.value = resolveDragGroupIds(dragPendingTaskId)
+    isDragging.value = true
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'grabbing'
+  }
+
+  if (isDragging.value) {
+    updateDropTargetFromPointer(event.clientY)
+  }
+}
+
+function resetTaskDrag() {
+  dragPendingTaskId = null
+  isDragging.value = false
+  draggingTaskIds.value = []
+  dropTargetId.value = null
+  window.removeEventListener('pointermove', handleGlobalPointerMove)
+  window.removeEventListener('pointerup', handleGlobalPointerUp)
+  window.removeEventListener('pointercancel', resetTaskDrag)
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+}
+
+function handleGlobalPointerUp() {
+  const wasDragging = isDragging.value
+  const movingIds = [...draggingTaskIds.value]
+  const targetId = dropTargetId.value
+  const position = dropPosition.value
+
+  resetTaskDrag()
+
+  if (wasDragging && movingIds.length > 0 && targetId) {
+    emit('move-tasks', movingIds, { type: 'drop', targetId, position })
+  }
+}
+
+const dropTargetLabel = computed(() => {
+  if (!isDragging.value || !dropTargetId.value) return ''
+  const pos = getQueuePosition(dropTargetId.value)
+  return dropPosition.value === 'before' ? `排至 #${pos} 前` : `排至 #${pos} 后`
+})
 
 function isTaskSelected(id: string) {
   return selectedIds.value.has(id)
@@ -223,6 +401,21 @@ function handleKeydown(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a' && filteredTasks.value.length > 0) {
     event.preventDefault()
     selectAllVisible()
+    return
+  }
+  if (event.altKey && selectionSummary.value.selectedCount > 0) {
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      if (event.shiftKey && selectionSummary.value.canMoveTop) triggerBatchMove('top')
+      else if (!event.shiftKey && selectionSummary.value.canMoveUp) triggerBatchMove('up')
+      return
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      if (event.shiftKey && selectionSummary.value.canMoveBottom) triggerBatchMove('bottom')
+      else if (!event.shiftKey && selectionSummary.value.canMoveDown) triggerBatchMove('down')
+      return
+    }
   }
 }
 
@@ -232,11 +425,12 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  resetTaskDrag()
 })
 </script>
 
 <template>
-  <div ref="queueContainerRef" class="queue-container">
+  <div ref="queueContainerRef" class="queue-container" :class="{ 'is-dragging-active': isDragging }">
     <!-- Queue Header & Action Bar -->
     <div class="queue-header">
       <div class="filter-tabs">
@@ -348,6 +542,54 @@ onUnmounted(() => {
       </div>
 
       <div class="batch-right">
+        <div class="batch-order-group" role="group" aria-label="调整下载顺序">
+          <button
+            type="button"
+            class="btn-secondary batch-action-btn batch-prioritize-btn"
+            :disabled="batchBusy || !selectionSummary.canMoveTop"
+            title="置顶并优先下载 (Option+Shift+↑)"
+            @click="triggerBatchMove('top')"
+          >
+            <ArrowUpToLine :size="13" />
+            <span>优先置顶</span>
+          </button>
+
+          <div class="batch-step-pill">
+            <button
+              type="button"
+              class="batch-step-btn"
+              :disabled="batchBusy || !selectionSummary.canMoveUp"
+              title="上移一位 (Option+↑)"
+              aria-label="上移一位"
+              @click="triggerBatchMove('up')"
+            >
+              <ArrowUp :size="13" />
+            </button>
+            <button
+              type="button"
+              class="batch-step-btn"
+              :disabled="batchBusy || !selectionSummary.canMoveDown"
+              title="下移一位 (Option+↓)"
+              aria-label="下移一位"
+              @click="triggerBatchMove('down')"
+            >
+              <ArrowDown :size="13" />
+            </button>
+            <button
+              type="button"
+              class="batch-step-btn"
+              :disabled="batchBusy || !selectionSummary.canMoveBottom"
+              title="移至队尾 (Option+Shift+↓)"
+              aria-label="移至队尾"
+              @click="triggerBatchMove('bottom')"
+            >
+              <ArrowDownToLine :size="13" />
+            </button>
+          </div>
+        </div>
+
+        <span class="batch-divider" aria-hidden="true"></span>
+
         <button
           type="button"
           class="btn-secondary batch-action-btn batch-resume-btn"
@@ -385,10 +627,18 @@ onUnmounted(() => {
       <div
         v-for="task in filteredTasks"
         :key="task.id"
+        :data-task-id="task.id"
         class="task-card"
         :class="[
           'status-' + task.status,
-          { 'is-compact': viewMode === 'compact', 'is-selectable': selectionMode, 'is-selected': isTaskSelected(task.id) }
+          {
+            'is-compact': viewMode === 'compact',
+            'is-selectable': selectionMode,
+            'is-selected': isTaskSelected(task.id),
+            'is-dragging': isTaskBeingDragged(task.id),
+            'is-drop-before': isDragging && dropTargetId === task.id && dropPosition === 'before',
+            'is-drop-after': isDragging && dropTargetId === task.id && dropPosition === 'after'
+          }
         ]"
         @click="handleTaskCardClick(task.id, $event)"
       >
@@ -404,6 +654,19 @@ onUnmounted(() => {
           <span class="queue-check-box" :class="{ checked: isTaskSelected(task.id) }">
             <Check v-if="isTaskSelected(task.id)" :size="12" :stroke-width="3" />
           </span>
+        </button>
+
+        <button
+          type="button"
+          class="task-order-slot"
+          :disabled="filteredTasks.length <= 1 || batchBusy"
+          :title="filteredTasks.length > 1 ? `队列序号 #${getQueuePosition(task.id)} · 按住拖拽调整顺序` : `队列序号 #${getQueuePosition(task.id)}`"
+          :aria-label="`队列序号 ${getQueuePosition(task.id)}，按住拖拽调整顺序`"
+          @pointerdown="startTaskDrag(task.id, $event)"
+          @click.stop
+        >
+          <span class="order-index">{{ getQueuePosition(task.id) }}</span>
+          <GripVertical v-if="filteredTasks.length > 1" :size="14" class="order-grip" />
         </button>
 
         <div v-if="viewMode !== 'compact'" class="task-cover-box">
@@ -507,6 +770,18 @@ onUnmounted(() => {
         <!-- Task Actions -->
         <div class="task-btn-group">
           <button
+            type="button"
+            class="btn-icon task-btn prioritize-btn"
+            :class="{ 'is-hidden-action': !canPrioritizeSingleTask(task) }"
+            :disabled="!canPrioritizeSingleTask(task) || batchBusy"
+            title="置顶优先下载"
+            aria-label="置顶优先下载"
+            @click="triggerSinglePrioritize(task.id)"
+          >
+            <ArrowUpToLine :size="15" />
+          </button>
+
+          <button
             v-if="task.status === 'downloading' || task.status === 'queued'"
             class="btn-icon task-btn"
             @click="emit('pause-task', task.id)"
@@ -560,6 +835,18 @@ onUnmounted(() => {
       <h3 class="empty-title">当前没有下载任务</h3>
       <p class="empty-desc">在「解析下载」中输入视频链接并选择分集开始下载吧</p>
     </div>
+
+    <!-- Floating Drag Indicator Pill -->
+    <Teleport to="body">
+      <div
+        v-if="isDragging"
+        class="queue-drag-floating-pill"
+        :style="{ left: `${dragPointerX + 14}px`, top: `${dragPointerY - 14}px` }"
+      >
+        <span class="drag-pill-count">移动 {{ draggingTaskIds.length }} 个任务</span>
+        <span v-if="dropTargetLabel" class="drag-pill-target">{{ dropTargetLabel }}</span>
+      </div>
+    </Teleport>
 
     <!-- Batch Delete Confirmation Modal -->
     <div v-if="showBatchDeleteModal" class="modal-overlay" @click.self="showBatchDeleteModal = false">
@@ -774,6 +1061,64 @@ onUnmounted(() => {
   flex-wrap: wrap;
 }
 
+.batch-order-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.batch-prioritize-btn:not(:disabled) {
+  color: var(--bili-pink);
+  border-color: rgba(251, 114, 153, 0.32);
+  background: rgba(251, 114, 153, 0.08);
+}
+
+.batch-prioritize-btn:not(:disabled):hover {
+  background: rgba(251, 114, 153, 0.16);
+  border-color: rgba(251, 114, 153, 0.52);
+}
+
+.batch-step-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 2px;
+  gap: 1px;
+  border-radius: var(--radius-xs);
+  background: var(--segmented-track-bg);
+  border: 1px solid var(--border-subtle);
+}
+
+.batch-step-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.batch-step-btn:hover:not(:disabled) {
+  background: var(--segmented-active-bg);
+  color: var(--text-primary);
+}
+
+.batch-step-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.batch-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border-subtle);
+  margin: 0 2px;
+}
+
 .batch-action-btn {
   height: 28px;
   padding: 0 10px;
@@ -842,15 +1187,16 @@ onUnmounted(() => {
 }
 
 .task-card {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 12px 14px;
+  gap: 12px;
+  padding: 12px 14px 12px 10px;
   background: var(--bg-card);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-md);
   box-shadow: var(--surface-highlight), var(--shadow-sm);
-  transition: background var(--transition-fast);
+  transition: background var(--transition-fast), opacity var(--transition-fast);
 }
 
 .task-card:hover {
@@ -865,6 +1211,103 @@ onUnmounted(() => {
 .task-card.is-selected {
   background: var(--episode-selected-bg);
   border-color: var(--border-hover);
+}
+
+.task-card.is-dragging {
+  opacity: 0.42;
+}
+
+.task-card.is-drop-before::before,
+.task-card.is-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  background: var(--bili-pink);
+  border-radius: 2px;
+  box-shadow: 0 0 8px rgba(251, 114, 153, 0.55);
+  pointer-events: none;
+  z-index: 6;
+}
+
+.task-card.is-drop-before::before {
+  top: -6px;
+}
+
+.task-card.is-drop-after::after {
+  bottom: -6px;
+}
+
+.task-card.is-compact.is-drop-before::before {
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+.task-card.is-compact.is-drop-after::after {
+  bottom: 0;
+  left: 0;
+  right: 0;
+}
+
+.task-order-slot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.task-order-slot:disabled {
+  cursor: default;
+}
+
+.task-order-slot:not(:disabled):hover {
+  background: var(--neutral-06);
+  color: var(--text-primary);
+}
+
+.task-order-slot:not(:disabled):active {
+  cursor: grabbing;
+}
+
+.order-index {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  transition: opacity 0.14s ease;
+}
+
+.order-grip {
+  position: absolute;
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+
+.task-card:hover .task-order-slot:not(:disabled) .order-index,
+.queue-container.is-dragging-active .task-order-slot:not(:disabled) .order-index {
+  opacity: 0;
+}
+
+.task-card:hover .task-order-slot:not(:disabled) .order-grip,
+.queue-container.is-dragging-active .task-order-slot:not(:disabled) .order-grip {
+  opacity: 0.78;
+}
+
+.task-order-slot:not(:disabled):hover .order-grip {
+  opacity: 1;
 }
 
 .task-list.is-compact {
@@ -1195,8 +1638,53 @@ onUnmounted(() => {
   height: 30px;
 }
 
+.prioritize-btn {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease, color var(--transition-fast), background var(--transition-fast);
+}
+
+.task-card:hover .prioritize-btn:not(.is-hidden-action),
+.prioritize-btn:not(.is-hidden-action):focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.prioritize-btn:hover:not(:disabled) {
+  color: var(--bili-pink);
+  background: rgba(251, 114, 153, 0.14);
+}
+
 .delete-btn:hover {
   color: var(--danger);
+}
+
+.queue-drag-floating-pill {
+  position: fixed;
+  z-index: 2000;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--bg-modal);
+  border: 1px solid rgba(251, 114, 153, 0.45);
+  box-shadow: var(--shadow-md);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.drag-pill-count {
+  color: var(--bili-pink);
+}
+
+.drag-pill-target {
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Empty State */
