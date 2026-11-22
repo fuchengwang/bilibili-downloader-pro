@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,6 +10,18 @@ import (
 	"sync"
 	"time"
 )
+
+var errAllSourcesRejected = errors.New("all candidate sources rejected")
+
+var singleSourceBackoff = []time.Duration{
+	200 * time.Millisecond,
+	400 * time.Millisecond,
+	800 * time.Millisecond,
+	1200 * time.Millisecond,
+	1600 * time.Millisecond,
+	2000 * time.Millisecond,
+	2500 * time.Millisecond,
+}
 
 // Each manager shares the connection budget across tracks and tasks. Waiting
 // for a slot does not consume a CDN read/header timeout.
@@ -27,10 +40,16 @@ func (b connectionBudget) acquire(ctx context.Context) (func(), error) {
 }
 
 type sourceState struct {
-	url      string
-	failures int
-	ready    time.Time
-	missing  bool
+	url          string
+	failures     int
+	ready        time.Time
+	demotedUntil time.Time
+	missing      bool
+	rejected     bool
+}
+
+func (s sourceState) preferredAfter() time.Time {
+	return laterTime(s.ready, s.demotedUntil)
 }
 
 // Shared by all workers of one track. URL refresh is single flight and failed
@@ -53,34 +72,61 @@ func newSourcePool(urls []string, refresh URLRefresher) *sourcePool {
 
 func (p *sourcePool) next(ctx context.Context) (string, error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		p.mu.Lock()
 		if len(p.sources) == 0 {
 			p.mu.Unlock()
 			return "", fmt.Errorf("无有效下载 URL")
 		}
 		best := -1
+		available := 0
+		hasRejected := false
+		now := time.Now()
 		for i := range p.sources {
-			if p.sources[i].missing {
+			if p.sources[i].rejected {
+				hasRejected = true
+			}
+			if p.sources[i].missing || p.sources[i].rejected {
 				continue
 			}
+			available++
 			// Preserve the API's preference once a source's cooldown expires.
 			// Comparing timestamps alone makes an untouched backup (zero time)
 			// win forever after a single transient error on the primary.
-			if !p.sources[i].ready.After(time.Now()) {
+			ready := p.sources[i].preferredAfter()
+			if !ready.After(now) {
 				best = i
 				break
 			}
-			if best < 0 || p.sources[i].ready.Before(p.sources[best].ready) {
+			if best < 0 || ready.Before(p.sources[best].preferredAfter()) {
 				best = i
 			}
 		}
 		if best < 0 {
+			refresh := p.refresh != nil && (p.refreshing != nil || time.Since(p.refreshed) >= time.Second)
 			p.mu.Unlock()
-			return "", fmt.Errorf("媒体请求 HTTP 404：所有候选地址均未找到媒体")
+			if refresh {
+				if err := p.refreshURLs(ctx, ""); err != nil {
+					return "", fmt.Errorf("刷新下载地址失败: %w", err)
+				}
+				continue
+			}
+			if hasRejected {
+				return "", errAllSourcesRejected
+			}
+			return "", &mediaHTTPError{code: http.StatusNotFound, detail: "：所有候选地址均未找到媒体"}
 		}
 		s := p.sources[best]
 		p.mu.Unlock()
-		if delay := time.Until(s.ready); delay > 0 {
+		ready := s.preferredAfter()
+		// Demotion is a preference. A slow node can still make progress if
+		// all other candidates are gone. Respect ordinary retry delays.
+		if available == 1 {
+			ready = s.ready
+		}
+		if delay := time.Until(ready); delay > 0 {
 			if err := waitForRetry(ctx, delay); err != nil {
 				return "", err
 			}
@@ -88,6 +134,39 @@ func (p *sourcePool) next(ctx context.Context) (string, error) {
 		}
 		return s.url, nil
 	}
+}
+
+func (p *sourcePool) hasHealthyAlternativeLocked(excludeURL string, now time.Time) bool {
+	for i := range p.sources {
+		s := &p.sources[i]
+		if s.url != excludeURL && !s.missing && !s.rejected && !s.preferredAfter().After(now) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *sourcePool) reject(url string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.sources {
+		if p.sources[i].url == url {
+			p.sources[i].rejected = true
+		}
+	}
+}
+
+func (p *sourcePool) candidateURLs() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	urls := make([]string, 0, len(p.sources))
+	for i := range p.sources {
+		s := &p.sources[i]
+		if !s.missing && !s.rejected {
+			urls = append(urls, s.url)
+		}
+	}
+	return urls
 }
 
 func (p *sourcePool) notFound(url string) {
@@ -103,14 +182,41 @@ func (p *sourcePool) notFound(url string) {
 func (p *sourcePool) failed(url string, delay time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.failedLocked(url, delay, time.Now())
+}
+
+func (p *sourcePool) demote(url string, preferDelay time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	if preferDelay > 0 && p.hasHealthyAlternativeLocked(url, now) {
+		for i := range p.sources {
+			s := &p.sources[i]
+			if s.url == url {
+				s.failures++
+				s.demotedUntil = laterTime(s.demotedUntil, now.Add(preferDelay))
+			}
+		}
+		return
+	}
+	p.failedLocked(url, 0, now)
+}
+
+func (p *sourcePool) failedLocked(url string, delay time.Duration, now time.Time) {
+	hasAlt := delay <= 0 && p.hasHealthyAlternativeLocked(url, now)
 	for i := range p.sources {
 		s := &p.sources[i]
 		if s.url == url {
 			s.failures++
-			if delay <= 0 {
-				delay = time.Duration(1<<min(s.failures-1, 4)) * 100 * time.Millisecond
+			d := delay
+			if d <= 0 {
+				if hasAlt {
+					d = time.Duration(1<<min(s.failures-1, 4)) * 500 * time.Millisecond
+				} else {
+					d = singleSourceBackoff[min(s.failures-1, len(singleSourceBackoff)-1)]
+				}
 			}
-			s.ready = time.Now().Add(delay)
+			s.ready = laterTime(s.ready, now.Add(d))
 		}
 	}
 }
@@ -118,12 +224,20 @@ func (p *sourcePool) failed(url string, delay time.Duration) {
 func (p *sourcePool) succeeded(url string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	now := time.Now()
 	for i := range p.sources {
-		if p.sources[i].url == url {
+		if p.sources[i].url == url && !p.sources[i].ready.After(now) {
 			p.sources[i].failures = 0
 			p.sources[i].ready = time.Time{}
 		}
 	}
+}
+
+func laterTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 func (p *sourcePool) refreshURLs(ctx context.Context, failed string) error {
@@ -151,7 +265,9 @@ func (p *sourcePool) refreshURLs(ctx context.Context, failed string) error {
 	urls, err := p.refresh(ctx)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.refreshed = time.Now()
+	if ctx.Err() == nil {
+		p.refreshed = time.Now()
+	}
 	if clean := filterStreamURLs(urls); err == nil && len(clean) > 0 {
 		next := make([]sourceState, 0, len(clean))
 		for _, u := range clean {

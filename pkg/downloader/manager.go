@@ -5,14 +5,20 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"bilibili_downloader/pkg/bilibili"
@@ -886,18 +892,78 @@ func formatFriendlyError(err error) string {
 	if err == nil {
 		return ""
 	}
+	var requestErr *url.Error
+	if errors.As(err, &requestErr) && requestErr.Err != nil {
+		err = requestErr.Err
+	}
 	if isDiskSpaceError(err) {
 		return diskSpaceMessage
 	}
+	var status *mediaHTTPError
+	if errors.As(err, &status) {
+		if isMediaAuthStatus(status.code) {
+			return "下载地址已过期，请点击重试重新获取"
+		}
+		switch status.code {
+		case http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed,
+			http.StatusRequestedRangeNotSatisfiable, http.StatusTooManyRequests,
+			http.StatusUnavailableForLegalReasons, http.StatusInternalServerError,
+			http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return "视频服务器暂时繁忙，请稍后点击重试"
+		}
+	}
 	errStr := strings.ToLower(err.Error())
-	if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded") {
-		return "网络连接超时，请点击右侧重试按钮继续下载"
+	if errors.Is(err, os.ErrPermission) ||
+		strings.Contains(errStr, "permission denied") ||
+		strings.Contains(errStr, "access is denied") ||
+		strings.Contains(errStr, "read-only file system") {
+		return "目标文件夹没有写入权限，请检查保存路径后重试"
 	}
-	if strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "eof") || strings.Contains(errStr, "broken pipe") {
-		return "网络连接中断，请点击重试恢复下载"
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) ||
+		strings.Contains(errStr, "保存媒体数据失败") ||
+		strings.Contains(errStr, "no such file or directory") ||
+		strings.Contains(errStr, "input/output error") {
+		return "无法写入下载文件，请检查保存目录或磁盘状态后重试"
 	}
-	if strings.Contains(errStr, "403") {
-		return "下载直链已过期，请点击重试自动刷新"
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ENETUNREACH) ||
+		errors.Is(err, syscall.EHOSTUNREACH) ||
+		strings.Contains(errStr, "no such host") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "network is unreachable") ||
+		strings.Contains(errStr, "host is unreachable") ||
+		strings.Contains(errStr, "proxyconnect") ||
+		strings.Contains(errStr, "x509:") ||
+		strings.Contains(errStr, "tls:") {
+		return "无法连接网络，请检查网络连接或代理设置后重试"
 	}
-	return "下载异常中断，请点击右侧重试按钮恢复"
+	if errors.Is(err, errIdleStream) ||
+		errors.Is(err, errSlowStream) ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "deadline exceeded") ||
+		strings.Contains(errStr, "超过读取等待时间") ||
+		strings.Contains(errStr, "持续低速") {
+		return "网络连接超时或过慢，请检查网络后点击重试继续下载"
+	}
+	if errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNABORTED) ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "eof") ||
+		strings.Contains(errStr, "broken pipe") {
+		return "网络连接中断，请点击重试继续下载"
+	}
+	if errors.Is(err, errAllSourcesRejected) ||
+		strings.Contains(errStr, "媒体响应类型异常") ||
+		strings.Contains(errStr, "不支持的内容编码") ||
+		strings.Contains(errStr, "媒体范围或内容反复变化") ||
+		strings.Contains(errStr, "刷新后的媒体轨道发生变化") {
+		return "视频服务器暂时繁忙，请稍后点击重试"
+	}
+	return "下载意外中断，请检查网络后点击重试"
 }

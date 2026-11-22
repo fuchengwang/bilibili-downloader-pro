@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -688,7 +689,7 @@ func TestFormatFriendlyError_Categorization(t *testing.T) {
 		t.Errorf("Reset error mapping failed: %s", formatFriendlyError(resetErr))
 	}
 
-	forbiddenErr := fmt.Errorf("HTTP 403 Forbidden")
+	forbiddenErr := &mediaHTTPError{code: http.StatusForbidden}
 	if !strings.Contains(formatFriendlyError(forbiddenErr), "过期") {
 		t.Errorf("403 error mapping failed: %s", formatFriendlyError(forbiddenErr))
 	}
