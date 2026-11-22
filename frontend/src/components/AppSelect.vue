@@ -2,6 +2,10 @@
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { ChevronDown, Check } from 'lucide-vue-next'
 
+defineOptions({
+  inheritAttrs: false
+})
+
 export interface SelectOption {
   value: string | number
   label: string
@@ -173,6 +177,7 @@ onUnmounted(() => {
 
 <template>
   <button
+    v-bind="$attrs"
     :id="id"
     ref="triggerRef"
     type="button"

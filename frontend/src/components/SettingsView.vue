@@ -427,13 +427,14 @@ const limitUnitOptions = [
                   @blur="handleSave"
                   @keydown.enter="handleSave"
                 />
-                <AppSelect
-                  :model-value="limitUnit"
-                  :options="limitUnitOptions"
-                  class="speed-limit-unit"
-                  aria-label="下载速度单位"
-                  @update:model-value="val => { limitUnit = val === 'KB' ? 'KB' : 'MB'; handleLimitUnitChange() }"
-                />
+                <div class="speed-limit-unit">
+                  <AppSelect
+                    :model-value="limitUnit"
+                    :options="limitUnitOptions"
+                    aria-label="下载速度单位"
+                    @update:model-value="val => { limitUnit = val === 'KB' ? 'KB' : 'MB'; handleLimitUnitChange() }"
+                  />
+                </div>
               </div>
               <p v-if="limitError" class="limit-error" role="alert">{{ limitError }}</p>
             </div>
@@ -784,11 +785,11 @@ const limitUnitOptions = [
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 240px;
+  width: 248px;
 }
 
 .speed-limit-input input {
-  min-width: 0;
+  min-width: 120px;
   flex: 1;
 }
 
