@@ -33,8 +33,10 @@ import {
 const props = withDefaults(defineProps<{
   tasks: downloader.DownloadTask[]
   batchBusy?: boolean
+  viewMode?: 'comfortable' | 'compact'
 }>(), {
-  batchBusy: false
+  batchBusy: false,
+  viewMode: 'comfortable'
 })
 
 const emit = defineEmits<{
@@ -50,6 +52,7 @@ const emit = defineEmits<{
   (e: 'batch-pause', ids: string[]): void
   (e: 'batch-resume', ids: string[]): void
   (e: 'batch-delete', ids: string[]): void
+  (e: 'update:view-mode', mode: 'comfortable' | 'compact'): void
   (e: 'clear-completed'): void
   (e: 'open-login'): void
 }>()
@@ -60,27 +63,6 @@ const selectionMode = ref(false)
 const selectedIds = ref<Set<string>>(new Set())
 const lastAnchorId = ref<string | null>(null)
 const showBatchDeleteModal = ref(false)
-
-function readSavedViewMode(): 'comfortable' | 'compact' {
-  try {
-    return typeof localStorage !== 'undefined' && localStorage.getItem('bbdown-queue-view') === 'compact'
-      ? 'compact'
-      : 'comfortable'
-  } catch {
-    return 'comfortable'
-  }
-}
-
-const viewMode = ref<'comfortable' | 'compact'>(readSavedViewMode())
-
-function setViewMode(mode: 'comfortable' | 'compact') {
-  viewMode.value = mode
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem('bbdown-queue-view', mode)
-  } catch {
-    // ignore storage errors
-  }
-}
 
 function isLegacyPlaybackError(task: downloader.DownloadTask) {
   return !task.errorKind && /解析媒体流失败|DASH|playurl/.test(task.errorMsg || '')
@@ -297,7 +279,7 @@ onUnmounted(() => {
             :class="{ active: viewMode === 'comfortable' }"
             title="卡片视图"
             aria-label="卡片视图"
-            @click="setViewMode('comfortable')"
+            @click="emit('update:view-mode', 'comfortable')"
           >
             <LayoutList :size="13" />
           </button>
@@ -307,7 +289,7 @@ onUnmounted(() => {
             :class="{ active: viewMode === 'compact' }"
             title="紧凑列表"
             aria-label="紧凑列表"
-            @click="setViewMode('compact')"
+            @click="emit('update:view-mode', 'compact')"
           >
             <List :size="13" />
           </button>
@@ -868,7 +850,7 @@ onUnmounted(() => {
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-md);
   box-shadow: var(--surface-highlight), var(--shadow-sm);
-  transition: background var(--transition-fast), border-color var(--transition-fast);
+  transition: background var(--transition-fast);
 }
 
 .task-card:hover {
@@ -898,7 +880,7 @@ onUnmounted(() => {
   padding: 8px 14px;
   gap: 12px;
   background: transparent;
-  border: none;
+  border: 0 solid transparent;
   border-radius: 0;
   box-shadow: none;
 }

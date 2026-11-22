@@ -569,6 +569,27 @@ async function onResumeAll() {
 
 const queueBatchBusy = ref(false)
 
+function readSavedListViewMode(): 'comfortable' | 'compact' {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem('bbdown-list-view') === 'compact'
+      ? 'compact'
+      : 'comfortable'
+  } catch {
+    return 'comfortable'
+  }
+}
+
+const listViewMode = ref<'comfortable' | 'compact'>(readSavedListViewMode())
+
+function setListViewMode(mode: 'comfortable' | 'compact') {
+  listViewMode.value = mode
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem('bbdown-list-view', mode)
+  } catch {
+    // ignore storage errors
+  }
+}
+
 async function runBatchQueueAction(
   ids: string[],
   action: (id: string) => Promise<void>
@@ -755,6 +776,8 @@ function handleLicenseDeactivated(key: string) {
           <DownloadQueue
             :tasks="tasks"
             :batch-busy="queueBatchBusy"
+            :view-mode="listViewMode"
+            @update:view-mode="setListViewMode"
             @open-login="showLoginModal = true"
             @pause-task="onPauseTask"
             @resume-task="onResumeTask"
@@ -777,6 +800,8 @@ function handleLicenseDeactivated(key: string) {
             :tasks="tasks"
             :active="activeTab === 'history'"
             :batch-busy="queueBatchBusy"
+            :view-mode="listViewMode"
+            @update:view-mode="setListViewMode"
             @open-file="onOpenFile"
             @open-dir="onOpenDir"
             @delete-task="onDeleteTask"

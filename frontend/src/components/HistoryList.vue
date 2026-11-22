@@ -31,8 +31,10 @@ const props = withDefaults(defineProps<{
   tasks: downloader.DownloadTask[]
   active: boolean
   batchBusy?: boolean
+  viewMode?: 'comfortable' | 'compact'
 }>(), {
-  batchBusy: false
+  batchBusy: false,
+  viewMode: 'comfortable'
 })
 
 const emit = defineEmits<{
@@ -42,6 +44,7 @@ const emit = defineEmits<{
   (e: 'request-delete', task: downloader.DownloadTask): void
   (e: 'clear-completed', deleteFiles?: boolean): void
   (e: 'batch-delete', ids: string[], deleteFiles: boolean): void
+  (e: 'update:view-mode', mode: 'comfortable' | 'compact'): void
   (e: 'records-removed', ids: string[]): void
 }>()
 
@@ -51,27 +54,6 @@ const checking = ref(false)
 const cleaning = ref(false)
 const cleanupError = ref('')
 let checkVersion = 0
-
-function readSavedViewMode(): 'comfortable' | 'compact' {
-  try {
-    return typeof localStorage !== 'undefined' && localStorage.getItem('bbdown-history-view') === 'compact'
-      ? 'compact'
-      : 'comfortable'
-  } catch {
-    return 'comfortable'
-  }
-}
-
-const viewMode = ref<'comfortable' | 'compact'>(readSavedViewMode())
-
-function setViewMode(mode: 'comfortable' | 'compact') {
-  viewMode.value = mode
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem('bbdown-history-view', mode)
-  } catch {
-    // ignore storage errors
-  }
-}
 
 const selectionMode = ref(false)
 const selectedIds = ref<Set<string>>(new Set())
@@ -326,7 +308,7 @@ function confirmClearAll() {
             :class="{ active: viewMode === 'comfortable' }"
             title="卡片视图"
             aria-label="卡片视图"
-            @click="setViewMode('comfortable')"
+            @click="emit('update:view-mode', 'comfortable')"
           >
             <LayoutList :size="13" />
           </button>
@@ -336,7 +318,7 @@ function confirmClearAll() {
             :class="{ active: viewMode === 'compact' }"
             title="紧凑列表"
             aria-label="紧凑列表"
-            @click="setViewMode('compact')"
+            @click="emit('update:view-mode', 'compact')"
           >
             <List :size="13" />
           </button>
@@ -936,7 +918,7 @@ function confirmClearAll() {
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-md);
   box-shadow: var(--surface-highlight), var(--shadow-sm);
-  transition: background var(--transition-fast), border-color var(--transition-fast);
+  transition: background var(--transition-fast);
 }
 
 .history-card:hover {
@@ -957,7 +939,7 @@ function confirmClearAll() {
   padding: 8px 14px;
   gap: 12px;
   background: transparent;
-  border: none;
+  border: 0 solid transparent;
   border-radius: 0;
   box-shadow: none;
 }
