@@ -459,12 +459,23 @@ function confirmClearAll() {
         </div>
 
         <div class="content-box">
-          <div class="title-row">
-            <span v-if="viewMode === 'compact' && task.qualityLabel" class="compact-quality">{{ task.qualityLabel }}</span>
-            <span class="item-title" :title="task.partTitle || task.title">{{ (task as any).partCount > 1 ? `P${(task as any).partPage} · ` : '' }}{{ task.partTitle || task.title }}</span>
-            <span v-if="task.partTitle && task.partTitle !== task.title" class="part-badge" :title="(task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? `${task.title} › ${(task as any).videoTitle}` : task.title">
-              {{ (task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? (task as any).videoTitle : task.title }}
-            </span>
+          <div class="title-col">
+            <div class="title-row">
+              <span class="item-title" :title="task.partTitle || task.title">{{ (task as any).partCount > 1 ? `P${(task as any).partPage} · ` : '' }}{{ task.partTitle || task.title }}</span>
+              <span v-if="viewMode !== 'compact' && task.partTitle && task.partTitle !== task.title" class="part-badge" :title="(task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? `${task.title} › ${(task as any).videoTitle}` : task.title">
+                {{ (task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? (task as any).videoTitle : task.title }}
+              </span>
+            </div>
+            <div v-if="viewMode === 'compact' && (task.qualityLabel || (task.partTitle && task.partTitle !== task.title))" class="compact-subline">
+              <span v-if="task.qualityLabel" class="compact-quality">{{ task.qualityLabel }}</span>
+              <span
+                v-if="task.partTitle && task.partTitle !== task.title"
+                class="compact-collection"
+                :title="(task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? `${task.title} › ${(task as any).videoTitle}` : task.title"
+              >
+                {{ (task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? (task as any).videoTitle : task.title }}
+              </span>
+            </div>
           </div>
 
           <div class="meta-row">
@@ -943,8 +954,8 @@ function confirmClearAll() {
 }
 
 .history-card.is-compact {
-  padding: 9px 14px;
-  gap: 10px;
+  padding: 8px 14px;
+  gap: 12px;
   background: transparent;
   border: none;
   border-radius: 0;
@@ -963,13 +974,20 @@ function confirmClearAll() {
   background: var(--episode-selected-bg);
 }
 
+.title-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
 .history-card.is-compact .content-box {
   flex-direction: row;
   align-items: center;
   gap: 12px;
 }
 
-.history-card.is-compact .title-row {
+.history-card.is-compact .title-col {
   flex: 1;
   min-width: 0;
 }
@@ -977,6 +995,18 @@ function confirmClearAll() {
 .history-card.is-compact .meta-row {
   flex-shrink: 0;
   gap: 10px;
+}
+
+.history-card.is-compact .size-meta {
+  width: 72px;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+.history-card.is-compact .date-meta {
+  width: 96px;
+  justify-content: flex-end;
+  white-space: nowrap;
 }
 
 .history-card.is-compact .status-meta {
@@ -1000,12 +1030,27 @@ function confirmClearAll() {
   height: 26px;
 }
 
+.compact-subline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.compact-collection {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .compact-quality {
   font-size: 10px;
   font-weight: 600;
   padding: 1px 5px;
   border-radius: 4px;
-  background: var(--neutral-08);
+  background: var(--neutral-06);
   color: var(--text-secondary);
   white-space: nowrap;
   flex-shrink: 0;

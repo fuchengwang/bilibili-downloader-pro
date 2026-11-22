@@ -439,12 +439,23 @@ onUnmounted(() => {
         </div>
 
         <div class="task-info">
-          <div class="task-title-row">
-            <span v-if="viewMode === 'compact' && task.qualityLabel" class="compact-quality">{{ task.qualityLabel }}</span>
-            <span class="task-title" :title="task.partTitle || task.title">{{ (task as any).partCount > 1 ? `P${(task as any).partPage} · ` : '' }}{{ task.partTitle || task.title }}</span>
-            <span v-if="task.partTitle && task.partTitle !== task.title" class="part-badge" :title="(task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? `${task.title} › ${(task as any).videoTitle}` : task.title">
-              {{ (task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? (task as any).videoTitle : task.title }}
-            </span>
+          <div class="task-title-col">
+            <div class="task-title-row">
+              <span class="task-title" :title="task.partTitle || task.title">{{ (task as any).partCount > 1 ? `P${(task as any).partPage} · ` : '' }}{{ task.partTitle || task.title }}</span>
+              <span v-if="viewMode !== 'compact' && task.partTitle && task.partTitle !== task.title" class="part-badge" :title="(task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? `${task.title} › ${(task as any).videoTitle}` : task.title">
+                {{ (task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? (task as any).videoTitle : task.title }}
+              </span>
+            </div>
+            <div v-if="viewMode === 'compact' && (task.qualityLabel || (task.partTitle && task.partTitle !== task.title))" class="compact-subline">
+              <span v-if="task.qualityLabel" class="compact-quality">{{ task.qualityLabel }}</span>
+              <span
+                v-if="task.partTitle && task.partTitle !== task.title"
+                class="compact-collection"
+                :title="(task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? `${task.title} › ${(task as any).videoTitle}` : task.title"
+              >
+                {{ (task as any).videoTitle && (task as any).videoTitle !== task.partTitle ? (task as any).videoTitle : task.title }}
+              </span>
+            </div>
           </div>
 
           <!-- Progress Bar -->
@@ -884,8 +895,8 @@ onUnmounted(() => {
 }
 
 .task-card.is-compact {
-  padding: 9px 14px;
-  gap: 10px;
+  padding: 8px 14px;
+  gap: 12px;
   background: transparent;
   border: none;
   border-radius: 0;
@@ -904,26 +915,59 @@ onUnmounted(() => {
   background: var(--episode-selected-bg);
 }
 
+.task-title-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
 .task-card.is-compact:not(.status-error) .task-info {
   flex-direction: row;
   align-items: center;
   gap: 12px;
 }
 
-.task-card.is-compact:not(.status-error) .task-title-row {
+.task-card.is-compact:not(.status-error) .task-title-col {
   flex: 1;
   min-width: 0;
 }
 
 .task-card.is-compact:not(.status-error) .progress-wrap {
-  width: 84px;
+  width: 72px;
   flex-shrink: 0;
 }
 
 .task-card.is-compact:not(.status-error) .metrics-row {
   flex-shrink: 0;
-  gap: 10px;
+  gap: 8px;
   justify-content: flex-end;
+}
+
+.task-card.is-compact:not(.status-error) .metrics-left {
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+
+.task-card.is-compact:not(.status-error) .status-tag {
+  width: 112px;
+  justify-content: flex-end;
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-card.is-compact:not(.status-error) .size-metric {
+  width: 126px;
+  justify-content: flex-end;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.task-card.is-compact:not(.status-error) .metrics-right {
+  width: 44px;
+  text-align: right;
+  flex-shrink: 0;
 }
 
 .task-card.is-compact .eta-metric,
@@ -936,12 +980,27 @@ onUnmounted(() => {
   height: 26px;
 }
 
+.compact-subline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.compact-collection {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .compact-quality {
   font-size: 10px;
   font-weight: 600;
   padding: 1px 5px;
   border-radius: 4px;
-  background: var(--neutral-08);
+  background: var(--neutral-06);
   color: var(--text-secondary);
   white-space: nowrap;
   flex-shrink: 0;
