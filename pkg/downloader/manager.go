@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -452,7 +453,8 @@ func (m *DownloadManager) checkAndSpawnTasks() {
 		maxCon = 3
 	}
 
-	if m.activeWorkerCountLocked() >= maxCon {
+	freeSlots := maxCon - m.activeWorkerCountLocked()
+	if freeSlots <= 0 {
 		m.mu.Unlock()
 		return
 	}
@@ -463,22 +465,21 @@ func (m *DownloadManager) checkAndSpawnTasks() {
 		ctx   context.Context
 		done  chan struct{}
 	}
-	var starts []start
-	for m.activeWorkerCountLocked() < maxCon {
-		var nextTask *DownloadTask
-		for _, t := range m.tasks {
-			if t == nil || t.Status != StatusQueued {
-				continue
-			}
-			// Keep the handle until the cancelled worker releases its files.
-			if _, running := m.workers[t.ID]; !running {
-				if nextTask == nil || t.QueueOrder < nextTask.QueueOrder {
-					nextTask = t
-				}
-			}
+	var queued []*DownloadTask
+	for _, task := range m.tasks {
+		if task != nil && task.Status == StatusQueued {
+			queued = append(queued, task)
 		}
-		if nextTask == nil {
-			break
+	}
+	sort.SliceStable(queued, func(i, j int) bool {
+		return queued[i].QueueOrder < queued[j].QueueOrder
+	})
+
+	var starts []start
+	for _, nextTask := range queued[:min(freeSlots, len(queued))] {
+		// Reserve this slot until the cancelled worker releases its files.
+		if _, running := m.workers[nextTask.ID]; running {
+			continue
 		}
 		nextTask.Status, nextTask.ErrorMsg = StatusDownloading, ""
 		token := newUUID()

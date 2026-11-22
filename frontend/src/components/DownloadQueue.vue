@@ -121,7 +121,9 @@ const filteredTasks = computed(() => {
   return activeTasks
 })
 
-const selectionSummary = computed(() => summarizeQueueSelection(filteredTasks.value, selectedIds.value))
+const selectionSummary = computed(() =>
+  summarizeQueueSelection(filteredTasks.value, selectedIds.value, allOrderedActiveTasks.value)
+)
 const batchDeletePreviewTasks = computed(() => selectionSummary.value.selectedTasks.slice(0, 4))
 
 function getQueuePosition(taskId: string): number {
@@ -145,7 +147,11 @@ function triggerBatchMove(type: 'top' | 'bottom' | 'up' | 'down') {
     emit('prioritize-tasks', ids)
     return
   }
-  emit('move-tasks', ids, { type })
+  if (type === 'bottom') {
+    emit('move-tasks', ids, { type })
+  } else {
+    emit('move-tasks', ids, { type, visibleIds: filteredTasks.value.map(t => t.id) })
+  }
 }
 
 function isTaskBeingDragged(taskId: string): boolean {
@@ -163,7 +169,7 @@ function startTaskDrag(taskId: string, event: PointerEvent) {
   dragPointerY.value = event.clientY
   window.addEventListener('pointermove', handleGlobalPointerMove)
   window.addEventListener('pointerup', handleGlobalPointerUp)
-  window.addEventListener('pointercancel', handleGlobalPointerUp)
+  window.addEventListener('pointercancel', resetTaskDrag)
 }
 
 function resolveDragGroupIds(anchorTaskId: string): string[] {
@@ -237,10 +243,14 @@ function handleGlobalPointerMove(event: PointerEvent) {
   }
 }
 
-function cleanupDragListeners() {
+function resetTaskDrag() {
+  dragPendingTaskId = null
+  isDragging.value = false
+  draggingTaskIds.value = []
+  dropTargetId.value = null
   window.removeEventListener('pointermove', handleGlobalPointerMove)
   window.removeEventListener('pointerup', handleGlobalPointerUp)
-  window.removeEventListener('pointercancel', handleGlobalPointerUp)
+  window.removeEventListener('pointercancel', resetTaskDrag)
   document.body.style.userSelect = ''
   document.body.style.cursor = ''
 }
@@ -251,11 +261,7 @@ function handleGlobalPointerUp() {
   const targetId = dropTargetId.value
   const position = dropPosition.value
 
-  dragPendingTaskId = null
-  isDragging.value = false
-  draggingTaskIds.value = []
-  dropTargetId.value = null
-  cleanupDragListeners()
+  resetTaskDrag()
 
   if (wasDragging && movingIds.length > 0 && targetId) {
     emit('move-tasks', movingIds, { type: 'drop', targetId, position })
@@ -419,7 +425,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
-  cleanupDragListeners()
+  resetTaskDrag()
 })
 </script>
 

@@ -50,7 +50,8 @@ export interface QueueSelectionSummary<T extends QueueTask> {
 }
 
 export type QueueMoveAction =
-  | { type: 'top' | 'bottom' | 'up' | 'down' }
+  | { type: 'top' | 'bottom' }
+  | { type: 'up' | 'down'; visibleIds?: readonly string[] }
   | { type: 'drop'; targetId: string; position: 'before' | 'after' }
 
 export function applyQueueOrderIds<T extends QueueTask>(tasks: T[], nextActiveOrderIds: string[]): T[] {
@@ -112,7 +113,10 @@ export function moveQueueTasks<T extends QueueTask>(
   const movingIds = orderedIds.filter(id => movingSet.has(id))
   if (movingIds.length === 0) return tasks
 
-  let nextIds = [...orderedIds]
+  const visibleSet = (action.type === 'up' || action.type === 'down') && action.visibleIds
+    ? new Set(action.visibleIds)
+    : undefined
+  let nextIds = visibleSet ? orderedIds.filter(id => visibleSet.has(id)) : [...orderedIds]
 
   if (action.type === 'top') {
     nextIds = [...movingIds, ...orderedIds.filter(id => !movingSet.has(id))]
@@ -144,6 +148,11 @@ export function moveQueueTasks<T extends QueueTask>(
     nextIds = remaining
   }
 
+  if (visibleSet) {
+    // Reuse the visible rows' positions and leave hidden rows in their slots.
+    let index = 0
+    nextIds = orderedIds.map(id => visibleSet.has(id) ? nextIds[index++] : id)
+  }
   return applyQueueOrderIds(tasks, nextIds)
 }
 
@@ -233,7 +242,8 @@ export function toggleQueueTaskSelection(
 
 export function summarizeQueueSelection<T extends QueueTask>(
   visibleTasks: T[],
-  selectedIds: ReadonlySet<string>
+  selectedIds: ReadonlySet<string>,
+  queueTasks: T[] = visibleTasks
 ): QueueSelectionSummary<T> {
   const selectedTasks = visibleTasks.filter(task => selectedIds.has(task.id))
   const pausableIds = selectedTasks.filter(isPausableQueueTask).map(task => task.id)
@@ -268,6 +278,10 @@ export function summarizeQueueSelection<T extends QueueTask>(
     }
   }
 
+  const visibleSelection = new Set(deletableIds)
+  const canMoveTop = queueTasks.slice(0, selectedCount).some(task => !visibleSelection.has(task.id))
+  const canMoveBottom = queueTasks.slice(queueTasks.length - selectedCount).some(task => !visibleSelection.has(task.id))
+
   return {
     selectedTasks,
     pausableIds,
@@ -279,7 +293,7 @@ export function summarizeQueueSelection<T extends QueueTask>(
     someSelected: selectedCount > 0 && selectedCount < totalCount,
     canMoveUp,
     canMoveDown,
-    canMoveTop: canMoveUp,
-    canMoveBottom: canMoveDown
+    canMoveTop,
+    canMoveBottom
   }
 }

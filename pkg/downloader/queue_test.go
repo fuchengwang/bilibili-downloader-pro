@@ -425,6 +425,62 @@ func TestQueuePrioritizeResumesPausedAndErrorAndNeverPreemptsMerging(t *testing.
 	}
 }
 
+func TestQueuePrioritizeAccountsForMergingTaskBehindDownload(t *testing.T) {
+	m := newTestManager(t)
+	cfg := m.cfgMgr.Get()
+	cfg.MaxConcurrent = 2
+	if err := m.cfgMgr.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := queueBatch(t, m, "A", 10, 3)
+	tasks[0].Status = StatusDownloading
+	tasks[1].Status = StatusMerging
+	m.workers[tasks[0].ID] = workerHandle{token: "download"}
+	m.workers[tasks[1].ID] = workerHandle{token: "merge"}
+
+	if err := m.PrioritizeTasks([]string{tasks[2].ID}); err != nil {
+		t.Fatal(err)
+	}
+	if tasks[1].Status != StatusMerging || m.workers[tasks[1].ID].invalidated {
+		t.Fatal("prioritizing a download interrupted the merge")
+	}
+	if got := captureQueueStarts(t, m); !reflect.DeepEqual(got, []string{"A3"}) {
+		t.Fatalf("expected A3 to take A1's slot while A2 merges, got %v", got)
+	}
+}
+
+func TestQueueRapidPrioritizeReservesSlotForWorkerStillExiting(t *testing.T) {
+	m := newTestManager(t)
+	cfg := m.cfgMgr.Get()
+	cfg.MaxConcurrent = 1
+	if err := m.cfgMgr.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := queueBatch(t, m, "A", 10, 3)
+	first, second := tasks[0], tasks[1]
+	first.Status = StatusDownloading
+	m.workers[first.ID] = workerHandle{token: "first"}
+	if err := m.PrioritizeTasks([]string{second.ID}); err != nil {
+		t.Fatal(err)
+	}
+	// A2 takes the slot while A1's cancelled worker is still exiting.
+	second.Status = StatusDownloading
+	m.workers[second.ID] = workerHandle{token: "second"}
+	if err := m.PrioritizeTasks([]string{first.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := captureQueueStarts(t, m); len(got) > 0 {
+		t.Fatalf("expected the slot to wait for A1 to release its files, started %v", got)
+	}
+	delete(m.workers, first.ID)
+	if got := captureQueueStarts(t, m); !reflect.DeepEqual(got, []string{"A1"}) {
+		t.Fatalf("expected A1 to start as soon as its old worker exits, got %v", got)
+	}
+}
+
 func TestQueueReorderPersistenceFailureRollsBackWithoutCancellingWorkers(t *testing.T) {
 	m := newTestManager(t)
 	cfg := m.cfgMgr.Get()

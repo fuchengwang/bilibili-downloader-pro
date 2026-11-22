@@ -396,19 +396,28 @@ func (m *DownloadManager) preemptOverflowDownloadingLocked(reordered []*Download
 	if maxCon <= 0 {
 		maxCon = 3
 	}
-	var preemptedIDs []string
-	slotRank := 0
+	// Merges keep their slots even when a reorder puts them at the end.
+	downloadSlots := maxCon
 	for _, task := range reordered {
-		if task.Status == StatusDownloading || task.Status == StatusMerging || task.Status == StatusQueued {
-			slotRank++
-			if slotRank > maxCon && task.Status == StatusDownloading {
-				recordBefore(task)
-				task.Status = StatusQueued
-				task.Speed = 0
-				task.SpeedStr = "0 KB/s"
-				task.ETAStr = "--"
-				preemptedIDs = append(preemptedIDs, task.ID)
-			}
+		if task.Status == StatusMerging {
+			downloadSlots--
+		}
+	}
+
+	var preemptedIDs []string
+	for _, task := range reordered {
+		if task.Status != StatusDownloading && task.Status != StatusQueued {
+			continue
+		}
+		if downloadSlots > 0 {
+			downloadSlots--
+		} else if task.Status == StatusDownloading {
+			recordBefore(task)
+			task.Status = StatusQueued
+			task.Speed = 0
+			task.SpeedStr = "0 KB/s"
+			task.ETAStr = "--"
+			preemptedIDs = append(preemptedIDs, task.ID)
 		}
 	}
 	return preemptedIDs
