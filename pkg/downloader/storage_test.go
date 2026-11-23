@@ -83,6 +83,30 @@ func TestOutputPathReservationPreservesExistingFilesAndTasks(t *testing.T) {
 	}
 }
 
+func TestCompletedDownloadUsesActualQualityForDuplicateDetection(t *testing.T) {
+	m := newTestManager(t)
+	ep := &bilibili.EpisodeInfo{CID: 10, Title: "视频"}
+	request := &DownloadRequest{Title: ep.Title, TargetQuality: "highest", TargetCodec: "auto"}
+	first, err := m.AddDownloadTask(request, ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Status, first.QualityID, first.Codec = StatusCompleted, 16, "AVC"
+	writeStorageFixture(t, first.OutputPath, []byte("finished 360p"))
+
+	exact := &DownloadRequest{Title: ep.Title, TargetQuality: "16", TargetCodec: "AVC"}
+	same, err := m.AddDownloadTask(exact, ep)
+	if err != nil || same.ID != first.ID {
+		t.Fatalf("actual 360p output not reused: %v", err)
+	}
+
+	request.ExpectedQualities = map[int64]int{10: 80}
+	higher, err := m.AddDownloadTask(request, ep)
+	if err != nil || higher.ID == first.ID || higher.Status != StatusQueued {
+		t.Fatalf("confirmed higher quality did not get its own task: %+v, %v", higher, err)
+	}
+}
+
 func TestDeletingQueuedSameNameTaskPreservesVisibleDownload(t *testing.T) {
 	m := newTestManager(t)
 	req := &DownloadRequest{Title: "same title [1080P]", TargetQuality: "80"}

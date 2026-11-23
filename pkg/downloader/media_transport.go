@@ -82,10 +82,16 @@ func recoverableRouteError(err error) bool {
 
 func (t *mediaRouteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.proxy == nil || req.Method != http.MethodGet || req.Body != nil || !isBilibiliMediaHost(req.URL.Hostname()) {
+		if downloadTraceEnabled {
+			traceMediaRoute(req, "route_start", "default", nil)
+		}
 		return t.primary.RoundTrip(req)
 	}
 	proxy, err := t.proxy(req)
 	if err != nil || proxy == nil {
+		if downloadTraceEnabled {
+			traceMediaRoute(req, "route_start", "default", err)
+		}
 		return t.primary.RoundTrip(req)
 	}
 	key := req.URL.Scheme + "://" + req.URL.Host + "|" + proxy.String()
@@ -95,6 +101,15 @@ func (t *mediaRouteTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	first, second := t.primary, t.direct
 	if preferDirect {
 		first, second = second, first
+	}
+	var alternateRoute string
+	if downloadTraceEnabled {
+		route := "proxy"
+		alternateRoute = "direct"
+		if preferDirect {
+			route, alternateRoute = "direct", "proxy"
+		}
+		traceMediaRoute(req, "route_start", route, nil)
 	}
 	resp, err := first.RoundTrip(req)
 	if err == nil {
@@ -108,6 +123,9 @@ func (t *mediaRouteTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 	// No body has been consumed and the GET has no upload body. Preserve Range,
 	// If-Range, cancellation and TLS verification on the alternative route.
+	if downloadTraceEnabled {
+		traceMediaRoute(req, "route_fallback", alternateRoute, err)
+	}
 	resp, fallbackErr := second.RoundTrip(req.Clone(req.Context()))
 	if fallbackErr == nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent) {
 		t.mu.Lock()

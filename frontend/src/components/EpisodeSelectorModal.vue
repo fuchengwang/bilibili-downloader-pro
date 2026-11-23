@@ -8,9 +8,10 @@ import {
   Download,
   Search
 } from 'lucide-vue-next'
-import { bilibili } from '../../wailsjs/go/models'
+import { bilibili, downloader } from '../../wailsjs/go/models'
 import { filterEpisodes, selectEpisodes } from '../utils/episode-selection'
 import { useEpisodePlayback } from '../utils/episode-playback'
+import { expectedEpisodeQualities, useDownloadedEpisodes } from '../utils/downloaded-episodes'
 import EpisodeSelectionMark from './EpisodeSelectionMark.vue'
 import EpisodeSelectorToolbar from './EpisodeSelectorToolbar.vue'
 
@@ -18,12 +19,15 @@ const props = defineProps<{
   detail: bilibili.VideoDetail
   initialQuality: string
   initialCodec: string
+  submitting?: boolean
   userInfo?: bilibili.UserInfo | null
+  history?: downloader.DownloadTask[]
 }>()
 
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'submit', cids: number[], quality: string, codec: string): void
+  (e: 'format-change', quality: string, codec: string): void
+  (e: 'submit', cids: number[], quality: string, codec: string, videos: undefined, expected?: Record<number, number>): void
 }>()
 
 const targetQuality = ref(props.initialQuality || 'highest')
@@ -33,9 +37,12 @@ const searchQuery = ref('')
 const showSelectedOnly = ref(false)
 const episodeGrid = ref<HTMLElement | null>(null)
 const linkedEpisode = computed(() => props.detail.hasLinkedEpisode ? props.detail.episodes[(props.detail.defaultPage || 1) - 1] : undefined)
-const { referenceQualities: availableQualities, accessFor, canSelect } = useEpisodePlayback(
+const { referenceQualities: availableQualities, accessFor, canSelect: canPlay, qualitiesFor } = useEpisodePlayback(
   () => props.detail, () => props.userInfo, () => props.detail.episodes
 )
+const downloadedFor = useDownloadedEpisodes(() => props.detail.episodes, () => props.history || [],
+  () => props.detail.type, () => targetQuality.value, () => targetCodec.value, qualitiesFor)
+const canSelect = (cid: number) => !downloadedFor(cid) && canPlay(cid)
 const filteredEpisodes = computed(() => filterEpisodes(props.detail.episodes, searchQuery.value))
 const visibleEpisodes = computed(() => showSelectedOnly.value ? selectedList.value : filteredEpisodes.value)
 const selectableEpisodes = computed(() => props.detail.episodes.filter(ep => canSelect(ep.cid)))
@@ -46,9 +53,12 @@ const hiddenSelectedCount = computed(() => {
 })
 const selectionScope = computed(() => searchQuery.value.trim() || showSelectedOnly.value ? '结果' : '全部')
 watch(searchQuery, () => { showSelectedOnly.value = false })
-watch(availableQualities, qualities => {
-  if (qualities.some(q => String(q.id) === targetQuality.value && !q.isAvailable)) targetQuality.value = 'highest'
-})
+
+function updateFormat(quality: string, codec: string) {
+  targetQuality.value = quality
+  targetCodec.value = codec
+  emit('format-change', quality, codec)
+}
 
 async function locateCurrentEpisode() {
   searchQuery.value = ''
@@ -83,8 +93,9 @@ function invertSelection() {
 
 function handleSubmit() {
   const cids = selectedList.value.map(ep => ep.cid)
-  if (cids.length === 0) return
-  emit('submit', cids, targetQuality.value, targetCodec.value)
+  if (cids.length === 0 || props.submitting) return
+  emit('submit', cids, targetQuality.value, targetCodec.value, undefined,
+    expectedEpisodeQualities(selectedList.value, targetQuality.value, targetCodec.value, qualitiesFor))
 }
 </script>
 
@@ -104,8 +115,10 @@ function handleSubmit() {
 
       <EpisodeSelectorToolbar
         v-model:search="searchQuery"
-        v-model:quality="targetQuality"
-        v-model:codec="targetCodec"
+        :quality="targetQuality"
+        :codec="targetCodec"
+        @update:quality="updateFormat($event, targetCodec)"
+        @update:codec="updateFormat(targetQuality, $event)"
         :qualities="availableQualities"
         :can-locate="!!linkedEpisode"
         @locate="locateCurrentEpisode"
@@ -134,8 +147,8 @@ function handleSubmit() {
           :aria-checked="canSelect(ep.cid) && !!selectedMap[ep.cid]"
           :aria-current="ep.cid === linkedEpisode?.cid || undefined"
           :aria-disabled="!canSelect(ep.cid)"
-          :aria-description="accessFor(ep.cid).reason"
-          :title="accessFor(ep.cid).reason || ep.title"
+          :aria-description="downloadedFor(ep.cid) ? '已下载' : accessFor(ep.cid).reason"
+          :title="downloadedFor(ep.cid) ? '已下载' : accessFor(ep.cid).reason || ep.title"
           tabindex="0"
           @click="toggleEpisode(ep.cid)"
           @keydown.space.prevent="toggleEpisode(ep.cid)"
@@ -148,6 +161,7 @@ function handleSubmit() {
               <span class="ep-index">{{ detail.type === 'cheese' ? '课' : 'P' }}{{ ep.index }}</span>
               <span v-if="ep.cid === linkedEpisode?.cid" class="current-badge" title="当前链接指向这一集">当前</span>
               <span v-if="ep.badge" class="badge badge-pink ep-badge">{{ ep.badge }}</span>
+              <span v-if="downloadedFor(ep.cid)" class="downloaded-badge">已下载</span>
               <span class="ep-duration">
                 <Clock :size="11" />
                 <span>{{ ep.durationStr }}</span>
@@ -170,7 +184,7 @@ function handleSubmit() {
           <button class="btn-secondary cancel-btn" @click="emit('close')">取消</button>
           <button
             class="btn-primary start-btn"
-            :disabled="selectedList.length === 0"
+            :disabled="selectedList.length === 0 || submitting"
             @click="handleSubmit"
           >
             <Download :size="15" />

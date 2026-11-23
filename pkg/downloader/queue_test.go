@@ -259,6 +259,60 @@ func TestQueuePauseAllInvalidatesWorkersAndClearsRestartIntent(t *testing.T) {
 	}
 }
 
+func TestLargePauseResumeQueueEmitsOneSnapshotPerOperation(t *testing.T) {
+	m := newTestManager(t)
+	tasks := queueBatch(t, m, "A", 10, 314)
+	m.workers[tasks[0].ID] = workerHandle{token: "running"}
+	tasks[0].Status = StatusDownloading
+	m.SetCallback(func(*DownloadTask) { t.Error("whole-queue operations should use the batch callback") })
+	var received []TaskStatus
+	m.SetBatchCallback(func(snapshots []*DownloadTask) {
+		if len(snapshots) != 314 {
+			t.Fatalf("batch contains %d tasks", len(snapshots))
+		}
+		received = append(received, snapshots[0].Status)
+		for _, snapshot := range snapshots {
+			if snapshot.Status != snapshots[0].Status {
+				t.Fatalf("published a partially updated queue: %+v", snapshot)
+			}
+		}
+	})
+	if err := m.PauseAll(); err != nil {
+		t.Fatal(err)
+	}
+	if !m.workers[tasks[0].ID].skipFinalSave {
+		t.Fatal("paused worker would rewrite the already saved queue")
+	}
+	if err := m.ResumeAll(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(received, []TaskStatus{StatusPaused, StatusQueued}) {
+		t.Fatalf("unexpected notifications: %+v", received)
+	}
+}
+
+func TestPauseAllSaveFailureStillPausesAndAllowsWorkerToSave(t *testing.T) {
+	m := newTestManager(t)
+	tasks := queueBatch(t, m, "A", 10, 2)
+	tasks[0].Status = StatusDownloading
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.workers[tasks[0].ID] = workerHandle{token: "running", cancel: cancel}
+	if err := os.Remove(m.cfgMgr.GetTasksPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(m.cfgMgr.GetTasksPath(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PauseAll(); err == nil {
+		t.Fatal("pause reported success despite persistence failure")
+	}
+	if ctx.Err() != context.Canceled || !m.workers[tasks[0].ID].invalidated ||
+		m.workers[tasks[0].ID].skipFinalSave || tasks[0].Status != StatusPaused || tasks[1].Status != StatusPaused {
+		t.Fatal("persistence failure did not pause or allow the worker to retry saving")
+	}
+}
+
 func TestQueueResumePersistenceFailureKeepsTasksPaused(t *testing.T) {
 	for _, all := range []bool{false, true} {
 		t.Run(fmt.Sprint(all), func(t *testing.T) {
@@ -422,6 +476,39 @@ func TestQueuePrioritizeResumesPausedAndErrorAndNeverPreemptsMerging(t *testing.
 	}
 	if s2 != StatusQueued || !cancelledDownloading || !w2.invalidated {
 		t.Fatalf("downloading task A2 should be preempted: status=%s cancelled=%v invalidated=%v", s2, cancelledDownloading, w2.invalidated)
+	}
+}
+
+func TestQueuePrioritizeAlreadyFirstAfterResume(t *testing.T) {
+	m := newTestManager(t)
+	cfg := m.cfgMgr.Get()
+	cfg.MaxConcurrent = 1
+	if err := m.cfgMgr.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := queueBatch(t, m, "A", 10, 2)
+	first, second := tasks[0], tasks[1]
+	if err := m.PauseTask(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	second.Status = StatusDownloading
+	m.workers[second.ID] = workerHandle{token: "current"}
+	if err := m.ResumeTask(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != StatusQueued || second.Status != StatusDownloading {
+		t.Fatal("normal resume should queue the first task without interrupting the download")
+	}
+
+	if err := m.PrioritizeTasks([]string{first.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != StatusQueued || !m.workers[second.ID].invalidated {
+		t.Fatal("priority should requeue the download even when the selected task is already first")
+	}
+	if got := captureQueueStarts(t, m); !reflect.DeepEqual(got, []string{"A1"}) {
+		t.Fatalf("expected A1 to start in the freed slot, got %v", got)
 	}
 }
 

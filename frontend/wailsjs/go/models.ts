@@ -15,6 +15,7 @@ export namespace bilibili {
 	    badge: string;
 	    videoTitle?: string;
 	    partCount?: number;
+	    requiresAccessCheck?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new EpisodeInfo(source);
@@ -36,6 +37,7 @@ export namespace bilibili {
 	        this.badge = source["badge"];
 	        this.videoTitle = source["videoTitle"];
 	        this.partCount = source["partCount"];
+	        this.requiresAccessCheck = source["requiresAccessCheck"];
 	    }
 	}
 	export class CollectionVideo {
@@ -237,6 +239,7 @@ export namespace bilibili {
 	    collectionTitle: string;
 	    collectionId?: number;
 	    collectionIncomplete?: boolean;
+	    collectionVideos?: Record<string, CollectionVideo>;
 	    isDefaultPart: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -269,6 +272,7 @@ export namespace bilibili {
 	        this.collectionTitle = source["collectionTitle"];
 	        this.collectionId = source["collectionId"];
 	        this.collectionIncomplete = source["collectionIncomplete"];
+	        this.collectionVideos = this.convertValues(source["collectionVideos"], CollectionVideo, true);
 	        this.isDefaultPart = source["isDefaultPart"];
 	    }
 	
@@ -346,6 +350,7 @@ export namespace downloader {
 	    targetCodec: string;
 	    episodes: number[];
 	    nestedVideos?: string[];
+	    expectedQualities?: Record<number, number>;
 	    collectionId?: number;
 	    isCollection?: boolean;
 	
@@ -368,6 +373,7 @@ export namespace downloader {
 	        this.targetCodec = source["targetCodec"];
 	        this.episodes = source["episodes"];
 	        this.nestedVideos = source["nestedVideos"];
+	        this.expectedQualities = source["expectedQualities"];
 	        this.collectionId = source["collectionId"];
 	        this.isCollection = source["isCollection"];
 	    }

@@ -82,6 +82,18 @@ button:active {
   border-color: var(--neutral-12);
 }
 
+.confirm-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(88px, 1fr));
+  gap: 8px;
+}
+
+.confirm-actions > button {
+  min-height: 32px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
 .btn-icon {
   width: 32px;
   height: 32px;

@@ -11,10 +11,11 @@ import {
   ChevronRight,
   MinusSquare
 } from 'lucide-vue-next'
-import { bilibili } from '../../wailsjs/go/models'
-import { getCollectionVideoParts } from '../utils/collection-parts-cache'
+import { bilibili, downloader } from '../../wailsjs/go/models'
+import { getCachedCollectionVideoParts, getCollectionVideoParts } from '../utils/collection-parts-cache'
 import { filterEpisodes, nearEpisode, selectEpisodes } from '../utils/episode-selection'
 import { useEpisodePlayback, type EpisodeAccess } from '../utils/episode-playback'
+import { expectedEpisodeQualities, useDownloadedEpisodes } from '../utils/downloaded-episodes'
 import EpisodeSelectionMark from './EpisodeSelectionMark.vue'
 import EpisodeSelectorToolbar from './EpisodeSelectorToolbar.vue'
 import CollectionPartsPanel from './CollectionPartsPanel.vue'
@@ -25,11 +26,13 @@ const props = defineProps<{
   initialCodec: string
   submitting?: boolean
   userInfo?: bilibili.UserInfo | null
+  history?: downloader.DownloadTask[]
 }>()
 
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'submit', cids: number[], quality: string, codec: string, videos: string[]): void
+  (e: 'format-change', quality: string, codec: string): void
+  (e: 'submit', cids: number[], quality: string, codec: string, videos: string[], expected?: Record<number, number>): void
 }>()
 
 const targetQuality = ref(props.initialQuality || 'highest')
@@ -38,11 +41,32 @@ const selectedMap = ref<Record<number, boolean>>({})
 const searchQuery = ref('')
 const showSelectedOnly = ref(false)
 const episodeGrid = ref<HTMLElement | null>(null)
-const groups = ref<Record<string, bilibili.CollectionVideo>>({})
+const groups = ref<Record<string, bilibili.CollectionVideo>>(Object.fromEntries(props.detail.episodes.flatMap(ep => {
+  const cached = props.detail.collectionVideos?.[ep.bvid] || getCachedCollectionVideoParts(ep)
+  return cached ? [[ep.bvid, cached]] : []
+})))
 const loadedParts = computed(() => props.detail.episodes.flatMap(partsFor))
-const { referenceQualities: availableQualities, accessFor, canSelect } = useEpisodePlayback(
-  () => props.detail, () => props.userInfo, () => loadedParts.value
+const playbackRequired = computed(() => {
+  const ids = new Set(loadedParts.value.filter(part => part.requiresAccessCheck).map(part => part.cid))
+  if (targetQuality.value === 'highest') {
+    for (const task of props.history || []) {
+      if (!task.isBangumi && !task.isCheese && task.status === 'completed' && task.qualityId > 0 && task.outputPath) ids.add(task.cid)
+    }
+  }
+  return ids
+})
+const { referenceQualities: availableQualities, accessFor, canSelect: canPlay, qualitiesFor } = useEpisodePlayback(
+  () => props.detail, () => props.userInfo, () => loadedParts.value,
+  part => playbackRequired.value.has(part.cid)
 )
+const downloadedFor = useDownloadedEpisodes(() => loadedParts.value, () => props.history || [],
+  () => props.detail.type, () => targetQuality.value, () => targetCodec.value, qualitiesFor)
+const canSelect = (cid: number) => {
+  if (cid <= 0 || downloadedFor(cid)) return false
+  const state = accessFor(cid).state
+  if (playbackRequired.value.has(cid) && state === 'unchecked') return false
+  return canPlay(cid) || (state === 'checking' && !playbackRequired.value.has(cid))
+}
 const activeVideoID = ref('')
 const activeVideo = computed(() => groups.value[activeVideoID.value])
 const loading = ref(false)
@@ -63,9 +87,12 @@ const visibleParts = computed(() => visibleEpisodes.value.flatMap(selectablePart
 const visibleSelected = computed(() => visibleParts.value.filter(ep => selectedMap.value[ep.cid]).length)
 const allVisibleSelected = computed(() => visibleParts.value.length > 0 && visibleSelected.value === visibleParts.value.length)
 watch(searchQuery, () => { showSelectedOnly.value = false }, { flush: 'sync' })
-watch(availableQualities, qualities => {
-  if (qualities.some(q => String(q.id) === targetQuality.value && !q.isAvailable)) targetQuality.value = 'highest'
-})
+
+function updateFormat(quality: string, codec: string) {
+  targetQuality.value = quality
+  targetCodec.value = codec
+  emit('format-change', quality, codec)
+}
 
 async function locateCurrentEpisode() {
   searchQuery.value = ''
@@ -127,12 +154,19 @@ function partsFor(ep: bilibili.EpisodeInfo): bilibili.EpisodeInfo[] {
 function selectablePartsFor(ep: bilibili.EpisodeInfo) {
   return partsFor(ep).filter(part => canSelect(part.cid))
 }
+function downloadedCount(ep: bilibili.EpisodeInfo) {
+  return partsFor(ep).filter(part => downloadedFor(part.cid)).length
+}
 function groupAccess(ep: bilibili.EpisodeInfo): EpisodeAccess {
   const statuses = partsFor(ep).map(part => accessFor(part.cid))
   const first = statuses[0]
   if (groupErrors.value[ep.bvid]) return { state: 'unknown', reason: '此视频读取失败' }
-  if (!first || statuses.some(access => access.state === 'checking')) return { state: 'checking', reason: '正在检查分 P 的观看权限' }
+  if (!first) return { state: 'checking', reason: '正在读取分 P' }
+  if (statuses.some(access => access.state === 'checking')) return { state: 'checking', reason: '正在检查分 P 的观看权限' }
   if (statuses.every(access => access.state === first.state)) return first
+  if (statuses.every(access => access.state === 'available' || access.state === 'unchecked')) {
+    return { state: 'unchecked', reason: '其余分 P 将在下载时检查观看权限' }
+  }
   if (statuses.some(access => access.state === 'blocked') && statuses.some(access => access.state === 'available')) {
     return { state: 'partial', reason: '此视频的部分分 P 不可下载，展开可查看各分 P 的权限' }
   }
@@ -189,7 +223,8 @@ function invertSelection() {
 function handleSubmit() {
   const cids = selectedList.value.map(ep => ep.cid)
   if (!canSubmit.value || props.submitting) return
-  emit('submit', cids, targetQuality.value, targetCodec.value, props.detail.episodes.filter(ep => selectedCount(ep) > 0).map(ep => ep.bvid))
+  emit('submit', cids, targetQuality.value, targetCodec.value, props.detail.episodes.filter(ep => selectedCount(ep) > 0).map(ep => ep.bvid),
+    expectedEpisodeQualities(selectedList.value, targetQuality.value, targetCodec.value, qualitiesFor))
 }
 </script>
 
@@ -210,8 +245,10 @@ function handleSubmit() {
       <EpisodeSelectorToolbar
         v-if="!activeVideo"
         v-model:search="searchQuery"
-        v-model:quality="targetQuality"
-        v-model:codec="targetCodec"
+        :quality="targetQuality"
+        :codec="targetCodec"
+        @update:quality="updateFormat($event, targetCodec)"
+        @update:codec="updateFormat(targetQuality, $event)"
         :qualities="availableQualities"
         :can-locate="!!linkedEpisode"
         @locate="locateCurrentEpisode"
@@ -231,7 +268,7 @@ function handleSubmit() {
       </EpisodeSelectorToolbar>
 
       <!-- Episode Grid View -->
-      <CollectionPartsPanel v-if="activeVideo" :key="activeVideo.bvid" :video="activeVideo" :selection="selectedMap" :access-for="accessFor" :can-select="canSelect" @back="activeVideoID = ''" @select="selectedMap = $event" />
+      <CollectionPartsPanel v-if="activeVideo" :key="activeVideo.bvid" :video="activeVideo" :selection="selectedMap" :access-for="accessFor" :can-select="canSelect" :downloaded-for="downloadedFor" @back="activeVideoID = ''" @select="selectedMap = $event" />
       <div v-if="!activeVideo && showSelectedOnly" class="selected-view-heading">
         <div><strong>已选文件</strong><span>共 {{ selectedList.length }} 个文件</span></div>
         <button @click="showSelectedOnly = false">返回全部分集</button>
@@ -268,6 +305,7 @@ function handleSubmit() {
               <span class="ep-index">第 {{ ep.index }} 集</span>
               <span v-if="ep.bvid === linkedEpisode?.bvid" class="current-badge" title="当前链接指向这一集">当前</span>
               <span v-if="ep.badge" class="badge badge-pink ep-badge">{{ ep.badge }}</span>
+              <span v-if="downloadedCount(ep)" class="downloaded-badge">{{ downloadedCount(ep) === partsFor(ep).length ? '已下载' : `已下载 ${downloadedCount(ep)}/${partsFor(ep).length}` }}</span>
               <span class="ep-duration"><Clock :size="11" />{{ ep.durationStr }}</span>
             </div>
             <div class="ep-title">{{ ep.videoTitle || ep.title }}</div>

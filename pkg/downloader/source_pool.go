@@ -45,7 +45,7 @@ type sourceState struct {
 	ready        time.Time
 	demotedUntil time.Time
 	missing      bool
-	rejected     bool
+	rejection    error
 }
 
 func (s sourceState) preferredAfter() time.Time {
@@ -55,6 +55,7 @@ func (s sourceState) preferredAfter() time.Time {
 // Shared by all workers of one track. URL refresh is single flight and failed
 // sources cool down, so parallel 403/429 responses cannot create retry storms.
 type sourcePool struct {
+	trace      downloadTrace
 	mu         sync.Mutex
 	sources    []sourceState
 	refreshing chan struct{}
@@ -83,12 +84,16 @@ func (p *sourcePool) next(ctx context.Context) (string, error) {
 		best := -1
 		available := 0
 		hasRejected := false
+		var conflict error
 		now := time.Now()
 		for i := range p.sources {
-			if p.sources[i].rejected {
+			if p.sources[i].rejection != nil {
 				hasRejected = true
+				if conflict == nil && errors.Is(p.sources[i].rejection, errEntityChanged) {
+					conflict = p.sources[i].rejection
+				}
 			}
-			if p.sources[i].missing || p.sources[i].rejected {
+			if p.sources[i].missing || p.sources[i].rejection != nil {
 				continue
 			}
 			available++
@@ -109,9 +114,12 @@ func (p *sourcePool) next(ctx context.Context) (string, error) {
 			p.mu.Unlock()
 			if refresh {
 				if err := p.refreshURLs(ctx, ""); err != nil {
-					return "", fmt.Errorf("刷新下载地址失败: %w", err)
+					return "", errors.Join(conflict, fmt.Errorf("刷新下载地址失败: %w", err))
 				}
 				continue
+			}
+			if conflict != nil {
+				return "", conflict
 			}
 			if hasRejected {
 				return "", errAllSourcesRejected
@@ -127,6 +135,9 @@ func (p *sourcePool) next(ctx context.Context) (string, error) {
 			ready = s.ready
 		}
 		if delay := time.Until(ready); delay > 0 {
+			if downloadTraceEnabled && p.trace.active() {
+				p.trace.event("source_wait", map[string]any{"source": traceSource(s.url), "wait_ms": delay.Milliseconds()})
+			}
 			if err := waitForRetry(ctx, delay); err != nil {
 				return "", err
 			}
@@ -139,19 +150,46 @@ func (p *sourcePool) next(ctx context.Context) (string, error) {
 func (p *sourcePool) hasHealthyAlternativeLocked(excludeURL string, now time.Time) bool {
 	for i := range p.sources {
 		s := &p.sources[i]
-		if s.url != excludeURL && !s.missing && !s.rejected && !s.preferredAfter().After(now) {
+		if s.url != excludeURL && !s.missing && s.rejection == nil && !s.preferredAfter().After(now) {
 			return true
 		}
 	}
 	return false
 }
 
-func (p *sourcePool) reject(url string) {
+func (p *sourcePool) canRequest(url string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// A candidate can become unavailable while the worker is waiting for a
+	// connection slot shared by the other downloads.
+	for _, s := range p.sources {
+		if s.url == url {
+			return !s.missing && s.rejection == nil && !s.ready.After(time.Now())
+		}
+	}
+	return false
+}
+
+func (p *sourcePool) reject(url string, reason error) {
+	if downloadTraceEnabled && p.trace.active() {
+		defer p.trace.event("source_rejected", map[string]any{"source": traceSource(url), "error": traceError(reason)})
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for i := range p.sources {
-		if p.sources[i].url == url {
-			p.sources[i].rejected = true
+		if p.sources[i].url == url && !errors.Is(p.sources[i].rejection, errEntityChanged) {
+			p.sources[i].rejection = reason
+		}
+	}
+}
+
+func (p *sourcePool) restoreMatchingCandidate(url string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.sources {
+		if p.sources[i].url == url && errors.Is(p.sources[i].rejection, errEntityChanged) {
+			p.sources[i] = sourceState{url: url}
+			return
 		}
 	}
 }
@@ -162,7 +200,7 @@ func (p *sourcePool) candidateURLs() []string {
 	urls := make([]string, 0, len(p.sources))
 	for i := range p.sources {
 		s := &p.sources[i]
-		if !s.missing && !s.rejected {
+		if !s.missing && (s.rejection == nil || errors.Is(s.rejection, errEntityChanged)) {
 			urls = append(urls, s.url)
 		}
 	}
@@ -262,7 +300,13 @@ func (p *sourcePool) refreshURLs(ctx context.Context, failed string) error {
 	done := make(chan struct{})
 	p.refreshing = done
 	p.mu.Unlock()
+	if downloadTraceEnabled && p.trace.active() {
+		p.trace.event("source_refresh_start", map[string]any{"failed_source": traceSource(failed)})
+	}
 	urls, err := p.refresh(ctx)
+	if downloadTraceEnabled && p.trace.active() {
+		defer p.trace.event("source_refresh_end", map[string]any{"sources": traceSources(urls), "error": traceError(err)})
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if ctx.Err() == nil {

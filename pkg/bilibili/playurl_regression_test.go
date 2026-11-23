@@ -66,7 +66,7 @@ func TestBangumiQualityWithoutAcceptList(t *testing.T) {
 	}
 	found := false
 	for _, q := range qs {
-		if q.ID == 80 && q.IsAvailable {
+		if q.ID == 80 && q.IsAvailable && q.Codecs == "AVC" {
 			found = true
 		}
 	}

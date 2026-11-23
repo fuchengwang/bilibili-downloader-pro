@@ -373,8 +373,12 @@ func TestResilience_416RestartRequiresVerifiedSizeChange(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			err = s.DownloadWithConcurrency(ctx, 2, nil)
-			if probes.Load() != 1 {
-				t.Fatalf("expected a new media probe before deciding whether to reset, got %d: %v", probes.Load(), err)
+			wantProbes := int32(1)
+			if changed {
+				wantProbes = 2
+			}
+			if probes.Load() != wantProbes {
+				t.Fatalf("got %d verification probes, want %d: %v", probes.Load(), wantProbes, err)
 			}
 			if changed {
 				if err != nil {
@@ -393,6 +397,117 @@ func TestResilience_416RestartRequiresVerifiedSizeChange(t *testing.T) {
 				t.Fatalf("original checkpoint was modified: %+v, %v", record, err)
 			}
 			assertMediaBytes(t, path, before)
+		})
+	}
+}
+
+func TestResilience_EntityConflictUsesBackupWithoutResetting(t *testing.T) {
+	const primary, backup = "https://primary.invalid/media", "https://backup.invalid/media"
+	const size, prefix = 512 * 1024, 4096
+	data := engineData(size)
+	for _, mode := range []string{"size", "last-modified"} {
+		t.Run(mode, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "media")
+			seedRangeRecord(t, path, size, 1, prefix)
+			record, err := readRangeRecord(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record.ValidatorKey = mediaValidatorKey(primary)
+			if mode == "last-modified" {
+				record.LastModified = "Sun, 22 Nov 2026 01:29:02 GMT"
+			}
+			if err := writeRangeRecord(path, record); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, append(bytes.Clone(data[:prefix]), make([]byte, size-prefix)...), 0600); err != nil {
+				t.Fatal(err)
+			}
+			s := NewStreamDownloader([]string{primary, backup}, path)
+			s.skipSizeProbe = true
+			var backupRequests atomic.Int32
+			s.client.Transport = streamRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Header.Get("Range") == "" || strings.HasPrefix(r.Header.Get("Range"), "bytes=0-") {
+					t.Errorf("valid prefix was abandoned: %q", r.Header.Get("Range"))
+				}
+				if r.URL.String() == backup {
+					backupRequests.Add(1)
+					return mockRangeMedia(r, data), nil
+				}
+				if mode == "size" {
+					return mockRangeMedia(r, data[:size/2]), nil
+				}
+				resp := mockRangeMedia(r, data)
+				resp.Header.Set("Last-Modified", "Mon, 23 Nov 2026 01:29:02 GMT")
+				return resp, nil
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			var delta int64
+			if err := s.DownloadWithConcurrency(ctx, 4, func(n int64) { delta += n }); err != nil {
+				t.Fatal(err)
+			}
+			if delta != size-prefix || backupRequests.Load() == 0 {
+				t.Fatalf("want only missing bytes from backup, got delta=%d backup requests=%d", delta, backupRequests.Load())
+			}
+			assertMediaBytes(t, path, data)
+		})
+	}
+}
+
+func TestResilience_SingleSourceEntityConflictRequiresConsistentEvidence(t *testing.T) {
+	const size, prefix = 64 * 1024, 4096
+	data := engineData(size)
+	for _, recover := range []bool{true, false} {
+		t.Run(fmt.Sprintf("recover-%t", recover), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "media")
+			seedRangeRecord(t, path, size, 1, prefix)
+			partial := append(bytes.Clone(data[:prefix]), make([]byte, size-prefix)...)
+			if err := os.WriteFile(path, partial, 0600); err != nil {
+				t.Fatal(err)
+			}
+			s := NewStreamDownloader([]string{"https://cdn.invalid/media"}, path)
+			s.skipSizeProbe = true
+			var probes, requests atomic.Int32
+			s.client.Transport = streamRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Header.Get("Range") == "bytes=0-0" {
+					if probes.Add(1) == 2 {
+						if recover {
+							return mockRangeMedia(r, data), nil
+						}
+						return mockRangeMedia(r, data[:size/4]), nil
+					}
+					return mockRangeMedia(r, data[:size/2]), nil
+				}
+				if !strings.HasPrefix(r.Header.Get("Range"), "bytes=4096-") {
+					t.Errorf("expected the saved offset, got %q", r.Header.Get("Range"))
+				}
+				if requests.Add(1) == 1 {
+					return mockRangeMedia(r, data[:size/2]), nil
+				}
+				return mockRangeMedia(r, data), nil
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			err := s.DownloadWithConcurrency(ctx, 4, nil)
+			if probes.Load() != 2 {
+				t.Fatalf("want two probes, got %d", probes.Load())
+			}
+			if recover {
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertMediaBytes(t, path, data)
+				return
+			}
+			if !errors.Is(err, errEntityChanged) || !strings.Contains(err.Error(), "响应总长度") {
+				t.Fatalf("expected a diagnostic entity conflict, got %v", err)
+			}
+			record, err := readRangeRecord(path)
+			if err != nil || record.Total != size || record.received() != prefix {
+				t.Fatalf("original checkpoint was modified: %+v, %v", record, err)
+			}
+			assertMediaBytes(t, path, partial)
 		})
 	}
 }
@@ -437,7 +552,7 @@ func TestResilience_ExhaustedPoolWaitsForSharedRefresh(t *testing.T) {
 			if mark == "missing" {
 				p.notFound(old)
 			} else {
-				p.reject(old)
+				p.reject(old, errNonMediaResponse)
 			}
 			result := make(chan error, 1)
 			go func() {

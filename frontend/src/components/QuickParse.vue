@@ -30,7 +30,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'open-episodes', detail: bilibili.VideoDetail, selectedQuality: string, selectedCodec: string): void
+  (e: 'open-episodes', detail: bilibili.VideoDetail, selectedQuality: string, selectedCodec: string, linkVersion: number): void
   (e: 'quick-download-single', detail: bilibili.VideoDetail, ep: bilibili.EpisodeInfo, quality: string, codec: string): void
   (e: 'show-toast', msg: string, type: 'success' | 'error' | 'info'): void
   (e: 'open-login'): void
@@ -44,6 +44,9 @@ const selectedQuality = ref(props.defaultQuality || 'highest')
 const isFetchingQualities = ref(false)
 const playbackError = ref<bilibili.PlaybackError | null>(null)
 let qualityRequest = 0
+let parseRequest = 0
+let lastParsedLink = ''
+let linkVersion = 0
 function currentEpisode(detail: bilibili.VideoDetail) {
   if (detail.hasLinkedEpisode === false) return undefined
   return detail.episodes[Math.max(0, (detail.defaultPage || 1) - 1)]
@@ -123,6 +126,9 @@ async function handlePaste() {
 }
 
 function handleClear() {
+  parseRequest++
+  lastParsedLink = ''
+  isParsing.value = false
   qualityRequest++
   isFetchingQualities.value = false
   inputUrl.value = ''
@@ -140,6 +146,12 @@ async function handleParse() {
   }
 
   isParsing.value = true
+  const request = ++parseRequest
+  if (lastParsedLink !== url) {
+    lastParsedLink = url
+    linkVersion++
+    selectedQuality.value = props.defaultQuality || 'highest'
+  }
   qualityRequest++
   parsedDetail.value = null
   isFetchingQualities.value = false
@@ -147,6 +159,7 @@ async function handleParse() {
   availableQualities.value = []
   try {
     const res = await ParseURL(url)
+    if (request !== parseRequest) return
     if (!res) {
       throw new Error('未返回视频信息')
     }
@@ -155,9 +168,9 @@ async function handleParse() {
 
     refreshQualities()
   } catch (err: any) {
-    emit('show-toast', err?.message || '解析失败，请检查链接是否正确', 'error')
+    if (request === parseRequest) emit('show-toast', err?.message || '解析失败，请检查链接是否正确', 'error')
   } finally {
-    isParsing.value = false
+    if (request === parseRequest) isParsing.value = false
   }
 }
 
@@ -220,8 +233,7 @@ const qualitySelectOptions = computed(() => [
 
 function handleOpenEpisodes() {
   if (!parsedDetail.value) return
-  const quality = availableQualities.value.length ? String(displayedQuality.value) : selectedQuality.value
-  emit('open-episodes', parsedDetail.value, quality, props.defaultCodec || 'auto')
+  emit('open-episodes', parsedDetail.value, selectedQuality.value, props.defaultCodec || 'auto', linkVersion)
 }
 
 // 格式化数字

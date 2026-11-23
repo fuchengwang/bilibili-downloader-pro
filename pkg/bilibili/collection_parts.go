@@ -44,27 +44,47 @@ func (c *Client) FetchCollectionVideoParts(ctx context.Context, video EpisodeInf
 	if resp.Data.Bvid != video.BVID || resp.Data.Aid <= 0 || len(resp.Data.Pages) == 0 {
 		return nil, fmt.Errorf("视频 %s 的分P信息不完整", video.BVID)
 	}
+	return collectionVideoFromPages(video, resp.Data.Aid, resp.Data.Pic, resp.Data.Pages)
+}
+
+// Collections may return only a preview page. Accept the embedded array when
+// it agrees with the archive identity, numbering and reported length/count.
+func embeddedCollectionPagesComplete(video EpisodeInfo, pages []viewPage, count int) bool {
+	if video.BVID == "" || video.AID <= 0 || video.CID <= 0 || len(pages) == 0 ||
+		(count > 0 && len(pages) != count) || (count <= 0 && video.Duration <= 0) {
+		return false
+	}
+	duration := 0
+	for i, page := range pages {
+		if page.Page != i+1 || page.Duration <= 0 || (i == 0 && page.Cid != video.CID) {
+			return false
+		}
+		duration += page.Duration
+	}
+	return video.Duration <= 0 || duration == video.Duration
+}
+
+func collectionVideoFromPages(video EpisodeInfo, aid int64, poster string, pages []viewPage) (*CollectionVideo, error) {
 	videoTitle := video.VideoTitle
 	if videoTitle == "" {
 		videoTitle = video.Title
 	}
 	result := &CollectionVideo{Index: video.Index, Title: videoTitle, BVID: video.BVID}
 	seenCID, seenPage := map[int64]bool{}, map[int]bool{}
-	for _, p := range resp.Data.Pages {
+	if poster == "" {
+		poster = video.Cover
+	}
+	for _, p := range pages {
 		if p.Cid <= 0 || p.Page <= 0 || seenCID[p.Cid] || seenPage[p.Page] {
 			return nil, fmt.Errorf("视频 %s 的分P信息不完整", video.BVID)
 		}
 		seenCID[p.Cid], seenPage[p.Page] = true, true
-		poster := resp.Data.Pic
-		if poster == "" {
-			poster = video.Cover
-		}
-		cover := videoPartCover(poster, p.FirstPic, len(resp.Data.Pages))
+		cover := videoPartCover(poster, p.FirstPic, len(pages))
 		title := p.Part
 		if title == "" {
 			title = fmt.Sprintf("P%d", p.Page)
 		}
-		result.Parts = append(result.Parts, EpisodeInfo{Index: video.Index, Page: p.Page, CID: p.Cid, BVID: video.BVID, AID: resp.Data.Aid, Title: title, Duration: p.Duration, DurationStr: utils.FormatDuration(p.Duration), Cover: cover, VideoTitle: videoTitle, PartCount: len(resp.Data.Pages)})
+		result.Parts = append(result.Parts, EpisodeInfo{Index: video.Index, Page: p.Page, CID: p.Cid, BVID: video.BVID, AID: aid, Title: title, Duration: p.Duration, DurationStr: utils.FormatDuration(p.Duration), Cover: cover, VideoTitle: videoTitle, PartCount: len(pages), RequiresAccessCheck: video.RequiresAccessCheck})
 	}
 	return result, nil
 }

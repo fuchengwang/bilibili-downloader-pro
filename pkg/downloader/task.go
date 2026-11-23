@@ -62,19 +62,20 @@ type DownloadTask struct {
 
 // DownloadRequest 前端发起的下载请求结构体
 type DownloadRequest struct {
-	BVID          string   `json:"bvid"`
-	AID           int64    `json:"aid"`
-	EPID          int64    `json:"epid,omitempty"`
-	SSID          int64    `json:"ssid,omitempty"`
-	Title         string   `json:"title"`
-	Cover         string   `json:"cover"`
-	SourcePage    int      `json:"sourcePage,omitempty"`
-	IsBangumi     bool     `json:"isBangumi"`
-	IsCheese      bool     `json:"isCheese"`
-	TargetQuality string   `json:"targetQuality"`          // 用户选定的画质 ("highest", "120", "80", etc.)
-	TargetCodec   string   `json:"targetCodec"`            // 用户选定的编码 ("auto", "AVC", "HEVC", "AV1")
-	Episodes      []int64  `json:"episodes"`               // 选中的集数 CID 列表
-	NestedVideos  []string `json:"nestedVideos,omitempty"` // 待验证的合集视频 BV 号
-	CollectionID  int64    `json:"collectionId,omitempty"`
-	IsCollection  bool     `json:"isCollection,omitempty"`
+	BVID              string        `json:"bvid"`
+	AID               int64         `json:"aid"`
+	EPID              int64         `json:"epid,omitempty"`
+	SSID              int64         `json:"ssid,omitempty"`
+	Title             string        `json:"title"`
+	Cover             string        `json:"cover"`
+	SourcePage        int           `json:"sourcePage,omitempty"`
+	IsBangumi         bool          `json:"isBangumi"`
+	IsCheese          bool          `json:"isCheese"`
+	TargetQuality     string        `json:"targetQuality"`               // 用户选定的画质 ("highest", "120", "80", etc.)
+	TargetCodec       string        `json:"targetCodec"`                 // 用户选定的编码 ("auto", "AVC", "HEVC", "AV1")
+	Episodes          []int64       `json:"episodes"`                    // 选中的集数 CID 列表
+	NestedVideos      []string      `json:"nestedVideos,omitempty"`      // 待验证的合集视频 BV 号
+	ExpectedQualities map[int64]int `json:"expectedQualities,omitempty"` // 已确认的最高画质，仅用于匹配下载历史
+	CollectionID      int64         `json:"collectionId,omitempty"`
+	IsCollection      bool          `json:"isCollection,omitempty"`
 }

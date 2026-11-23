@@ -13,15 +13,27 @@ const quality = defineModel<string>('quality', { required: true })
 const codec = defineModel<string>('codec', { required: true })
 const emit = defineEmits<{ locate: [] }>()
 
-const qualitySelectOptions = computed(() => [
-  { value: 'highest', label: '自动' },
-  ...props.qualities.map(q => ({
+const savedQualityLabels: Record<string, string> = {
+  '6': '240P', '16': '360P', '32': '480P', '64': '720P', '74': '720P 60帧',
+  '80': '1080P', '100': '智能修复', '112': '1080P 高码率', '116': '1080P 60帧',
+  '120': '4K', '125': 'HDR 真彩', '126': '杜比视界', '127': '8K',
+}
+const qualitySelectOptions = computed(() => {
+  const options = props.qualities.map(q => ({
     value: String(q.id),
     label: q.label,
     badge: q.isVipRequired ? '大会员' : q.isLoginRequired ? '需登录' : undefined,
     disabled: !q.isAvailable
   }))
-])
+  // Keep the selected resolution visible while the reference episode is checked.
+  if (quality.value !== 'highest' && !options.some(option => option.value === quality.value)) {
+    options.push({
+      value: quality.value, label: savedQualityLabels[quality.value] || `画质 ${quality.value}`,
+      badge: undefined, disabled: true,
+    })
+  }
+  return [{ value: 'highest', label: '自动' }, ...options]
+})
 
 const codecSelectOptions = [
   { value: 'auto', label: '自动' },

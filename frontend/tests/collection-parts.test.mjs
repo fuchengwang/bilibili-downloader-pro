@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import ts from 'typescript'
-import { ref, computed, watch, nextTick, shallowReactive, reactive } from 'vue'
+import { ref, computed, watch, nextTick, shallowReactive, reactive, effectScope } from 'vue'
 
 const utilSource = readFileSync(new URL('../src/utils/episode-selection.ts', import.meta.url), 'utf8')
 const utilJS = ts.transpileModule(utilSource, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText
@@ -22,6 +22,9 @@ function harness(component, props, extra = {}) {
   const c = vm.createContext({
     ref, computed, watch, nextTick, filterEpisodes, nearEpisode, selectEpisodes,
     useEpisodePlayback: () => knownAccess,
+    getCachedCollectionVideoParts: () => undefined,
+    useDownloadedEpisodes: () => () => false,
+    expectedEpisodeQualities: () => undefined,
     defineProps: () => component === 'CollectionPartsPanel' ? { ...knownAccess, ...props } : props,
     defineEmits: () => (...args) => messages.push(args),
     onMounted: () => {}, onUnmounted: () => {}, ...extra,
@@ -30,6 +33,23 @@ function harness(component, props, extra = {}) {
   return { c, messages, run: code => vm.runInContext(code, c) }
 }
 const video = count => ({ bvid: 'BVfirst', index: 1, title: '第一册', parts: Array.from({ length: count }, (_, i) => ({ cid: i + 100, page: i + 1, index: 1, title: `练习${i + 1}` })) })
+
+test('a checked reference part and deferred parts keep the collection checkbox selectable', () => {
+  const group = video(8)
+  const episode = { bvid: group.bvid, cid: 100, index: 34 }
+  const { c, run } = harness('CollectionSelectorModal', {
+    detail: { type: 'normal', episodes: [episode], collectionVideos: { [group.bvid]: group } },
+    initialQuality: 'highest', initialCodec: 'auto',
+  }, {
+    useEpisodePlayback: () => ({
+      ...knownAccess,
+      accessFor: cid => ({ state: cid === 100 ? 'available' : 'unchecked' }),
+    }),
+  })
+  assert.equal(run('groupAccessByVideo.value.BVfirst.state'), 'unchecked')
+  c.toggleGroup(episode)
+  assert.equal(run('selectedList.value.length'), 8)
+})
 
 test('range and comma search filter by sequence without selecting', () => {
   const episodes = video(100).parts.map(p => ({ ...p, index: p.page }))
@@ -171,6 +191,59 @@ test('retrying an incomplete collection preserves selections and reuses loaded g
   assert.equal(run('loadError.value'), '')
 })
 
+test('reopening a collection renders cached parts before fetching any new groups', async () => {
+  const group = video(2)
+  const detail = { type: 'normal', episodes: [{ bvid: group.bvid, index: 1, cid: 100 }] }
+  let fetches = 0
+  const { c, run } = harness('CollectionSelectorModal', { detail, initialQuality: '16', initialCodec: 'auto' }, {
+    getCachedCollectionVideoParts: () => group,
+    getCollectionVideoParts: async () => { fetches++; return group },
+  })
+  assert.equal(run('visibleParts.value.length'), 2)
+  await c.loadGroups()
+  assert.equal(fetches, 0)
+})
+
+test('314 embedded ordinary videos can be selected while the reference and paid video are checked', async () => {
+  const source = readFileSync(new URL('../src/utils/episode-playback.ts', import.meta.url), 'utf8')
+  const requests = []
+  let dispose
+  const imports = {
+    vue: { computed, watch, shallowReactive, onScopeDispose: callback => { dispose = callback } },
+    '../../wailsjs/go/main/App': {
+      GetPlaybackInfo: (_bvid, _aid, cid) => new Promise(resolve => requests.push({ cid, resolve })),
+    },
+    './episode-selection': { isPermissionError: kind => kind === 'charge_required', nearEpisode },
+  }
+  const exports = {}
+  vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText,
+    { exports, require: name => imports[name] })
+  const episodes = Array.from({ length: 315 }, (_, i) => ({
+    bvid: `BV${i + 1}`, index: i + 1, cid: i + 1, requiresAccessCheck: i === 314,
+  }))
+  const detail = {
+    type: 'normal', hasLinkedEpisode: true, episodes, collectionId: 12,
+    collectionVideos: Object.fromEntries(episodes.map(ep => [ep.bvid, { bvid: ep.bvid, parts: [ep] }])),
+  }
+  const { c, run, messages } = harness('CollectionSelectorModal', { detail, initialQuality: 'highest', initialCodec: 'auto' }, {
+    ...exports,
+    getCollectionVideoParts: () => assert.fail('embedded metadata was fetched again'),
+  })
+  try {
+    assert.deepEqual(requests.map(request => request.cid), [1, 315])
+    assert.equal(run('visibleParts.value.length'), 314)
+    c.selectAll()
+    c.handleSubmit()
+    assert.equal(messages.at(-1)[1].length, 314)
+    assert.equal(messages.at(-1)[1].includes(315), false)
+    await c.loadGroups()
+    assert.equal(requests.length, 2)
+  } finally {
+    dispose()
+    for (const request of requests) request.resolve({})
+  }
+})
+
 test('a failed unselected video does not block a verified selection', async () => {
   const detail = { type: 'normal', episodes: [{ bvid: 'BVfirst', index: 1 }, { bvid: 'BVgone', index: 2 }] }
   const { c, run, messages } = harness('CollectionSelectorModal', { detail, initialQuality: 'highest', initialCodec: 'auto' }, {
@@ -266,8 +339,123 @@ test('batch selection uses per-episode playback results and ignores responses fo
     run("searchQuery.value = '1-4'; selectAll()")
     c.invertSelection()
     assert.equal(run('selectedList.value.length'), 0)
+
+    requests[6].resolve({ qualities: [{ id: 16, isAvailable: true }] })
+    await new Promise(resolve => setImmediate(resolve))
+    dispose()
+    const reopened = harness('EpisodeSelectorModal', props, exports)
+    assert.equal(reopened.run('accessFor(2).state'), 'blocked')
+    assert.equal(reopened.run('accessFor(4).state'), 'available')
+    assert.equal(requests.length, 7)
   } finally {
     dispose()
     requests[6]?.resolve({})
+  }
+})
+
+test('downloaded requires an existing file and the actual selected quality and codec', async () => {
+  const source = readFileSync(new URL('../src/utils/downloaded-episodes.ts', import.meta.url), 'utf8')
+  const exports = {}
+  let checked
+  const fileCheck = new Promise(resolve => { checked = resolve })
+  vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
+    exports, setTimeout, clearTimeout,
+    require: name => name === 'vue' ? { ref, computed, watch } : {
+      CheckHistoryFiles: async paths => {
+        checked(Array.from(paths))
+        return { '/present.mp4': 'present', '/missing.mp4': 'missing' }
+      },
+    },
+  })
+  const quality = ref('16'), codec = ref('auto')
+  const episodes = [{ cid: 101 }, { cid: 102 }]
+  const history = [
+    { cid: 101, status: 'completed', qualityId: 16, targetQuality: '80', codec: 'AVC', outputPath: '/present.mp4' },
+    { cid: 102, status: 'completed', qualityId: 16, codec: 'AVC', outputPath: '/missing.mp4' },
+  ]
+  const scope = effectScope()
+  try {
+    const downloaded = scope.run(() => exports.useDownloadedEpisodes(() => episodes, () => history,
+      () => 'normal', () => quality.value, () => codec.value, () => [
+        { id: 80, isAvailable: true, codecs: 'HEVC' }, { id: 16, isAvailable: true, codecs: 'AVC' },
+      ]))
+    assert.deepEqual(await fileCheck, ['/present.mp4', '/missing.mp4'])
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(downloaded(101), true)
+    assert.equal(downloaded(102), false)
+    quality.value = '80'
+    assert.equal(downloaded(101), false)
+    quality.value = 'highest'
+    assert.equal(downloaded(101), false)
+    codec.value = 'AVC'
+    assert.equal(downloaded(101), true)
+    quality.value = '16'
+    codec.value = 'HEVC'
+    assert.equal(downloaded(101), false)
+    codec.value = 'AVC'
+    assert.equal(downloaded(101), true)
+  } finally {
+    scope.stop()
+  }
+})
+
+test('submitting 314 episodes closes the selector before the Go call settles and keeps failures retryable', async () => {
+  const app = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
+  const source = app.slice(app.indexOf('function handleEpisodeBatchSubmit'), app.indexOf('function showDownloadResults'))
+  const episodes = Array.from({ length: 314 }, (_, i) => ({ cid: i + 1 }))
+  const requests = []
+  const c = vm.createContext({
+    activeEpisodeDetail: ref({ bvid: 'BVroot', episodes, type: 'normal' }),
+    activeTab: ref('parse'), showEpisodeModal: ref(true),
+    batchSubmitting: ref(false), batchRequest: ref(null), batchError: ref(''),
+    AddDownloadTasks: req => new Promise((resolve, reject) => requests.push({ req, resolve, reject })),
+    showDownloadResults: () => {}, showToast: () => {},
+  })
+  vm.runInContext(ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, c)
+  c.handleEpisodeBatchSubmit(episodes.map(ep => ep.cid), '16', 'auto')
+  assert.equal(c.showEpisodeModal.value, false)
+  assert.equal(c.activeTab.value, 'queue')
+  assert.equal(c.batchSubmitting.value, true)
+  assert.equal(requests[0].req.episodes.length, 314)
+  requests[0].reject(new Error('模拟写入失败'))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(c.batchError.value, '模拟写入失败')
+  const retry = c.enqueueEpisodeBatch(c.batchRequest.value)
+  assert.deepEqual(requests[1].req.episodes, requests[0].req.episodes)
+  requests[1].resolve([])
+  await retry
+  assert.equal(c.batchRequest.value, null)
+})
+
+test('both selector types restore the format after dismissal and reset it when a different link opens', () => {
+  const app = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
+  const source = app.slice(app.indexOf('function handleOpenEpisodes'), app.indexOf('// 单集快速下载'))
+  for (const component of ['EpisodeSelectorModal', 'CollectionSelectorModal']) {
+    const detail = { type: 'normal', episodes: [] }
+    const c = vm.createContext({
+      activeEpisodeDetail: ref(null), activeEpisodeLinkVersion: ref(null), activeEpisodeQuality: ref('highest'),
+      activeEpisodeCodec: ref('auto'), showEpisodeModal: ref(false),
+    })
+    vm.runInContext(ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, c)
+    const open = version => {
+      c.handleOpenEpisodes(detail, '64', 'AV1', version)
+      return harness(component, {
+        detail, initialQuality: c.activeEpisodeQuality.value, initialCodec: c.activeEpisodeCodec.value,
+      })
+    }
+
+    const first = open(1)
+    first.c.updateFormat('16', 'HEVC')
+    const [event, quality, codec] = first.messages.at(-1)
+    assert.equal(event, 'format-change')
+    c.handleEpisodeFormatChange(quality, codec)
+    c.showEpisodeModal.value = false
+
+    const reopened = open(1)
+    assert.equal(reopened.run('targetQuality.value'), '16')
+    assert.equal(reopened.run('targetCodec.value'), 'HEVC')
+    const nextLink = open(2)
+    assert.equal(nextLink.run('targetQuality.value'), '64')
+    assert.equal(nextLink.run('targetCodec.value'), 'AV1')
   }
 })

@@ -31,14 +31,16 @@ import (
 type ProgressCallback func(t *DownloadTask)
 
 type workerHandle struct {
-	token       string
-	cancel      context.CancelFunc
-	invalidated bool
-	done        <-chan struct{}
+	token         string
+	cancel        context.CancelFunc
+	invalidated   bool
+	skipFinalSave bool // a queue transaction already persisted this worker's final task state
+	done          <-chan struct{}
 }
 
 // DownloadManager 负责整个下载队列、并发调度与状态管理
 type DownloadManager struct {
+	trace             downloadTrace
 	mu                sync.RWMutex
 	addMu             sync.Mutex
 	directoryMu       sync.Mutex
@@ -49,6 +51,7 @@ type DownloadManager struct {
 	workers           map[string]workerHandle
 	retiringPaths     map[string]int // reserved until background storage cleanup finishes
 	callback          ProgressCallback
+	batchCallback     func([]*DownloadTask)
 	biliClient        *bilibili.Client
 	cfgMgr            *config.ConfigManager
 	workerNotify      chan struct{}
@@ -83,6 +86,9 @@ func NewDownloadManager(cfgMgr *config.ConfigManager) *DownloadManager {
 func GetManager() *DownloadManager {
 	managerOnce.Do(func() {
 		m := NewDownloadManager(config.GetManager())
+		if downloadTraceEnabled {
+			m.trace = startDownloadTrace(filepath.Dir(m.cfgMgr.GetTasksPath()))
+		}
 		go m.schedulerLoop()
 		managerInstance = m
 	})
@@ -94,6 +100,42 @@ func (m *DownloadManager) SetCallback(cb ProgressCallback) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.callback = cb
+}
+
+func (m *DownloadManager) SetBatchCallback(cb func([]*DownloadTask)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.batchCallback = cb
+}
+
+func (m *DownloadManager) notifyTaskBatch(tasks []*DownloadTask) {
+	if len(tasks) == 0 {
+		return
+	}
+	m.mu.RLock()
+	cb := m.batchCallback
+	if cb == nil {
+		m.mu.RUnlock()
+		for _, task := range tasks {
+			m.notifyChange(task)
+		}
+		return
+	}
+	present := make(map[*DownloadTask]bool, len(m.tasks))
+	for _, task := range m.tasks {
+		present[task] = true
+	}
+	snapshots := make([]*DownloadTask, 0, len(tasks))
+	for _, task := range tasks {
+		if present[task] {
+			snapshot := *task
+			snapshots = append(snapshots, &snapshot)
+		}
+	}
+	m.mu.RUnlock()
+	if len(snapshots) > 0 {
+		cb(snapshots)
+	}
 }
 
 func (m *DownloadManager) notifyChange(t *DownloadTask) {
@@ -341,36 +383,46 @@ func (m *DownloadManager) DeleteTask(id string, deleteFile bool) error {
 
 // PauseAll 暂停所有正在下载或排队的任务 (无死锁安全实现)
 func (m *DownloadManager) PauseAll() error {
-	m.mu.Lock()
-	for id, w := range m.workers {
-		if w.cancel != nil {
-			w.cancel()
+	modified, err := func() ([]*DownloadTask, error) {
+		m.saveMu.Lock()
+		defer m.saveMu.Unlock()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		var changed []*DownloadTask
+		for _, task := range m.tasks {
+			if task == nil {
+				continue
+			}
+			canPause := task.Status == StatusDownloading || task.Status == StatusQueued || task.Status == StatusMerging
+			if !canPause && !task.ResumeOnStartup {
+				continue
+			}
+			changed = append(changed, task)
+			task.ResumeOnStartup = false
+			if canPause {
+				task.Status = StatusPaused
+				task.Speed, task.SpeedStr, task.ETAStr = 0, "0 KB/s", "--"
+			}
 		}
-		w.invalidated = true
-		m.workers[id] = w
-	}
-
-	var modified []*DownloadTask
-	for _, t := range m.tasks {
-		if t == nil {
-			continue
+		if len(changed) == 0 {
+			return nil, nil
 		}
-		t.ResumeOnStartup = false
-		if t.Status == StatusDownloading || t.Status == StatusQueued || t.Status == StatusMerging {
-			t.Status = StatusPaused
-			t.Speed = 0
-			t.SpeedStr = "0 KB/s"
-			t.ETAStr = "--"
-			modified = append(modified, t)
+		for id, worker := range m.workers {
+			worker.invalidated = true
+			m.workers[id] = worker
+			if worker.cancel != nil {
+				worker.cancel()
+			}
 		}
-	}
-	m.mu.Unlock()
-
-	persistErr := m.SaveTasks()
-	for _, t := range modified {
-		m.notifyChange(t)
-	}
-	return persistErr
+		err := m.writeTaskSnapshot(m.tasks)
+		for id, worker := range m.workers {
+			worker.skipFinalSave = err == nil
+			m.workers[id] = worker
+		}
+		return changed, err
+	}()
+	m.notifyTaskBatch(modified)
+	return err
 }
 
 // ResumeAll resumes paused and failed tasks without reordering the queue.
@@ -550,19 +602,53 @@ func (m *DownloadManager) setWorkerTaskStatus(task *DownloadTask, token string, 
 }
 
 func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token string) {
+	var trace downloadTrace
+	if downloadTraceEnabled && m.trace.active() {
+		trace = m.trace.forTask(task, token)
+		cfg := m.cfgMgr.Get()
+		trace.event("task_start", map[string]any{
+			"target_quality": task.TargetQuality, "target_codec": task.TargetCodec,
+			"concurrent_tasks": cfg.MaxConcurrent, "threads_per_track": cfg.ThreadsPerTask,
+			"limit_kib_per_second": cfg.DownloadLimitKB,
+		})
+	}
 	defer func() {
 		m.mu.Lock()
 		// 校验 token：仅当当前任务句柄属于本 worker 时才清理，防止旧 worker 退出误删新 worker 的取消句柄
+		saveTasks := true
 		if w, ok := m.workers[task.ID]; ok && w.token == token {
+			saveTasks = !w.skipFinalSave
 			delete(m.workers, task.ID)
 		}
+		var status TaskStatus
+		var downloaded, total int64
+		if downloadTraceEnabled && trace.active() {
+			status, downloaded, total = task.Status, task.DownloadedBytes, task.TotalBytes
+		}
 		m.mu.Unlock()
-		m.persistTasks()
+		if downloadTraceEnabled && trace.active() {
+			trace.event("task_end", map[string]any{
+				"status": status, "downloaded_bytes": downloaded, "total_bytes": total,
+				"context_error": traceError(ctx.Err()),
+			})
+		}
+		if saveTasks {
+			m.persistTasks()
+		}
 		m.triggerSchedule()
 	}()
 
 	// 1. 获取最新媒体直链
 	sel, err := m.biliClient.FetchStreamSelection(ctx, task.BVID, task.AID, task.CID, task.EPID, task.IsBangumi, task.TargetQuality, task.TargetCodec, task.IsCheese)
+	if downloadTraceEnabled && trace.active() {
+		fields := map[string]any{"error": traceError(err)}
+		if sel != nil {
+			fields["quality_id"], fields["codec"] = sel.QualityID, sel.Codec
+			fields["video_sources"], fields["audio_sources"] = traceSources(sel.VideoURLs), traceSources(sel.AudioURLs)
+			fields["video_size_hint"], fields["audio_size_hint"] = sel.VideoSize, sel.AudioSize
+		}
+		trace.event("playback_selection", fields)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return
@@ -573,6 +659,9 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	}
 	courseKeys, err := m.biliClient.ResolveCourseKeys(ctx, sel)
 	if err != nil {
+		if downloadTraceEnabled && trace.active() {
+			trace.event("course_authorization_error", map[string]any{"error": traceError(err)})
+		}
 		if ctx.Err() == nil {
 			m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, fmt.Sprintf("课堂播放授权失败: %v", err))
 		}
@@ -609,6 +698,9 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	}
 	m.mu.Unlock()
 	if pathErr != nil {
+		if downloadTraceEnabled && trace.active() {
+			trace.event("output_path_error", map[string]any{"error": traceError(pathErr)})
+		}
 		message := pathErr.Error()
 		if isDiskSpaceError(pathErr) {
 			message = diskSpaceMessage
@@ -617,6 +709,9 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		return
 	}
 	if err := m.relocateTaskStreams(ctx, task); err != nil {
+		if downloadTraceEnabled && trace.active() {
+			trace.event("stream_storage_error", map[string]any{"error": traceError(err)})
+		}
 		if ctx.Err() == nil {
 			m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, fileFailureMessage("准备下载中文件失败", err))
 		}
@@ -633,6 +728,9 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		factory = NewStreamDownloader
 	}
 	vDownloader := factory(sel.VideoURLs, task.VideoTmpPath)
+	if downloadTraceEnabled {
+		vDownloader.trace = trace.forTrack("video")
+	}
 	vDownloader.checkpoints = m.checkpoints()
 	vDownloader.representation = mediaRepresentationKey(sel.VideoURLs)
 	vDownloader.sizeHint = sel.VideoSize
@@ -648,6 +746,9 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 	var aDownloader *StreamDownloader
 	if len(filterStreamURLs(sel.AudioURLs)) > 0 {
 		aDownloader = factory(sel.AudioURLs, task.AudioTmpPath)
+		if downloadTraceEnabled {
+			aDownloader.trace = trace.forTrack("audio")
+		}
 		aDownloader.checkpoints = m.checkpoints()
 		aDownloader.representation = mediaRepresentationKey(sel.AudioURLs)
 		aDownloader.sizeHint = sel.AudioSize
@@ -688,6 +789,8 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		if ctx.Err() != nil {
 			return
 		}
+		stopProgress()
+		progress.tick(time.Now())
 		m.setWorkerTaskStatus(task, token, StatusDownloading, StatusError, formatFriendlyError(failure.err), &bilibili.PlaybackError{Detail: streamFailureDetail(failure.label, failure.err, failure.stream.lastDiagnostic())})
 		return
 	}
@@ -740,6 +843,9 @@ func (m *DownloadManager) runTask(ctx context.Context, task *DownloadTask, token
 		mergeFunc = MergeAudioVideoContext
 	}
 	err = mergeFunc(ctx, vTmpP, audioMergePath, finalOutPath, cfg.DeleteTempFiles)
+	if downloadTraceEnabled && trace.active() {
+		trace.event("merge_result", map[string]any{"error": traceError(err)})
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return
@@ -902,6 +1008,9 @@ func streamFailureDetail(stage string, err, last error) string {
 func formatFriendlyError(err error) string {
 	if err == nil {
 		return ""
+	}
+	if errors.Is(err, errEntityChanged) || errors.Is(err, errRangeUnsupported) {
+		return "下载节点返回的媒体数据不一致，请点击重试"
 	}
 	var requestErr *url.Error
 	if errors.As(err, &requestErr) && requestErr.Err != nil {

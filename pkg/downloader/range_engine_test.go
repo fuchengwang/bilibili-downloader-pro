@@ -720,6 +720,29 @@ func TestConnectionBudgetCancellation(t *testing.T) {
 	}
 }
 
+func TestCancelledRangeRequestDoesNotCoolDownSource(t *testing.T) {
+	const source = "https://cdn.invalid/media"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := NewStreamDownloader([]string{source}, "")
+	stream.connections = make(connectionBudget, 1)
+	stream.client.Transport = streamRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		cancel()
+		return nil, req.Context().Err()
+	})
+	pool := newSourcePool(stream.urls, nil)
+	transfer := &rangeTransfer{s: stream, pool: pool, total: 128, threads: 2}
+	if err := transfer.transferRange(ctx, &byteRange{End: 128}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled request returned %v", err)
+	}
+	if pool.sources[0].failures != 0 || !pool.canRequest(source) {
+		t.Fatalf("cancelled request penalised a healthy source: %+v", pool.sources[0])
+	}
+	if len(stream.connections) != 0 {
+		t.Fatal("cancelled request leaked a connection slot")
+	}
+}
+
 func TestPlaybackRefreshRejectsRepresentationChange(t *testing.T) {
 	original := &bilibili.StreamSelection{QualityID: 80, Codec: "AVC"}
 	refresh := playbackRefresher(original, func(context.Context) (*bilibili.StreamSelection, error) {

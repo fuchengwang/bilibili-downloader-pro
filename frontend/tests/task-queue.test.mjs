@@ -128,6 +128,27 @@ test('real application subscribes before reading tasks and merges updates arrivi
   assert.deepEqual(Array.from(orderedQueueTasks(context.tasks.value),t=>[t.id,t.status]),[['A1','downloading'],['A2','queued']])
 })
 
+test('whole-queue controls show pending state and ignore competing clicks until the RPC settles', async () => {
+  const calls = []
+  let finish
+  const context = vm.createContext({
+    queueBatchBusy: ref(false), queueAllAction: ref(null), showToast() {},
+    PauseAllTasks: () => new Promise(resolve => { calls.push('pause'); finish = resolve }),
+    ResumeAllTasks: async () => { calls.push('resume') },
+  })
+  vm.runInContext(compileFunctions(ast, 'runAllQueueAction'), context)
+  const pending = context.runAllQueueAction('pause')
+  assert.equal(context.queueAllAction.value, 'pause')
+  assert.equal(context.queueBatchBusy.value, true)
+  await context.runAllQueueAction('resume')
+  assert.deepEqual(calls, ['pause'])
+  finish()
+  await pending
+  assert.equal(context.queueAllAction.value, null)
+  await context.runAllQueueAction('resume')
+  assert.deepEqual(calls, ['pause', 'resume'])
+})
+
 test('failed queue changes preserve task events and release the controls for retry', async () => {
   for (const [method, binding, args] of [
     ['onMoveQueueTasks', 'ReorderTasks', [['B'], { type: 'up' }]],
@@ -181,7 +202,7 @@ const rendered=vm.createContext({exports:{},require:vueRequire})
 vm.runInContext(ts.transpileModule(template.code,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,rendered)
 
 const iconStubs = Object.fromEntries(
-  ['Play', 'Pause', 'RotateCcw', 'Trash2', 'FolderOpen', 'AlertCircle', 'AlertTriangle', 'Clock', 'Zap', 'HardDrive', 'Film', 'ExternalLink', 'ListChecks', 'Check', 'Minus', 'X', 'LayoutList', 'List', 'GripVertical', 'ArrowUpToLine', 'ArrowDownToLine', 'ArrowUp', 'ArrowDown']
+  ['Download', 'Pause', 'RotateCcw', 'Trash2', 'FolderOpen', 'AlertCircle', 'AlertTriangle', 'Clock', 'Zap', 'HardDrive', 'Film', 'ExternalLink', 'ListChecks', 'Check', 'Minus', 'X', 'LayoutList', 'List', 'GripVertical', 'ArrowUpToLine', 'ArrowDownToLine', 'ArrowUp', 'ArrowDown']
     .map(name => [name, { render: () => null }])
 )
 
@@ -193,9 +214,9 @@ async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all'
   const ordered = orderedQueueTasks(tasks)
   const selectionSummary = summarizeQueueSelection(filteredTasks, selectedIds, ordered)
   const posMap = new Map(ordered.map((t, idx) => [t.id, idx + 1]))
-  const formatStatusContext = vm.createContext({})
+  const queueContext = vm.createContext({ getQueuePosition: id => posMap.get(id) || 1 })
   const queueScript = ts.createSourceFile('DownloadQueue.ts', component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1], ts.ScriptTarget.Latest, true)
-  vm.runInContext(compileFunctions(queueScript, 'formatDeleteTargetStatus'), formatStatusContext)
+  vm.runInContext(compileFunctions(queueScript, 'formatDeleteTargetStatus', 'canPrioritizeSingleTask'), queueContext)
   return renderToString(createSSRApp({
     ssrRender: rendered.exports.ssrRender,
     components: iconStubs,
@@ -210,12 +231,13 @@ async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all'
       errorCount,
       selectionMode,
       selectionSummary,
+      canPrioritizeSelection: selectionSummary.canMoveTop || selectionSummary.selectedTasks.some(t => t.status === 'queued'),
       batchDeletePreviewTasks: selectionSummary.selectedTasks.slice(0, 4),
       batchBusy,
       showBatchDeleteModal,
       showDeleteModal,
       deleteTargetTask,
-      formatDeleteTargetStatus: formatStatusContext.formatDeleteTargetStatus,
+      formatDeleteTargetStatus: queueContext.formatDeleteTargetStatus,
       openDeleteModal: () => {},
       closeDeleteModal: () => {},
       confirmDeleteSingle: () => {},
@@ -226,8 +248,8 @@ async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all'
       dragPointerX: 0,
       dragPointerY: 0,
       dropTargetLabel: '',
-      getQueuePosition: id => posMap.get(id) || 1,
-      canPrioritizeSingleTask: t => t.status !== 'merging' && (posMap.get(t.id) || 1) > 1,
+      getQueuePosition: queueContext.getQueuePosition,
+      canPrioritizeSingleTask: queueContext.canPrioritizeSingleTask,
       isTaskBeingDragged: () => false,
       isTaskSelected: id => selectedIds.has(id),
       isLegacyPlaybackError: () => false
@@ -236,12 +258,21 @@ async function renderQueue({ tasks, filteredTasks = tasks, currentFilter = 'all'
 }
 
 test('queued task renders pause-queue action while paused task renders continue',async()=>{
-  for(const [status,expected,unexpected]of [['queued','暂停排队','继续'],['paused','继续','暂停排队']]){
+  for(const [status,expected,unexpected]of [['queued','暂停排队','继续下载'],['paused','继续下载','暂停排队']]){
     const tasks=[{...task('A1',1,status),partTitle:'A1',title:'A',progress:0}]
     const html=await renderQueue({ tasks })
     assert.ok(html.includes(`title="${expected}"`),html)
     assert.ok(!html.includes(`title="${unexpected}"`),html)
   }
+})
+
+test('queued task at the head exposes priority while another task is downloading', async () => {
+  const tasks = [task('A1', 1, 'queued'), task('A2', 2, 'downloading')]
+  const html = await renderQueue({ tasks })
+  const actions = [...html.matchAll(/<button[^>]+title="置顶优先下载"[^>]*>/g)].map(match => match[0])
+  assert.equal(actions.length, 2)
+  assert.match(actions[0], /\bis-queued-action\b/)
+  assert.doesNotMatch(actions[0], /\b(?:disabled|is-hidden-action)\b/)
 })
 
 test('normal mode shows multi-select trigger without batch bar; selection mode renders batch bar and checkboxes', async () => {

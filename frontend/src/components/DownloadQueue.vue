@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
-  Play,
+  Download,
   Pause,
   RotateCcw,
   Trash2,
@@ -39,6 +39,7 @@ import {
 const props = withDefaults(defineProps<{
   tasks: downloader.DownloadTask[]
   batchBusy?: boolean
+  allAction?: 'pause' | 'resume' | null
   viewMode?: 'comfortable' | 'compact'
 }>(), {
   batchBusy: false,
@@ -126,6 +127,9 @@ const filteredTasks = computed(() => {
 const selectionSummary = computed(() =>
   summarizeQueueSelection(filteredTasks.value, selectedIds.value, allOrderedActiveTasks.value)
 )
+const canPrioritizeSelection = computed(() =>
+  selectionSummary.value.canMoveTop || selectionSummary.value.selectedTasks.some(task => task.status === 'queued')
+)
 const batchDeletePreviewTasks = computed(() => selectionSummary.value.selectedTasks.slice(0, 4))
 
 function getQueuePosition(taskId: string): number {
@@ -133,8 +137,7 @@ function getQueuePosition(taskId: string): number {
 }
 
 function canPrioritizeSingleTask(task: downloader.DownloadTask): boolean {
-  if (task.status === 'merging') return false
-  return getQueuePosition(task.id) > 1
+  return task.status !== 'merging' && (task.status === 'queued' || getQueuePosition(task.id) > 1)
 }
 
 function triggerSinglePrioritize(taskId: string) {
@@ -462,7 +465,7 @@ function handleKeydown(event: KeyboardEvent) {
   if (event.altKey && selectionSummary.value.selectedCount > 0) {
     if (event.key === 'ArrowUp') {
       event.preventDefault()
-      if (event.shiftKey && selectionSummary.value.canMoveTop) triggerBatchMove('top')
+      if (event.shiftKey && canPrioritizeSelection.value) triggerBatchMove('top')
       else if (!event.shiftKey && selectionSummary.value.canMoveUp) triggerBatchMove('up')
       return
     }
@@ -556,11 +559,11 @@ onUnmounted(() => {
         </button>
         <button class="btn-secondary q-action-btn" :disabled="batchBusy" @click="emit('pause-all')">
           <Pause :size="13" />
-          <span>全部暂停</span>
+          <span>{{ allAction === 'pause' ? '正在暂停…' : '全部暂停' }}</span>
         </button>
         <button class="btn-secondary q-action-btn" :disabled="batchBusy" @click="emit('resume-all')">
-          <Play :size="13" />
-          <span>全部继续</span>
+          <Download :size="13" />
+          <span>{{ allAction === 'resume' ? '正在继续…' : '全部继续' }}</span>
         </button>
       </div>
     </div>
@@ -602,7 +605,7 @@ onUnmounted(() => {
           <button
             type="button"
             class="btn-secondary batch-action-btn batch-prioritize-btn"
-            :disabled="batchBusy || !selectionSummary.canMoveTop"
+            :disabled="batchBusy || !canPrioritizeSelection"
             title="置顶并优先下载 (Option+Shift+↑)"
             @click="triggerBatchMove('top')"
           >
@@ -652,7 +655,7 @@ onUnmounted(() => {
           :disabled="batchBusy || selectionSummary.resumableIds.length === 0"
           @click="triggerBatchResume"
         >
-          <Play :size="13" />
+          <Download :size="13" />
           <span>继续{{ selectionSummary.resumableIds.length > 0 ? ` (${selectionSummary.resumableIds.length})` : '' }}</span>
         </button>
 
@@ -779,7 +782,7 @@ onUnmounted(() => {
                 <span>下载中 {{ task.speedStr }}</span>
               </span>
               <span v-else-if="task.status === 'merging'" class="status-tag tag-merging">
-                <span class="pulse-dot-purple"></span>
+                <span class="pulse-dot"></span>
                 <span>音视频合成中...</span>
               </span>
               <span v-else-if="task.status === 'paused'" class="status-tag tag-paused">
@@ -813,9 +816,9 @@ onUnmounted(() => {
               <span class="progress-percent">{{ (task.progress || 0).toFixed(1) }}%</span>
             </div>
           </div>
-          <div v-if="task.status === 'error' && (task.errorKind || isLegacyPlaybackError(task))" class="task-error-help">
-            <p>{{ task.errorHint || '请稍后重试，或在B站检查是否能完整播放。' }}</p>
-            <div class="error-help-actions">
+          <div v-if="task.status === 'error' && (task.errorDetail || task.errorKind || isLegacyPlaybackError(task))" class="task-error-help">
+            <p v-if="task.errorKind || isLegacyPlaybackError(task)">{{ task.errorHint || '请稍后重试，或在B站检查是否能完整播放。' }}</p>
+            <div v-if="task.errorKind || isLegacyPlaybackError(task)" class="error-help-actions">
               <button v-if="taskSourceURL(task)" @click="BrowserOpenURL(taskSourceURL(task))"><ExternalLink :size="12" />在B站打开</button>
               <button v-if="isPermissionError(task.errorKind)" @click="emit('open-login')">登录 / 重新登录</button>
             </div>
@@ -828,7 +831,7 @@ onUnmounted(() => {
           <button
             type="button"
             class="btn-icon task-btn prioritize-btn"
-            :class="{ 'is-hidden-action': !canPrioritizeSingleTask(task) }"
+            :class="{ 'is-hidden-action': !canPrioritizeSingleTask(task), 'is-queued-action': task.status === 'queued' }"
             :disabled="!canPrioritizeSingleTask(task) || batchBusy"
             title="置顶优先下载"
             aria-label="置顶优先下载"
@@ -850,9 +853,10 @@ onUnmounted(() => {
             v-else-if="task.status === 'paused'"
             class="btn-icon task-btn"
             @click="emit('resume-task', task.id)"
-            title="继续"
+            title="继续下载"
+            aria-label="继续下载"
           >
-            <Play :size="15" />
+            <Download :size="15" />
           </button>
 
           <button
@@ -943,12 +947,10 @@ onUnmounted(() => {
         </div>
 
         <div class="modal-footer">
-          <button class="btn-secondary" @click="closeDeleteModal">
-            取消
-          </button>
-          <button class="btn-danger" @click="confirmDeleteSingle">
-            确认删除
-          </button>
+          <div class="confirm-actions">
+            <button class="btn-secondary" @click="closeDeleteModal">取消</button>
+            <button class="btn-danger" @click="confirmDeleteSingle">确认删除</button>
+          </div>
         </div>
       </div>
     </div>
@@ -982,12 +984,12 @@ onUnmounted(() => {
         </div>
 
         <div class="modal-footer">
-          <button class="btn-secondary" @click="showBatchDeleteModal = false">
-            取消
-          </button>
-          <button class="btn-danger" :disabled="batchBusy" @click="confirmBatchDelete">
-            确认删除 ({{ selectionSummary.deletableIds.length }})
-          </button>
+          <div class="confirm-actions">
+            <button class="btn-secondary" @click="showBatchDeleteModal = false">取消</button>
+            <button class="btn-danger" :disabled="batchBusy" @click="confirmBatchDelete">
+              确认删除 ({{ selectionSummary.deletableIds.length }})
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1633,7 +1635,7 @@ onUnmounted(() => {
 }
 
 .fill-merging {
-  background: linear-gradient(90deg, #8b5cf6, #a855f7);
+  background: var(--task-merging);
 }
 
 .fill-paused {
@@ -1683,22 +1685,13 @@ onUnmounted(() => {
   width: 5px;
   height: 5px;
   border-radius: var(--radius-full);
-  background: var(--bili-pink);
-  box-shadow: 0 0 6px var(--bili-pink);
+  background: currentColor;
+  box-shadow: 0 0 6px currentColor;
   animation: pulseGlow 1.5s infinite;
 }
 
 .tag-merging {
-  color: #a855f7;
-}
-
-.pulse-dot-purple {
-  width: 5px;
-  height: 5px;
-  border-radius: var(--radius-full);
-  background: #a855f7;
-  box-shadow: 0 0 6px #a855f7;
-  animation: pulseGlow 1.5s infinite;
+  color: var(--task-merging);
 }
 
 .tag-paused {
@@ -1749,6 +1742,7 @@ onUnmounted(() => {
   transition: opacity 0.14s ease, color var(--transition-fast), background var(--transition-fast);
 }
 
+.prioritize-btn.is-queued-action,
 .task-card:hover .prioritize-btn:not(.is-hidden-action),
 .prioritize-btn:not(.is-hidden-action):focus-visible {
   opacity: 1;
@@ -1979,9 +1973,6 @@ onUnmounted(() => {
   color: #fff;
   border: none;
   border-radius: var(--radius-sm);
-  padding: 0 14px;
-  height: 32px;
-  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
   transition: all var(--transition-fast);

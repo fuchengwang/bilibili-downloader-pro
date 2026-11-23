@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime"
 
 	"bilibili_downloader/pkg/bilibili"
 
@@ -30,7 +31,7 @@ func startupThemeMiddleware(getTheme func() string, getAccount ...func() *bilibi
 			if theme != "light" && theme != "midnight" && theme != "system" {
 				theme = "dark"
 			}
-			root := fmt.Sprintf(`<html data-startup-theme="%s" data-theme="%s"`, theme, theme)
+			root := fmt.Sprintf(`<html data-startup-theme="%s" data-theme="%s" data-platform="%s"`, theme, theme, runtime.GOOS)
 			index = bytes.Replace(index, []byte("<html"), []byte(root), 1)
 			if len(getAccount) > 0 {
 				// encoding/json escapes HTML characters, including any closing

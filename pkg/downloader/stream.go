@@ -32,6 +32,7 @@ func isMediaAuthStatus(code int) bool {
 
 // StreamDownloader 单个媒体流 (视频或音频) 的高可靠断点续传下载器
 type StreamDownloader struct {
+	trace                    downloadTrace
 	diagnosticMu             sync.Mutex
 	diagnosticLast           error
 	onDiagnostic             func(error)
@@ -261,6 +262,10 @@ type mediaProbe struct {
 }
 
 func (s *StreamDownloader) probeSingleCandidate(ctx context.Context, urlToProbe string) (mediaProbe, error) {
+	return s.probeCandidatePrefix(ctx, urlToProbe, 0)
+}
+
+func (s *StreamDownloader) probeCandidatePrefix(ctx context.Context, urlToProbe string, end int64) (mediaProbe, error) {
 	candidateCtx, stopCandidate := context.WithTimeout(ctx, 5*time.Second)
 	defer stopCandidate()
 
@@ -270,10 +275,18 @@ func (s *StreamDownloader) probeSingleCandidate(ctx context.Context, urlToProbe 
 	}
 	req.Header.Set("User-Agent", bilibili.BrowserUA)
 	req.Header.Set("Referer", bilibili.Referer)
-	req.Header.Set("Range", "bytes=0-0")
+	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", end))
 	req.Header.Set("Accept-Encoding", "identity")
 
+	var diagnostic downloadTraceRequest
+	if downloadTraceEnabled && s.trace.active() {
+		diagnostic = s.trace.request(req, "probe", nil)
+		req = diagnostic.withContext(req)
+	}
 	resp, err := s.client.Do(req)
+	if downloadTraceEnabled && s.trace.active() {
+		diagnostic.response(resp, err)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return mediaProbe{}, ctx.Err()
@@ -297,7 +310,7 @@ func (s *StreamDownloader) probeSingleCandidate(ctx context.Context, urlToProbe 
 	if resp.StatusCode == http.StatusPartialContent {
 		cr := resp.Header.Get("Content-Range")
 		first, last, total, pErr := parseContentRange(cr)
-		if pErr == nil && first == 0 && last == 0 && total > 0 && (resp.ContentLength < 0 || resp.ContentLength == 1) {
+		if pErr == nil && first == 0 && total > 0 && last == min(end, total-1) && (resp.ContentLength < 0 || resp.ContentLength == last+1) {
 			return mediaProbe{total: total, response: resp}, nil
 		}
 		if pErr != nil {

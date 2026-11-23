@@ -21,6 +21,7 @@ function harness(cached) {
   const context = vm.createContext({
     userInfo: ref(null), userInfoLoading: ref(true), userInfoError: ref(false), userInfoRequest: 0,
     userInfoRefreshing: ref(false),
+    clearEpisodePlaybackCache: () => {},
     GetCachedUserInfo: async () => cached,
     GetUserInfo: () => new Promise((resolve, reject) => requests.push({ resolve, reject })),
     showToast: (...args) => notifications.push(args), quickParseRef: ref(null), console: { error() {} },

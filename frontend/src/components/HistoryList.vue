@@ -561,15 +561,12 @@ function confirmClearAll() {
         </div>
 
         <div class="modal-footer">
-          <button class="btn-secondary" @click="showDeleteModal = false">
-            取消
-          </button>
-          <button
-            class="btn-danger"
-            @click="confirmDeleteSingle"
-          >
-            {{ deleteLocalFile ? '删除记录与本地文件' : '仅清除记录' }}
-          </button>
+          <div class="confirm-actions">
+            <button class="btn-secondary" @click="showDeleteModal = false">取消</button>
+            <button class="btn-danger" @click="confirmDeleteSingle">
+              {{ deleteLocalFile ? '删除记录与本地文件' : '仅清除记录' }}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -615,12 +612,12 @@ function confirmClearAll() {
         </div>
 
         <div class="modal-footer">
-          <button class="btn-secondary" @click="showBatchDeleteModal = false">
-            取消
-          </button>
-          <button class="btn-danger" :disabled="batchBusy" @click="confirmBatchDelete">
-            {{ batchDeleteLocalFiles ? `删除记录与文件 (${selectionSummary.deletableIds.length})` : `仅移除记录 (${selectionSummary.deletableIds.length})` }}
-          </button>
+          <div class="confirm-actions">
+            <button class="btn-secondary" @click="showBatchDeleteModal = false">取消</button>
+            <button class="btn-danger" :disabled="batchBusy" @click="confirmBatchDelete">
+              {{ batchDeleteLocalFiles ? `删除记录与文件 (${selectionSummary.deletableIds.length})` : `仅移除记录 (${selectionSummary.deletableIds.length})` }}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -657,15 +654,12 @@ function confirmClearAll() {
         </div>
 
         <div class="modal-footer">
-          <button class="btn-secondary" @click="showClearAllModal = false">
-            取消
-          </button>
-          <button
-            class="btn-danger"
-            @click="confirmClearAll"
-          >
-            {{ clearAllDeleteFiles ? '清空记录并删除所有文件' : '仅清空记录' }}
-          </button>
+          <div class="confirm-actions">
+            <button class="btn-secondary" @click="showClearAllModal = false">取消</button>
+            <button class="btn-danger" @click="confirmClearAll">
+              {{ clearAllDeleteFiles ? '清空记录并删除所有文件' : '仅清空记录' }}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1428,9 +1422,6 @@ function confirmClearAll() {
   color: #fff;
   border: none;
   border-radius: var(--radius-sm);
-  padding: 0 14px;
-  height: 32px;
-  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
   transition: all var(--transition-fast);

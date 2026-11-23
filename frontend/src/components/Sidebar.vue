@@ -154,14 +154,9 @@ function handleAccountClick() {
   border-right: 1px solid var(--border-hairline);
   display: flex;
   flex-direction: column;
-  padding: 42px 12px 16px 12px; /* Top 42px creates elegant clearance under Mac traffic lights */
+  padding: var(--sidebar-top-padding) 12px 16px;
   box-sizing: border-box;
   flex-shrink: 0;
-}
-
-:global(:root[data-platform='windows']) .sidebar,
-:global(:root[data-platform='linux']) .sidebar {
-  padding-top: 14px;
 }
 
 .brand {
@@ -266,19 +261,21 @@ function handleAccountClick() {
 }
 
 .nav-badge {
-  background: var(--bili-pink);
-  color: #ffffff;
+  background: var(--nav-badge-queue-bg);
+  color: var(--nav-badge-queue-text);
+  min-width: 18px;
   font-size: 10px;
   font-weight: 700;
-  padding: 1px 6px;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 5px;
   border-radius: var(--radius-full);
-  line-height: 1.3;
+  line-height: 1.4;
+  text-align: center;
 }
 
 .nav-badge.completed-badge {
-  background: rgba(16, 185, 129, 0.25);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.4);
+  background: var(--nav-badge-completed-bg);
+  color: var(--nav-badge-completed-text);
 }
 
 .user-card {

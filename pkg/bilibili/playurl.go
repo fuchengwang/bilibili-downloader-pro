@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -236,9 +237,16 @@ func (c *Client) GetAvailableQualities(ctx context.Context, bvid string, aid, ci
 
 	// 收集 DASH 实际已返回的画质 ID
 	dashQids := make(map[int]bool)
+	codecsByQuality := make(map[int][]string)
 	if dash != nil {
 		for _, v := range dash.Video {
-			dashQids[v.ID] = dashQids[v.ID] || hasPlayableStreamURL(v)
+			if !hasPlayableStreamURL(v) {
+				continue
+			}
+			dashQids[v.ID] = true
+			if codec := videoCodecName(v.Codecid); codec != "" && !slices.Contains(codecsByQuality[v.ID], codec) {
+				codecsByQuality[v.ID] = append(codecsByQuality[v.ID], codec)
+			}
 		}
 	}
 
@@ -285,6 +293,7 @@ func (c *Client) GetAvailableQualities(ctx context.Context, bvid string, aid, ci
 		options = append(options, QualityOption{
 			ID:              qn,
 			Label:           label,
+			Codecs:          strings.Join(codecsByQuality[qn], ","),
 			IsVipRequired:   isVip && !dashQids[qn],
 			IsLoginRequired: isLogin && !dashQids[qn],
 			IsAvailable:     dashQids[qn],
@@ -343,13 +352,8 @@ func (c *Client) FetchStreamSelection(ctx context.Context, bvid string, aid, cid
 		label = fmt.Sprintf("%dP", video.ID)
 	}
 
-	codecName := "AVC"
-	switch video.Codecid {
-	case 13:
-		codecName = "AV1"
-	case 12:
-		codecName = "HEVC"
-	case 7:
+	codecName := videoCodecName(video.Codecid)
+	if codecName == "" {
 		codecName = "AVC"
 	}
 
@@ -705,6 +709,19 @@ func streamMatchesCodec(stream DashStream, targetCodec string) bool {
 		return stream.Codecid == 13
 	default:
 		return false
+	}
+}
+
+func videoCodecName(id int) string {
+	switch id {
+	case 7:
+		return "AVC"
+	case 12:
+		return "HEVC"
+	case 13:
+		return "AV1"
+	default:
+		return ""
 	}
 }
 

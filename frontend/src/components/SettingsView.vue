@@ -872,6 +872,7 @@ const limitUnitOptions = [
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 16px;
   padding: 10px 12px;
   border: 1px solid rgba(239, 68, 68, 0.2);
@@ -890,10 +891,9 @@ const limitUnitOptions = [
   color: var(--text-muted);
 }
 
-.confirm-actions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
+.deactivate-confirm button {
+  height: 32px;
+  white-space: nowrap;
 }
 
 .deactivate-error {

@@ -19,7 +19,7 @@ import (
 
 var (
 	errRangeUnsupported    = errors.New("server does not support ranged downloads")
-	errEntityChanged       = errors.New("媒体内容已变化，重新下载")
+	errEntityChanged       = errors.New("媒体响应与下载断点不一致")
 	errNonMediaResponse    = errors.New("媒体响应类型异常")
 	errUnsupportedEncoding = errors.New("媒体响应使用了不支持的内容编码")
 )
@@ -51,6 +51,9 @@ type rangeTransfer struct {
 
 func (s *StreamDownloader) downloadCore(ctx context.Context, threads int, progress DownloadProgressFn) (result error) {
 	defer func() { s.recordDiagnostic(result) }()
+	if downloadTraceEnabled && s.trace.active() {
+		defer func() { s.trace.event("track_end", map[string]any{"error": traceError(result)}) }()
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -91,8 +94,12 @@ func (s *StreamDownloader) downloadCore(ctx context.Context, threads int, progre
 		return err
 	}
 	pool := newSourcePool(s.urls, s.refresher)
+	if downloadTraceEnabled {
+		pool.trace = s.trace
+	}
 	sequential := false
-	for restart := 0; restart < 3; restart++ {
+	retriedMatchingSource := false
+	for {
 		e, err := s.prepareTransfer(pool, threads, sequential, progress)
 		if err != nil {
 			return err
@@ -103,28 +110,59 @@ func (s *StreamDownloader) downloadCore(ctx context.Context, threads int, progre
 			s.reportRestored(delta, progress)
 		}
 		initial = e.received()
+		if downloadTraceEnabled && s.trace.active() {
+			e.traceCheckpoint("transfer_start", nil)
+		}
 		err = e.run(ctx)
 		closeErr := e.file.Close()
 		if err == nil {
 			err = closeErr
 		}
+		if downloadTraceEnabled && s.trace.active() {
+			e.traceCheckpoint("transfer_end", err)
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		var status *mediaHTTPError
-		if errors.As(err, &status) && status.code == http.StatusRequestedRangeNotSatisfiable && e.total > 0 {
-			// An error response cannot establish a new media size. Only recheck
-			// after failover is exhausted and all range writers have stopped.
-			urls := pool.candidateURLs()
-			if s.verifyChangedRangeTotal(ctx, e.total, urls) {
-				pool = newSourcePool(urls, s.refresher)
-				err = errEntityChanged
+		if errors.Is(err, errEntityChanged) || isRangeRejection(err) {
+			if sequential {
+				return err
+			}
+			// Verify conflicting responses after all writers have stopped.
+			// Prefer a source compatible with the existing bytes.
+			matching, replacement, probe := e.verifyEntity(ctx)
+			if downloadTraceEnabled && s.trace.active() {
+				s.trace.event("entity_verification", map[string]any{
+					"error": traceError(err), "matching_source": traceSource(matching),
+					"replacement_source": traceSource(replacement), "replacement_total": probe.total,
+				})
 			}
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			if matching != "" && errors.Is(err, errEntityChanged) && !retriedMatchingSource {
+				retriedMatchingSource = true
+				pool.restoreMatchingCandidate(matching)
+				initial = e.received()
+				continue
+			}
+			if matching != "" || replacement == "" {
+				return err
+			}
+			s.rememberProbeValidators(probe.response)
+			s.setTotalSize(probe.total)
+			// Start a clean stream on the verified source. A different CDN
+			// may still be serving the old entity from its cache.
+			pool = newSourcePool([]string{replacement}, nil)
+			if downloadTraceEnabled {
+				pool.trace = s.trace
+			}
+			err = errEntityChanged
 		}
 		if errors.Is(err, errRangeUnsupported) || errors.Is(err, errEntityChanged) {
+			if sequential {
+				return err
+			}
 			initial = e.received()
 			if initial != 0 {
 				s.reportRestored(-initial, progress)
@@ -140,10 +178,11 @@ func (s *StreamDownloader) downloadCore(ctx context.Context, threads int, progre
 			if truncateErr := os.Truncate(s.targetPath, 0); truncateErr != nil {
 				return truncateErr
 			}
-			if errors.Is(err, errRangeUnsupported) {
-				sequential = true
-				threads = 1
+			if downloadTraceEnabled && s.trace.active() {
+				s.trace.event("checkpoint_reset", map[string]any{"cause": traceError(err), "total_bytes": s.totalSize})
 			}
+			sequential = true
+			threads = 1
 			continue
 		}
 		if err == nil {
@@ -157,32 +196,73 @@ func (s *StreamDownloader) downloadCore(ctx context.Context, threads int, progre
 		}
 		return err
 	}
-	return fmt.Errorf("媒体范围或内容反复变化，已保留缓存，请稍后重试")
 }
 
-func (s *StreamDownloader) verifyChangedRangeTotal(ctx context.Context, previousTotal int64, urls []string) bool {
+func isRangeRejection(err error) bool {
+	var status *mediaHTTPError
+	return errors.As(err, &status) && status.code == http.StatusRequestedRangeNotSatisfiable
+}
+
+func (e *rangeTransfer) verifyEntity(ctx context.Context) (matching, replacement string, verified mediaProbe) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	for i, url := range urls {
-		release, err := s.connections.acquire(ctx)
+	var probeEnd int64
+	if e.total <= 0 {
+		// The initial one-byte probe may have been rejected, which is how some
+		// legacy prefixes reach this path without a verified size.
+		probeEnd = 1
+	}
+	probe := func(url string) (mediaProbe, error) {
+		release, err := e.s.connections.acquire(ctx)
 		if err != nil {
-			return false
+			return mediaProbe{}, err
 		}
-		probe, err := s.probeSingleCandidate(ctx, url)
-		release()
+		defer release()
+		return e.s.probeCandidatePrefix(ctx, url, probeEnd)
+	}
+	variable := false
+	for _, url := range e.pool.candidateURLs() {
+		first, err := probe(url)
 		if err != nil {
 			continue
 		}
-		if probe.total == previousTotal {
-			return false
+		if e.probeMatches(first) {
+			return url, "", mediaProbe{}
 		}
-		s.rememberProbeValidators(probe.response)
-		s.setTotalSize(probe.total)
-		copy(urls[1:i+1], urls[:i])
-		urls[0] = url
-		return true
+		if replacement != "" {
+			continue
+		}
+		second, err := probe(url)
+		if err != nil {
+			variable = true
+			continue
+		}
+		if e.probeMatches(second) {
+			return url, "", mediaProbe{}
+		}
+		if first.total != second.total ||
+			responseValidatorKey(first.response) != responseValidatorKey(second.response) ||
+			first.response.Header.Get("ETag") != second.response.Header.Get("ETag") ||
+			first.response.Header.Get("Last-Modified") != second.response.Header.Get("Last-Modified") {
+			variable = true
+			continue
+		}
+		replacement, verified = url, second
 	}
-	return false
+	if variable {
+		return "", "", mediaProbe{}
+	}
+	return "", replacement, verified
+}
+
+func (e *rangeTransfer) probeMatches(probe mediaProbe) bool {
+	if e.total <= 0 {
+		// Legacy continuous prefixes do not yet have a verified total.
+		return e.received() < probe.total
+	}
+	key := responseValidatorKey(probe.response)
+	return probe.total == e.total && (e.validatorKey != "" && e.validatorKey != key ||
+		!validatorChanged(e.etag, e.modified, probe.response.Header.Get("ETag"), probe.response.Header.Get("Last-Modified")))
 }
 
 func (s *StreamDownloader) reportRestored(delta int64, progress DownloadProgressFn) {
@@ -468,7 +548,7 @@ func (e *rangeTransfer) run(ctx context.Context) error {
 			}
 		}
 	}
-	if err := e.checkpoint(); err != nil && first == nil {
+	if err := e.checkpoint(); err != nil {
 		first = err
 	}
 	if ctx.Err() != nil {
@@ -498,6 +578,14 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 		e.mu.Lock()
 		start := b.Position
 		end := e.total
+		var traceRequestFields map[string]any
+		if downloadTraceEnabled && e.s.trace.active() {
+			traceRequestFields = map[string]any{
+				"position": start, "interval_start": b.Start, "interval_end_exclusive": b.End,
+				"expected_total": e.total, "retry": failures, "confirmed": e.confirmed,
+				"expected_etag_hash": traceFingerprint(e.etag), "expected_last_modified_hash": traceFingerprint(e.modified),
+			}
+		}
 		if end <= 0 {
 			end = e.s.sizeHint
 		}
@@ -535,6 +623,10 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 		if err != nil {
 			return err
 		}
+		if !e.pool.canRequest(url) {
+			release()
+			continue
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			release()
@@ -557,9 +649,22 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 				req.Header.Set("If-Range", validator)
 			}
 		}
+		var diagnostic downloadTraceRequest
+		if downloadTraceEnabled && e.s.trace.active() {
+			diagnostic = e.s.trace.request(req, "transfer", traceRequestFields)
+			req = diagnostic.withContext(req)
+		}
 		resp, err := e.s.client.Do(req)
+		if downloadTraceEnabled && e.s.trace.active() {
+			diagnostic.response(resp, err)
+		}
 		if err != nil {
 			release()
+			// Absorbing an empty neighbouring range or pausing the task can
+			// cancel a request before headers arrive. The CDN did not fail.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			last = err
 			e.s.recordDiagnostic(err)
 			e.pool.failed(url, 0)
@@ -587,18 +692,18 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 					hintAdjusted = true
 				}
 				e.mu.Unlock()
-				// An untracked legacy prefix beyond the end of the resource
-				// cannot be resumed. Restart without adopting the reported size.
+				// An untracked legacy prefix may exceed the resource length.
+				// Quarantine this source until a media response verifies its size.
 				if unverified && validTotal && start >= reportedTotal {
-					return errEntityChanged
-				}
-				if !adjustHint {
+					last = fmt.Errorf("%w：断点位置 %d 超过响应声明的总长度 %d", errEntityChanged, start, reportedTotal)
+					e.pool.reject(url, last)
+				} else if !adjustHint {
 					e.pool.failed(url, 0)
 				}
 			} else if status == http.StatusNotFound {
 				e.pool.notFound(url)
 			} else if status == http.StatusBadRequest || status == http.StatusMethodNotAllowed || status == http.StatusUnavailableForLegalReasons {
-				e.pool.reject(url)
+				e.pool.reject(url, last)
 			} else if status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable {
 				e.pool.failed(url, retryAfter(resp.Header))
 			} else {
@@ -613,11 +718,25 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 			continue
 		}
 		err = e.acceptResponse(resp, b, start, ranged)
+		var validationErr error
+		if downloadTraceEnabled {
+			validationErr = err
+		}
 		if err == nil {
 			err = e.copyResponse(ctx, resp, b)
 		}
 		_ = resp.Body.Close()
 		release()
+		if downloadTraceEnabled && e.s.trace.active() {
+			e.mu.Lock()
+			position, end, total := b.Position, b.End, e.total
+			e.mu.Unlock()
+			diagnostic.event("transfer_result", map[string]any{
+				"error": traceError(err), "validation_error": traceError(validationErr),
+				"position": position, "interval_end_exclusive": end, "expected_total": total,
+				"bytes_written": position - start,
+			})
+		}
 		if err == nil {
 			e.pool.succeeded(url)
 			failures = 0
@@ -625,9 +744,6 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
-		}
-		if errors.Is(err, errEntityChanged) {
-			return err
 		}
 		e.mu.Lock()
 		advanced := b.Position > start
@@ -651,8 +767,8 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 		}
 		last = err
 		e.s.recordDiagnostic(err)
-		if !advanced && (errors.Is(err, errNonMediaResponse) || errors.Is(err, errUnsupportedEncoding)) {
-			e.pool.reject(url)
+		if errors.Is(err, errEntityChanged) || !advanced && (errors.Is(err, errNonMediaResponse) || errors.Is(err, errUnsupportedEncoding)) {
+			e.pool.reject(url, err)
 		} else if errors.Is(err, errSlowStream) {
 			e.pool.demote(url, 30*time.Second)
 		} else if errors.Is(err, errIdleStream) {
@@ -679,15 +795,14 @@ func mediaValidatorKey(raw string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(u.Scheme+"://"+u.Host+u.EscapedPath())))
 }
 
-func (e *rangeTransfer) acceptResponse(resp *http.Response, b *byteRange, start int64, ranged bool) error {
-	e.mu.Lock()
-	key := ""
+func responseValidatorKey(resp *http.Response) string {
 	if resp.Request != nil {
-		key = mediaValidatorKey(resp.Request.URL.String())
+		return mediaValidatorKey(resp.Request.URL.String())
 	}
-	sameSource := e.validatorKey == "" || e.validatorKey == key
-	changed := sameSource && validatorChanged(e.etag, e.modified, resp.Header.Get("ETag"), resp.Header.Get("Last-Modified"))
-	e.mu.Unlock()
+	return ""
+}
+
+func (e *rangeTransfer) acceptResponse(resp *http.Response, b *byteRange, start int64, ranged bool) error {
 	if isLikelyNonMediaResponse(resp) {
 		return fmt.Errorf("%w: %s", errNonMediaResponse, resp.Header.Get("Content-Type"))
 	}
@@ -703,17 +818,23 @@ func (e *rangeTransfer) acceptResponse(resp *http.Response, b *byteRange, start 
 		}
 		total = size
 		canRange = true
-	} else if ranged && !changed {
-		return errRangeUnsupported
 	}
+	key := responseValidatorKey(resp)
+	tag, modified := resp.Header.Get("ETag"), resp.Header.Get("Last-Modified")
 	e.mu.Lock()
-	if (e.total > 0 && total > 0 && total != e.total) || changed {
-		if total > 0 {
-			e.s.setTotalSize(total)
-		}
-		e.s.rememberProbeValidators(resp)
+	sameSource := e.validatorKey == "" || e.validatorKey == key
+	if sameSource && validatorChanged(e.etag, e.modified, tag, modified) {
 		e.mu.Unlock()
-		return errEntityChanged
+		return fmt.Errorf("%w：同一下载节点的校验标记变化", errEntityChanged)
+	}
+	if e.total > 0 && total > 0 && total != e.total {
+		previousTotal := e.total
+		e.mu.Unlock()
+		return fmt.Errorf("%w：已记录总长度 %d，响应总长度 %d", errEntityChanged, previousTotal, total)
+	}
+	if ranged && resp.StatusCode == http.StatusOK {
+		e.mu.Unlock()
+		return errRangeUnsupported
 	}
 	first := !e.confirmed
 	if e.total <= 0 && total > 0 {
@@ -722,10 +843,10 @@ func (e *rangeTransfer) acceptResponse(resp *http.Response, b *byteRange, start 
 		e.s.setTotalSize(total)
 	}
 	if e.etag == "" && sameSource {
-		e.etag = resp.Header.Get("ETag")
+		e.etag = tag
 	}
 	if e.modified == "" && sameSource {
-		e.modified = resp.Header.Get("Last-Modified")
+		e.modified = modified
 	}
 	if e.validatorKey == "" {
 		e.validatorKey = key

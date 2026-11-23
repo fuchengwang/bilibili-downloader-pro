@@ -2,6 +2,7 @@ package bilibili
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -12,49 +13,51 @@ import (
 
 // EpisodeInfo 单个分P或番剧单集详情
 type EpisodeInfo struct {
-	Index       int    `json:"index"`       // 序号 (1-indexed)
-	Page        int    `json:"page"`        // 稿件内分P序号，与合集中的序号区分
-	CID         int64  `json:"cid"`         // 视频流核心 CID
-	BVID        string `json:"bvid"`        // 稿件 BVID
-	AID         int64  `json:"aid"`         // 稿件 AID
-	EPID        int64  `json:"epid"`        // 番剧 EPID (若有)
-	Title       string `json:"title"`       // 单集主标题 (如 "P1 简介" 或 "第1话")
-	LongTitle   string `json:"longTitle"`   // 单集长标题
-	Duration    int    `json:"duration"`    // 时长 (秒)
-	DurationStr string `json:"durationStr"` // 格式化时长 (01:20:30)
-	Cover       string `json:"cover"`       // 分集封面 (若有)
-	Badge       string `json:"badge"`       // 标签 (如 "大会员", "会员抢先", "预告")
-	VideoTitle  string `json:"videoTitle,omitempty"`
-	PartCount   int    `json:"partCount,omitempty"`
+	Index               int    `json:"index"`       // 序号 (1-indexed)
+	Page                int    `json:"page"`        // 稿件内分P序号，与合集中的序号区分
+	CID                 int64  `json:"cid"`         // 视频流核心 CID
+	BVID                string `json:"bvid"`        // 稿件 BVID
+	AID                 int64  `json:"aid"`         // 稿件 AID
+	EPID                int64  `json:"epid"`        // 番剧 EPID (若有)
+	Title               string `json:"title"`       // 单集主标题 (如 "P1 简介" 或 "第1话")
+	LongTitle           string `json:"longTitle"`   // 单集长标题
+	Duration            int    `json:"duration"`    // 时长 (秒)
+	DurationStr         string `json:"durationStr"` // 格式化时长 (01:20:30)
+	Cover               string `json:"cover"`       // 分集封面 (若有)
+	Badge               string `json:"badge"`       // 标签 (如 "大会员", "会员抢先", "预告")
+	VideoTitle          string `json:"videoTitle,omitempty"`
+	PartCount           int    `json:"partCount,omitempty"`
+	RequiresAccessCheck bool   `json:"requiresAccessCheck,omitempty"`
 }
 
 // VideoDetail 包含视频主体信息及全部分集列表
 type VideoDetail struct {
-	Type                 TargetType    `json:"type"`                   // normal / bangumi / cheese
-	SeasonID             int64         `json:"seasonId"`               // 课堂课程 ID
-	BVID                 string        `json:"bvid"`                   // 稿件 BVID
-	AID                  int64         `json:"aid"`                    // 稿件 AID
-	Title                string        `json:"title"`                  // 主标题
-	Cover                string        `json:"cover"`                  // 主封面
-	Description          string        `json:"description"`            // 简介
-	Duration             int           `json:"duration"`               // 总时长或主视频时长 (秒)
-	DurationStr          string        `json:"durationStr"`            // 格式化时长
-	PubDate              int64         `json:"pubDate"`                // 发布时间戳
-	OwnerName            string        `json:"ownerName"`              // UP 主昵称 / 出品方
-	OwnerFace            string        `json:"ownerFace"`              // UP 主头像
-	OwnerMid             int64         `json:"ownerMid"`               // UP 主 UID
-	ViewCount            int64         `json:"viewCount"`              // 播放量
-	LikeCount            int64         `json:"likeCount"`              // 点赞数
-	DanmakuCount         int64         `json:"danmakuCount"`           // 弹幕数
-	IsCollection         bool          `json:"isCollection"`           // 是否为多P视频/专栏合集/番剧
-	TotalParts           int           `json:"totalParts"`             // 总集数
-	Episodes             []EpisodeInfo `json:"episodes"`               // 分集列表
-	DefaultPage          int           `json:"defaultPage"`            // 用户请求定位的分P
-	HasLinkedEpisode     bool          `json:"hasLinkedEpisode"`       // 链接是否指向具体的一集
-	CollectionTitle      string        `json:"collectionTitle"`        // 所属合集或课程名称
-	CollectionID         int64         `json:"collectionId,omitempty"` // UGC 合集标识
-	CollectionIncomplete bool          `json:"collectionIncomplete,omitempty"`
-	IsDefaultPart        bool          `json:"isDefaultPart"` // 多P链接未指定分P，展示整个稿件
+	Type                 TargetType                  `json:"type"`                   // normal / bangumi / cheese
+	SeasonID             int64                       `json:"seasonId"`               // 课堂课程 ID
+	BVID                 string                      `json:"bvid"`                   // 稿件 BVID
+	AID                  int64                       `json:"aid"`                    // 稿件 AID
+	Title                string                      `json:"title"`                  // 主标题
+	Cover                string                      `json:"cover"`                  // 主封面
+	Description          string                      `json:"description"`            // 简介
+	Duration             int                         `json:"duration"`               // 总时长或主视频时长 (秒)
+	DurationStr          string                      `json:"durationStr"`            // 格式化时长
+	PubDate              int64                       `json:"pubDate"`                // 发布时间戳
+	OwnerName            string                      `json:"ownerName"`              // UP 主昵称 / 出品方
+	OwnerFace            string                      `json:"ownerFace"`              // UP 主头像
+	OwnerMid             int64                       `json:"ownerMid"`               // UP 主 UID
+	ViewCount            int64                       `json:"viewCount"`              // 播放量
+	LikeCount            int64                       `json:"likeCount"`              // 点赞数
+	DanmakuCount         int64                       `json:"danmakuCount"`           // 弹幕数
+	IsCollection         bool                        `json:"isCollection"`           // 是否为多P视频/专栏合集/番剧
+	TotalParts           int                         `json:"totalParts"`             // 总集数
+	Episodes             []EpisodeInfo               `json:"episodes"`               // 分集列表
+	DefaultPage          int                         `json:"defaultPage"`            // 用户请求定位的分P
+	HasLinkedEpisode     bool                        `json:"hasLinkedEpisode"`       // 链接是否指向具体的一集
+	CollectionTitle      string                      `json:"collectionTitle"`        // 所属合集或课程名称
+	CollectionID         int64                       `json:"collectionId,omitempty"` // UGC 合集标识
+	CollectionIncomplete bool                        `json:"collectionIncomplete,omitempty"`
+	CollectionVideos     map[string]*CollectionVideo `json:"collectionVideos,omitempty"`
+	IsDefaultPart        bool                        `json:"isDefaultPart"` // 多P链接未指定分P，展示整个稿件
 }
 
 // A single-part video's cover is its published poster. Its first frame may be
@@ -70,6 +73,14 @@ func videoPartCover(poster, firstFrame string, parts int) string {
 }
 
 // ---- API 响应结构体 ----
+
+type viewPage struct {
+	Cid      int64  `json:"cid"`
+	Page     int    `json:"page"`
+	Part     string `json:"part"`
+	Duration int    `json:"duration"`
+	FirstPic string `json:"first_frame"`
+}
 
 type viewResponse struct {
 	Code    int    `json:"code"`
@@ -93,13 +104,7 @@ type viewResponse struct {
 			Danmaku int64 `json:"danmaku"`
 			Like    int64 `json:"like"`
 		} `json:"stat"`
-		Pages []struct {
-			Cid      int64  `json:"cid"`
-			Page     int    `json:"page"`
-			Part     string `json:"part"`
-			Duration int    `json:"duration"`
-			FirstPic string `json:"first_frame"`
-		} `json:"pages"`
+		Pages     []viewPage `json:"pages"`
 		UgcSeason *struct {
 			ID       int64  `json:"id"`
 			Title    string `json:"title"`
@@ -108,14 +113,18 @@ type viewResponse struct {
 			Sections []struct {
 				Title    string `json:"title"`
 				Episodes []struct {
-					ID    int64  `json:"id"`
-					Aid   int64  `json:"aid"`
-					Cid   int64  `json:"cid"`
-					Title string `json:"title"`
-					Bvid  string `json:"bvid"`
+					ID    int64      `json:"id"`
+					Aid   int64      `json:"aid"`
+					Cid   int64      `json:"cid"`
+					Title string     `json:"title"`
+					Bvid  string     `json:"bvid"`
+					Pages []viewPage `json:"pages"`
 					Arc   struct {
-						Pic      string `json:"pic"`
-						Duration int    `json:"duration"`
+						Aid        int64           `json:"aid"`
+						Pic        string          `json:"pic"`
+						Duration   int             `json:"duration"`
+						Videos     int             `json:"videos"`
+						Chargeable json.RawMessage `json:"is_chargeable_season"`
 					} `json:"arc"`
 				} `json:"episodes"`
 			} `json:"sections"`
@@ -243,6 +252,7 @@ func (c *Client) fetchNormalDetail(ctx context.Context, target *ParsedTarget) (*
 		detail.CollectionID = d.UgcSeason.ID
 		detail.CollectionTitle = d.UgcSeason.Title
 		detail.DefaultPage = 0
+		detail.CollectionVideos = make(map[string]*CollectionVideo)
 		idx := 1
 		for _, sec := range d.UgcSeason.Sections {
 			for _, ep := range sec.Episodes {
@@ -250,18 +260,25 @@ func (c *Client) fetchNormalDetail(ctx context.Context, target *ParsedTarget) (*
 				if title == "" {
 					title = fmt.Sprintf("第%d集", idx)
 				}
-				episodes = append(episodes, EpisodeInfo{
-					Index:       idx,
-					Page:        1,
-					CID:         ep.Cid,
-					BVID:        ep.Bvid,
-					AID:         ep.Aid,
-					Title:       title,
-					VideoTitle:  title,
-					Duration:    ep.Arc.Duration,
-					DurationStr: utils.FormatDuration(ep.Arc.Duration),
-					Cover:       ep.Arc.Pic,
-				})
+				episode := EpisodeInfo{
+					Index:               idx,
+					Page:                1,
+					CID:                 ep.Cid,
+					BVID:                ep.Bvid,
+					AID:                 ep.Aid,
+					Title:               title,
+					VideoTitle:          title,
+					Duration:            ep.Arc.Duration,
+					DurationStr:         utils.FormatDuration(ep.Arc.Duration),
+					Cover:               ep.Arc.Pic,
+					RequiresAccessCheck: string(ep.Arc.Chargeable) != "false",
+				}
+				episodes = append(episodes, episode)
+				if (ep.Arc.Aid == 0 || ep.Arc.Aid == ep.Aid) && embeddedCollectionPagesComplete(episode, ep.Pages, ep.Arc.Videos) {
+					if group, err := collectionVideoFromPages(episode, ep.Aid, ep.Arc.Pic, ep.Pages); err == nil {
+						detail.CollectionVideos[episode.BVID] = group
+					}
+				}
 				idx++
 			}
 		}

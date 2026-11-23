@@ -33,16 +33,18 @@ type LicenseResult struct {
 
 // App struct
 type App struct {
-	ctx             context.Context
-	biliClient      *bilibili.Client
-	downMgr         *downloader.DownloadManager
-	cfgMgr          *config.ConfigManager
-	license         licenseChecker
-	downMu          sync.Mutex
-	updates         *updater.Manager
-	updateInitError string
-	updateStartup   sync.Once
-	windowReady     atomic.Bool
+	ctx              context.Context
+	biliClient       *bilibili.Client
+	downMgr          *downloader.DownloadManager
+	cfgMgr           *config.ConfigManager
+	license          licenseChecker
+	downMu           sync.Mutex
+	updates          *updater.Manager
+	updateInitError  string
+	updateStartup    sync.Once
+	windowReady      atomic.Bool
+	selectionDetails selectionCache[string, *bilibili.VideoDetail]
+	selectionParts   selectionCache[bilibili.EpisodeInfo, *bilibili.CollectionVideo]
 }
 
 // NewApp creates a new App application struct
@@ -90,6 +92,9 @@ func (a *App) ensureDownloadManager() *downloader.DownloadManager {
 		} else if t.Status == downloader.StatusError {
 			wailsRuntime.EventsEmit(a.ctx, "task:error", t)
 		}
+	})
+	a.downMgr.SetBatchCallback(func(tasks []*downloader.DownloadTask) {
+		wailsRuntime.EventsEmit(a.ctx, "task:batch-update", tasks)
 	})
 	return a.downMgr
 }
@@ -189,7 +194,11 @@ func (a *App) ParseURL(input string) (*bilibili.VideoDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	return a.biliClient.FetchVideoDetail(a.ctx, target)
+	detail, err := a.biliClient.FetchVideoDetail(a.ctx, target)
+	if err == nil {
+		a.rememberSelectionDetail(target, detail)
+	}
+	return detail, err
 }
 
 // GetCollectionVideoParts resolves a collection entry independently so the
@@ -198,7 +207,18 @@ func (a *App) GetCollectionVideoParts(video bilibili.EpisodeInfo) (*bilibili.Col
 	if err := a.requireLicense(); err != nil {
 		return nil, err
 	}
-	return a.biliClient.FetchCollectionVideoParts(a.ctx, video)
+	return a.cachedCollectionParts(a.ctx, video)
+}
+
+func (a *App) cachedCollectionParts(ctx context.Context, video bilibili.EpisodeInfo) (*bilibili.CollectionVideo, error) {
+	if group, ok := a.selectionParts.get(video); ok {
+		return group, nil
+	}
+	group, err := a.biliClient.FetchCollectionVideoParts(ctx, video)
+	if err == nil {
+		a.selectionParts.put(video, group, 2048)
+	}
+	return group, err
 }
 
 // GetAvailableQualities 获取指定分P在当前登录状态下的全部可用清晰度
@@ -241,16 +261,22 @@ func (a *App) AddDownloadTasks(req downloader.DownloadRequest) ([]*downloader.Do
 			ssidStr = fmt.Sprintf("%d", req.SSID)
 		}
 	}
-	detail, err := a.biliClient.FetchVideoDetail(a.ctx, &bilibili.ParsedTarget{
+	target := &bilibili.ParsedTarget{
 		Type: targetType,
 		BVID: req.BVID,
 		AID:  fmt.Sprintf("%d", req.AID),
 		EPID: epidStr,
 		SSID: ssidStr,
 		Page: req.SourcePage,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("无法获取集数元数据: %w", err)
+	}
+	var err error
+	detail, cached := a.selectionDetails.get(selectionDetailKey(*target))
+	if !cached {
+		detail, err = a.biliClient.FetchVideoDetail(a.ctx, target)
+		if err != nil {
+			return nil, fmt.Errorf("无法获取集数元数据: %w", err)
+		}
+		a.rememberSelectionDetail(target, detail)
 	}
 	req.IsCheese = detail.Type == bilibili.TargetCheese
 	req.IsBangumi = detail.Type == bilibili.TargetBangumi
@@ -270,7 +296,13 @@ func (a *App) AddDownloadTasks(req downloader.DownloadRequest) ([]*downloader.Do
 		return nil, fmt.Errorf("该视频不属于可识别的合集")
 	}
 	if detail.CollectionID > 0 {
-		episodes, err = collectionSelection(a.ctx, detail.Episodes, req.NestedVideos, req.Episodes, a.biliClient.FetchCollectionVideoParts)
+		episodes, err = collectionSelection(a.ctx, detail.Episodes, req.NestedVideos, req.Episodes,
+			func(ctx context.Context, episode bilibili.EpisodeInfo) (*bilibili.CollectionVideo, error) {
+				if group := detail.CollectionVideos[episode.BVID]; group != nil {
+					return group, nil
+				}
+				return a.cachedCollectionParts(ctx, episode)
+			})
 		if err != nil {
 			return nil, err
 		}
@@ -503,7 +535,7 @@ func (a *App) CheckHistoryFiles(paths []string) map[string]string {
 				state := "unknown"
 				if path != "" && filepath.IsAbs(path) {
 					info, err := os.Stat(path)
-					if err == nil && !info.IsDir() {
+					if err == nil && info.Mode().IsRegular() && info.Size() > 0 {
 						state = "present"
 					} else if os.IsNotExist(err) {
 						if parent, parentErr := os.Stat(filepath.Dir(path)); parentErr == nil && parent.IsDir() {

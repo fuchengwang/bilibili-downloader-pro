@@ -11,6 +11,7 @@ const props = defineProps<{
   selection: Record<number, boolean>
   accessFor: (cid: number) => EpisodeAccess
   canSelect: (cid: number) => boolean
+  downloadedFor?: (cid: number) => boolean
 }>()
 const emit = defineEmits<{
   (e: 'back'): void
@@ -70,7 +71,7 @@ function applyRange() {
       requested.add(i)
     }
   }
-  const parts = props.video.parts.filter(p => requested.has(p.page))
+  const parts = props.video.parts.filter(p => requested.has(p.page) && !props.downloadedFor?.(p.cid))
   const unavailable = parts.filter(p => !props.canSelect(p.cid))
   if (unavailable.length) {
     const first = unavailable[0]
@@ -112,12 +113,13 @@ function applyRange() {
         role="checkbox"
         :aria-checked="canSelect(part.cid) && !!selection[part.cid]"
         :aria-disabled="!canSelect(part.cid)"
-        :aria-description="accessFor(part.cid).reason"
-        :title="accessFor(part.cid).reason"
+        :aria-description="downloadedFor?.(part.cid) ? '已下载' : accessFor(part.cid).reason"
+        :title="downloadedFor?.(part.cid) ? '已下载' : accessFor(part.cid).reason"
         @click="toggle(part.cid)"
       >
         <EpisodeSelectionMark :state="accessFor(part.cid).state" :checked="canSelect(part.cid) && !!selection[part.cid]" />
         <span class="part-number">P{{ part.page }}</span><span class="part-title">{{ part.title }}</span>
+        <span v-if="downloadedFor?.(part.cid)" class="downloaded-badge">已下载</span>
         <span class="part-duration">{{ part.durationStr }}</span>
       </button>
       <div v-if="filtered.length === 0" class="parts-empty"><Search :size="24" /><p>{{ onlySelected ? '当前结果中没有已选分 P' : '没有找到匹配的分 P' }}</p></div>
@@ -127,6 +129,7 @@ function applyRange() {
 </template>
 
 <style scoped>
+.downloaded-badge { color: var(--success); font-size: 11px; font-weight: 500; white-space: nowrap; }
 .parts-panel { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .parts-heading { padding: 18px 24px 14px; flex-shrink: 0; }
 .back-button { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; line-height: 1.5; color: var(--text-muted); font-size: 11px; background: transparent; margin-bottom: 10px; }

@@ -9,7 +9,7 @@ import { ref, toRaw, computed } from 'vue'
 const component = readFileSync(new URL('../src/components/QuickParse.vue', import.meta.url), 'utf8')
 const script = component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
 const ast = ts.createSourceFile('QuickParse.ts', script, ts.ScriptTarget.Latest, true)
-const functionNames = new Set(['fetchQualities', 'handleClear', 'currentEpisode', 'episodeForPlaybackCheck'])
+const functionNames = new Set(['fetchQualities', 'handleClear', 'handleParse', 'handleOpenEpisodes', 'currentEpisode', 'episodeForPlaybackCheck'])
 const functions = ast.statements
   .filter(node => ts.isFunctionDeclaration(node) && functionNames.has(node.name.text))
   .map(node => node.getText(ast)).join('\n')
@@ -21,21 +21,58 @@ const code = ts.transpileModule(functions + '\n' + display, { compilerOptions: {
 
 function harness() {
   const requests = []
+  const parses = []
   const messages = []
   const context = vm.createContext({
     ref, toRaw, computed,
     parsedDetail: ref(null), availableQualities: ref([]),
     selectedQuality: ref('highest'), isFetchingQualities: ref(false),
-    inputUrl: ref('video'), qualityRequest: 0, playbackError: ref(null),
+    inputUrl: ref('video'), qualityRequest: 0, parseRequest: 0, lastParsedLink: '', linkVersion: 0,
+    isParsing: ref(false), playbackError: ref(null),
+    props: { defaultQuality: '64', defaultCodec: 'AV1' },
+    ParseURL: url => new Promise(resolve => parses.push({ url, resolve })),
+    refreshQualities: () => {},
     emit: (...args) => messages.push(args),
     GetPlaybackInfo: (...args) => new Promise((resolve, reject) => requests.push({ args, resolve: qualities => resolve({ qualities }), resolveInfo: resolve, reject })),
   })
   vm.runInContext(code, context)
-  return { context, requests, messages }
+  return { context, requests, messages, parses }
 }
 
 const detail = () => ({ bvid: 'BVtest', aid: 1, type: 'video', episodes: [{ cid: 2 }] })
 const qualities = [{ id: 80, label: '1080P', isAvailable: true }, { id: 64, label: '720P', isAvailable: true }]
+
+test('reparsing the current link keeps its selector scope and a new link uses preferred format', async () => {
+  const { context: c, messages, parses } = harness()
+  async function open(url) {
+    c.inputUrl.value = url
+    const parsing = c.handleParse()
+    parses.at(-1).resolve(detail())
+    await parsing
+    c.handleOpenEpisodes()
+    return messages.at(-1).slice(2)
+  }
+  assert.deepEqual(await open('first'), ['64', 'AV1', 1])
+  c.selectedQuality.value = '16'
+  assert.deepEqual(await open('first'), ['16', 'AV1', 1])
+  assert.deepEqual(await open('second'), ['64', 'AV1', 2])
+  assert.deepEqual(await open('first'), ['64', 'AV1', 3])
+})
+
+test('a previous link finishing late cannot replace the active parse and its selector scope', async () => {
+  const { context: c, messages, parses } = harness()
+  c.inputUrl.value = 'first'
+  const older = c.handleParse()
+  c.inputUrl.value = 'second'
+  const newer = c.handleParse()
+  parses[1].resolve({ ...detail(), bvid: 'BVnew' })
+  await newer
+  parses[0].resolve({ ...detail(), bvid: 'BVold' })
+  await older
+  c.handleOpenEpisodes()
+  assert.equal(messages.at(-1)[1].bvid, 'BVnew')
+  assert.equal(messages.at(-1)[4], 2)
+})
 
 test('automatic quality label uses the highest confirmed available resolution', () => {
   const { context: c } = harness()

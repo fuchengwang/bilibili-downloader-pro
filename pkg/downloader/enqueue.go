@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,25 +21,68 @@ type downloadKey struct {
 }
 
 func taskDownloadKey(t *DownloadTask) downloadKey {
-	return downloadKey{t.CID, t.IsCheese, t.IsBangumi, t.TargetQuality, t.TargetCodec}
+	return downloadKey{t.CID, t.IsCheese, t.IsBangumi, t.TargetQuality, strings.ToLower(t.TargetCodec)}
 }
 
 func requestedDownloadKey(req *DownloadRequest, ep bilibili.EpisodeInfo) downloadKey {
-	return downloadKey{ep.CID, req.IsCheese, req.IsBangumi, req.TargetQuality, req.TargetCodec}
+	return downloadKey{ep.CID, req.IsCheese, req.IsBangumi, req.TargetQuality, strings.ToLower(req.TargetCodec)}
 }
 
-func indexDownloadTasks(tasks []*DownloadTask, root string) map[downloadKey]*DownloadTask {
-	index := make(map[downloadKey]*DownloadTask, len(tasks))
+type downloadTaskIndex struct {
+	pending   map[downloadKey]*DownloadTask
+	completed map[downloadKey]*DownloadTask
+}
+
+func indexDownloadTasks(tasks []*DownloadTask, root string) downloadTaskIndex {
+	index := downloadTaskIndex{
+		pending:   make(map[downloadKey]*DownloadTask, len(tasks)),
+		completed: make(map[downloadKey]*DownloadTask),
+	}
+	addCompleted := func(key downloadKey, task *DownloadTask) {
+		if index.completed[key] == nil {
+			index.completed[key] = task
+		}
+	}
 	for _, t := range tasks {
 		if t == nil || (t.Status == StatusCompleted && !pathWithin(root, t.OutputPath)) {
 			continue
 		}
 		key := taskDownloadKey(t)
-		if index[key] == nil {
-			index[key] = t
+		if t.Status != StatusCompleted {
+			if index.pending[key] == nil {
+				index.pending[key] = t
+			}
+			continue
+		}
+		if t.QualityID <= 0 || key.quality == "highest" {
+			// Older records and callers without a confirmed highest quality.
+			addCompleted(key, t)
+		}
+		if t.QualityID > 0 {
+			key.quality = strconv.Itoa(t.QualityID)
+			if t.Codec != "" {
+				key.codec = strings.ToLower(t.Codec)
+				addCompleted(key, t)
+			}
+			key.codec = "auto"
+			addCompleted(key, t)
 		}
 	}
 	return index
+}
+
+func (i downloadTaskIndex) lookup(req *DownloadRequest, key downloadKey) *DownloadTask {
+	if task := i.pending[key]; task != nil {
+		return task
+	}
+	if key.quality == "highest" && req.ExpectedQualities != nil {
+		quality := req.ExpectedQualities[key.cid]
+		if quality <= 0 {
+			return nil
+		}
+		key.quality = strconv.Itoa(quality)
+	}
+	return i.completed[key]
 }
 
 // Existing records are stored newest first for history. Assign old records in
@@ -81,7 +125,7 @@ func (m *DownloadManager) AddDownloadTasks(req *DownloadRequest, episodes []bili
 	prepared := make(map[downloadKey]*DownloadTask)
 	for i := range episodes {
 		key := requestedDownloadKey(req, episodes[i])
-		if known[key] != nil || prepared[key] != nil {
+		if known.lookup(req, key) != nil || prepared[key] != nil {
 			continue
 		}
 		task, err := m.prepareDownloadTask(req, &episodes[i], cfg)
@@ -97,9 +141,7 @@ func (m *DownloadManager) AddDownloadTasks(req *DownloadRequest, episodes []bili
 	unlockAdd()
 	// Notify only after the complete transaction is durable. No task/status lock
 	// is held during callbacks, so UI actions may safely reenter the manager.
-	for _, task := range modified {
-		m.notifyChange(task)
-	}
+	m.notifyTaskBatch(modified)
 	if len(modified) > 0 {
 		m.triggerSchedule()
 	}
@@ -141,7 +183,7 @@ func (m *DownloadManager) commitDownloadTasks(req *DownloadRequest, episodes []b
 			continue
 		}
 		seen[key] = true
-		task := known[key]
+		task := known.lookup(req, key)
 		if task == nil {
 			task = prepared[key]
 			if task == nil {
@@ -151,7 +193,6 @@ func (m *DownloadManager) commitDownloadTasks(req *DownloadRequest, episodes []b
 			task.QueueOrder = next
 			newTasks = append(newTasks, task)
 			modified = append(modified, task)
-			known[key] = task
 			changed = true
 		} else if task.Status == StatusCompleted {
 			info, err := os.Stat(task.OutputPath)
@@ -163,6 +204,7 @@ func (m *DownloadManager) commitDownloadTasks(req *DownloadRequest, episodes []b
 				next++
 				task.QueueOrder = next
 				task.Status, task.CompletedAt = StatusQueued, 0
+				task.TargetQuality, task.TargetCodec = req.TargetQuality, req.TargetCodec
 				task.Progress, task.DownloadedBytes, task.Speed = 0, 0, 0
 				task.SpeedStr, task.SizeStr, task.ErrorMsg = "0 KB/s", "准备中...", ""
 				task.ResumeOnStartup = false
@@ -225,8 +267,12 @@ func (m *DownloadManager) resumeTasks(id string, all bool) error {
 	if err != nil {
 		return err
 	}
-	for _, task := range modified {
-		m.notifyChange(task)
+	if all {
+		m.notifyTaskBatch(modified)
+	} else {
+		for _, task := range modified {
+			m.notifyChange(task)
+		}
 	}
 	if len(modified) > 0 {
 		m.triggerSchedule()

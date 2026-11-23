@@ -18,6 +18,23 @@ server that will provide very fast hot reload of your frontend changes. If you w
 and have access to your Go methods, there is also a dev server that runs on http://localhost:34115. Connect
 to this in your browser, and you can call your Go code from devtools.
 
+### 开发版下载日志
+
+先完全退出已打开的正式版或 UI 预览版，再运行 `wails dev`。两个构建共用单实例锁，
+旧应用仍在运行时，开发版会唤醒它并退出。macOS 上关窗后可按 `⌘Q` 退出应用。
+
+开发版的下载管理器会自动记录诊断。终端打印「开发下载日志」和文件路径后，就可以开始测试。macOS 默认写在
+`~/Library/Application Support/bilibili-downloader-pro/dev-download-logs/download.jsonl`，
+Windows 默认写在 `%APPDATA%\bilibili-downloader-pro\dev-download-logs\download.jsonl`。
+
+日志按行保存 JSON，可以用 `bvid` 或 `task_id` 找任务，用 `run_id` 区分同一任务的多次执行，
+再用 `session_id` 和 `request_id` 对应请求、响应和写入结果。日志包含视频或音频轨、节点主机名、请求范围、
+HTTP 状态码、响应区间和媒体总长度，以及换源、刷新地址、断点复核和重建决定。
+签名下载地址、Cookie、认证头、视频内容及本地下载路径均不写入日志。校验值只保存摘要。
+
+当前文件加三份轮转文件，每份最多 4 MiB，总共最多 16 MiB。重启开发版会追加一个新的 `session_start`。
+普通 `wails build` 的产物不编译详细记录器，因此不会创建或写入这组日志。
+
 ## Building
 
 To build a redistributable, production mode package, use `wails build`.

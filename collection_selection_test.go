@@ -9,7 +9,50 @@ import (
 	"time"
 
 	"bilibili_downloader/pkg/bilibili"
+	"bilibili_downloader/pkg/config"
+	"bilibili_downloader/pkg/downloader"
+	"bilibili_downloader/pkg/license"
 )
+
+func TestAddDownloadTasksReusesVerifiedCollectionOf314(t *testing.T) {
+	cfg := config.NewConfigManager(t.TempDir())
+	m := downloader.NewDownloadManager(cfg)
+	app := &App{
+		ctx: context.Background(), downMgr: m,
+		license: &fakeLicenseChecker{status: &license.LicenseStatus{IsActivated: true}},
+		// A repeated network lookup would hit the deliberately absent client.
+	}
+	detail := &bilibili.VideoDetail{
+		Type: bilibili.TargetNormal, BVID: "BVroot", AID: 1,
+		Title: "合集", CollectionID: 9, IsCollection: true,
+		CollectionVideos: make(map[string]*bilibili.CollectionVideo),
+	}
+	req := downloader.DownloadRequest{BVID: detail.BVID, AID: detail.AID, Title: detail.Title, TargetQuality: "16", TargetCodec: "auto"}
+	for i := 1; i <= 314; i++ {
+		ep := bilibili.EpisodeInfo{BVID: fmt.Sprintf("BVpart%03d", i), CID: int64(i), AID: int64(i), Index: i, Page: 1,
+			Title: fmt.Sprintf("第%d集", i), PartCount: 1}
+		ep.VideoTitle = ep.Title
+		detail.Episodes = append(detail.Episodes, ep)
+		req.Episodes = append(req.Episodes, ep.CID)
+		req.NestedVideos = append(req.NestedVideos, ep.BVID)
+		detail.CollectionVideos[ep.BVID] = &bilibili.CollectionVideo{BVID: ep.BVID, Parts: []bilibili.EpisodeInfo{ep}}
+	}
+	app.rememberSelectionDetail(&bilibili.ParsedTarget{Type: bilibili.TargetNormal, AID: "1"}, detail)
+	var batches int
+	m.SetBatchCallback(func(snapshots []*downloader.DownloadTask) {
+		batches++
+		if len(snapshots) != 314 || snapshots[0].CID != 1 || snapshots[313].CID != 314 {
+			t.Fatal("batch snapshot lost tasks or changed order")
+		}
+	})
+	tasks, err := app.AddDownloadTasks(req)
+	if err != nil || len(tasks) != 314 || batches != 1 {
+		t.Fatalf("task count=%d notifications=%d err=%v", len(tasks), batches, err)
+	}
+	if snapshots := downloader.NewDownloadManager(cfg).GetTasks(); len(snapshots) != 314 {
+		t.Fatalf("batch did not persist: %d tasks", len(snapshots))
+	}
+}
 
 func TestCollectionSelectionBoundedConcurrencyAndOrder(t *testing.T) {
 	var entries []bilibili.EpisodeInfo

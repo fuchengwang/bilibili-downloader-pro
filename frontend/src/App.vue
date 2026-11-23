@@ -40,6 +40,7 @@ import { EventsOn, EventsEmit } from '../wailsjs/runtime/runtime'
 import { theme, normalizeTheme } from './theme'
 import { readStartupAccount } from './startup-account'
 import { mergeTaskSnapshots, moveQueueTasks, orderedQueueTasks, type QueueMoveAction } from './utils/task-queue'
+import { clearEpisodePlaybackCache } from './utils/episode-playback'
 
 // State
 const activeTab = ref<'parse' | 'queue' | 'history' | 'settings'>('parse')
@@ -82,7 +83,10 @@ let appInitialized = false
 const showLoginModal = ref(false)
 const showEpisodeModal = ref(false)
 const batchSubmitting = ref(false)
+const batchRequest = ref<downloader.DownloadRequest | null>(null)
+const batchError = ref('')
 const activeEpisodeDetail = ref<bilibili.VideoDetail | null>(null)
+const activeEpisodeLinkVersion = ref<number | null>(null)
 const activeEpisodeQuality = ref('highest')
 const activeEpisodeCodec = ref('auto')
 
@@ -184,6 +188,12 @@ async function initializeAuthorizedApp() {
     } else {
       tasks.value.unshift(updatedTask)
     }
+  })
+  EventsOn('task:batch-update', (addedTasks: downloader.DownloadTask[]) => {
+    if (loadingTasks) {
+      for (const task of addedTasks) initialUpdates.set(task.id, task)
+    }
+    tasks.value = mergeTaskSnapshots(tasks.value, addedTasks)
   })
 
   EventsOn('task:completed', (completedTask: downloader.DownloadTask) => {
@@ -414,11 +424,18 @@ const currentTabTitle = computed(() => {
 })
 
 // 选集模态框交互
-function handleOpenEpisodes(detail: bilibili.VideoDetail, quality: string, codec: string) {
+function handleOpenEpisodes(detail: bilibili.VideoDetail, quality: string, codec: string, linkVersion: number) {
+  if (activeEpisodeLinkVersion.value !== linkVersion) {
+    activeEpisodeLinkVersion.value = linkVersion
+    handleEpisodeFormatChange(quality, codec)
+  }
   activeEpisodeDetail.value = detail
+  showEpisodeModal.value = true
+}
+
+function handleEpisodeFormatChange(quality: string, codec: string) {
   activeEpisodeQuality.value = quality
   activeEpisodeCodec.value = codec
-  showEpisodeModal.value = true
 }
 
 // 单集快速下载
@@ -451,55 +468,64 @@ async function handleQuickDownloadSingle(
 }
 
 // 批量提交分集下载
-async function handleEpisodeBatchSubmit(selectedCids: number[], quality: string, codec: string, nestedVideos?: string[]) {
+function handleEpisodeBatchSubmit(selectedCids: number[], quality: string, codec: string, nestedVideos?: string[], expectedQualities?: Record<number, number>) {
   if (!activeEpisodeDetail.value || selectedCids.length === 0 || batchSubmitting.value) return
-  batchSubmitting.value = true
+  const detail = activeEpisodeDetail.value
+  const firstEpWithEpid = detail.episodes?.find(ep => ep.epid > 0)
+  const req = {
+    bvid: detail.bvid,
+    aid: detail.aid,
+    epid: firstEpWithEpid?.epid || 0,
+    title: detail.collectionTitle || detail.title,
+    cover: detail.cover,
+    sourcePage: detail.episodes[(detail.defaultPage || 1) - 1]?.page || 1,
+    isBangumi: detail.type === 'bangumi',
+    isCheese: detail.type === 'cheese',
+    ssid: detail.seasonId || 0,
+    targetQuality: quality,
+    targetCodec: codec,
+    episodes: selectedCids,
+    nestedVideos: nestedVideos || [],
+    expectedQualities,
+  }
+  showEpisodeModal.value = false
+  activeTab.value = 'queue'
+  void enqueueEpisodeBatch(req)
+}
 
+async function enqueueEpisodeBatch(req: downloader.DownloadRequest) {
+  if (batchSubmitting.value) return
+  batchRequest.value = req
+  batchError.value = ''
+  batchSubmitting.value = true
   try {
-    const detail = activeEpisodeDetail.value
-    const firstEpWithEpid = detail.episodes?.find((e: any) => e.epid > 0)
-    const req: any = {
-      bvid: detail.bvid,
-      aid: detail.aid,
-      epid: firstEpWithEpid?.epid || 0,
-      title: detail.collectionTitle || detail.title,
-      cover: detail.cover,
-      sourcePage: detail.episodes[(detail.defaultPage || 1) - 1]?.page || 1,
-      isBangumi: detail.type === 'bangumi',
-      isCheese: detail.type === 'cheese',
-      ssid: detail.seasonId || 0,
-      targetQuality: quality,
-      targetCodec: codec,
-      episodes: selectedCids,
-      nestedVideos: nestedVideos || [],
-    }
     const added = await AddDownloadTasks(req)
-    showEpisodeModal.value = false
-    showDownloadResults(added || [])
+    batchRequest.value = null
+    showDownloadResults(added || [], false)
   } catch (err: any) {
-    showToast('批量添加任务失败: ' + (err?.message || String(err)), 'error')
+    batchError.value = err?.message || String(err)
+    if (activeTab.value !== 'queue') showToast('批量添加任务失败：' + batchError.value, 'error')
   } finally {
     batchSubmitting.value = false
   }
 }
 
-function showDownloadResults(results: downloader.DownloadTask[]) {
+function showDownloadResults(results: downloader.DownloadTask[], navigate = true) {
   if (results.length === 0) return
-  for (const task of results) {
-    const idx = tasks.value.findIndex(t => t.id === task.id)
-    if (idx >= 0) tasks.value[idx] = task
-    else tasks.value.unshift(task)
-  }
+  // The queue events may already have delivered a newer worker status.
+  const existing = new Set(tasks.value.map(task => task.id))
+  const unseen = results.filter(task => !existing.has(task.id))
+  if (unseen.length) tasks.value = mergeTaskSnapshots(tasks.value, unseen)
   const completed = results.filter(t => t.status === 'completed').length
   const pending = results.length - completed
   if (pending === 0) {
     showToast('已下载，文件已存在，可在下载历史中播放', 'success')
-    activeTab.value = 'history'
+    if (navigate) activeTab.value = 'history'
   } else {
     showToast(completed > 0
       ? `${pending} 个任务在下载队列中，${completed} 个已下载`
       : `${pending} 个任务已在下载队列中`, 'success')
-    activeTab.value = 'queue'
+    if (navigate) activeTab.value = 'queue'
   }
 }
 
@@ -553,19 +579,20 @@ async function confirmMissingFileClean() {
   }
 }
 
-async function onPauseAll() {
-  try {
-    await PauseAllTasks()
-  } catch (err: any) {
-    showToast('全部暂停失败: ' + (err?.message || err), 'error')
-  }
-}
+const queueAllAction = ref<'pause' | 'resume' | null>(null)
 
-async function onResumeAll() {
+async function runAllQueueAction(kind: 'pause' | 'resume') {
+  if (queueBatchBusy.value) return
+  queueBatchBusy.value = true
+  queueAllAction.value = kind
   try {
-    await ResumeAllTasks()
+    await (kind === 'pause' ? PauseAllTasks() : ResumeAllTasks())
   } catch (err: any) {
-    showToast('全部继续失败: ' + (err?.message || err), 'error')
+    const operation = kind === 'pause' ? '全部暂停' : '全部继续'
+    showToast(`${operation}失败：${err?.message || err}`, 'error')
+  } finally {
+    queueAllAction.value = null
+    queueBatchBusy.value = false
   }
 }
 
@@ -733,6 +760,7 @@ async function onOpenFile(path: string, task?: downloader.DownloadTask) {
 }
 
 function handleLoginSuccess(u: bilibili.UserInfo) {
+  clearEpisodePlaybackCache()
   userInfoRequest++
   userInfoRefreshing.value = false
   userInfo.value = u
@@ -742,6 +770,7 @@ function handleLoginSuccess(u: bilibili.UserInfo) {
 }
 
 function handleLogoutSuccess() {
+  clearEpisodePlaybackCache()
   userInfoRequest++
   userInfoRefreshing.value = false
   userInfo.value = null
@@ -804,9 +833,15 @@ function handleLicenseDeactivated(key: string) {
 
         <!-- View 2: Download Queue -->
         <div v-show="activeTab === 'queue'" class="tab-view">
+          <div v-if="batchRequest" class="queue-admission" role="status">
+            <span>{{ batchError ? '添加任务失败：' + batchError : `正在添加 ${batchRequest.episodes.length} 个任务…` }}</span>
+            <button v-if="batchError" class="btn-secondary" @click="enqueueEpisodeBatch(batchRequest)">重试添加</button>
+            <button v-if="batchError" class="btn-secondary" @click="batchRequest = null">关闭</button>
+          </div>
           <DownloadQueue
             :tasks="tasks"
             :batch-busy="queueBatchBusy"
+            :all-action="queueAllAction"
             :view-mode="listViewMode"
             @update:view-mode="setListViewMode"
             @open-login="showLoginModal = true"
@@ -816,8 +851,8 @@ function handleLicenseDeactivated(key: string) {
             @delete-task="onDeleteTask"
             @open-dir="onOpenDir"
             @open-file="onOpenFile"
-            @pause-all="onPauseAll"
-            @resume-all="onResumeAll"
+            @pause-all="runAllQueueAction('pause')"
+            @resume-all="runAllQueueAction('resume')"
             @batch-pause="onBatchPauseTasks"
             @batch-resume="onBatchResumeTasks"
             @batch-delete="onBatchDeleteTasks"
@@ -866,17 +901,24 @@ function handleLicenseDeactivated(key: string) {
       :detail="activeEpisodeDetail"
       :initial-quality="activeEpisodeQuality"
       :initial-codec="activeEpisodeCodec"
+      :key="'collection-' + activeEpisodeLinkVersion"
       :user-info="userInfo"
+      :history="completedTasks"
       @close="showEpisodeModal = false"
+      @format-change="handleEpisodeFormatChange"
       @submit="handleEpisodeBatchSubmit"
     />
     <EpisodeSelectorModal
       v-else-if="showEpisodeModal && activeEpisodeDetail"
+      :submitting="batchSubmitting"
       :detail="activeEpisodeDetail"
       :initial-quality="activeEpisodeQuality"
       :initial-codec="activeEpisodeCodec"
+      :key="'episodes-' + activeEpisodeLinkVersion"
       :user-info="userInfo"
+      :history="completedTasks"
       @close="showEpisodeModal = false"
+      @format-change="handleEpisodeFormatChange"
       @submit="handleEpisodeBatchSubmit"
     />
 
@@ -915,8 +957,10 @@ function handleLicenseDeactivated(key: string) {
         </div>
 
         <div class="dialog-footer">
-          <button class="btn-secondary" @click="showMissingFileModal = false">保留记录</button>
-          <button class="btn-danger" @click="confirmMissingFileClean">清除记录</button>
+          <div class="confirm-actions">
+            <button class="btn-secondary" @click="showMissingFileModal = false">保留记录</button>
+            <button class="btn-danger" @click="confirmMissingFileClean">清除记录</button>
+          </div>
         </div>
       </div>
     </div>
@@ -960,8 +1004,8 @@ function handleLicenseDeactivated(key: string) {
 <style scoped>
 .license-screen {
   position: relative;
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
   display: grid;
   place-items: center;
@@ -1007,15 +1051,11 @@ function handleLicenseDeactivated(key: string) {
 
 .app-layout {
   display: flex;
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
   background-color: var(--bg-app);
-}
-
-:global(:root[data-platform='windows']) .app-layout,
-:global(:root[data-platform='linux']) .app-layout {
-  border-top: 1px solid var(--border-top-divider);
+  border-top: var(--window-top-divider-width) solid var(--border-top-divider);
 }
 
 .main-wrapper {
@@ -1038,6 +1078,7 @@ function handleLicenseDeactivated(key: string) {
   width: 100%;
   animation: fadeIn 0.2s ease-out;
 }
+.queue-admission { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; padding: 8px 20px; color: var(--text-secondary); }
 
 /* Modal Dialogs */
 .modal-backdrop {
@@ -1199,9 +1240,7 @@ function handleLicenseDeactivated(key: string) {
   background: #ef4444;
   color: #fff;
   border: none;
-  padding: 6px 14px;
   border-radius: var(--radius-sm);
-  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   transition: all var(--transition-fast);

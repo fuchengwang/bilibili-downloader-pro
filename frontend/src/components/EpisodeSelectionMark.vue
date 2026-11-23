@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, CircleHelp, Ellipsis, LockKeyhole, Minus } from 'lucide-vue-next'
+import { Check, Ellipsis, LockKeyhole, Minus } from 'lucide-vue-next'
 import type { EpisodeAccess } from '../utils/episode-playback'
 
 defineProps<{
@@ -14,7 +14,6 @@ defineProps<{
     <Ellipsis v-else-if="state === 'checking'" :size="16" />
     <Check v-else-if="checked === true" :size="14" :stroke-width="2.8" />
     <Minus v-else-if="checked === 'mixed'" :size="14" :stroke-width="2.8" />
-    <CircleHelp v-else-if="state === 'unknown'" :size="13" />
   </span>
 </template>
 
@@ -44,9 +43,8 @@ defineProps<{
   background: var(--guest-login-bg);
 }
 
-.selection-mark.checking, .selection-mark.unknown:not(.checked) {
+.selection-mark.checking {
   color: var(--text-muted);
+  border-color: var(--neutral-25);
 }
-
-.selection-mark.checking, .selection-mark.unknown:not(.checked) { border-color: var(--neutral-25); }
 </style>

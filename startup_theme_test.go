@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -43,6 +44,9 @@ func TestStartupHTMLUsesSavedThemeAndKeepsWailsRuntime(t *testing.T) {
 			body := response.Body.String()
 			if response.Code != http.StatusOK || !strings.Contains(body, `data-startup-theme="`+want+`"`) || !strings.Contains(body, `data-theme="`+want+`"`) {
 				t.Fatalf("initial HTML did not use saved theme %q", preference)
+			}
+			if !strings.Contains(body, `data-platform="`+runtime.GOOS+`"`) {
+				t.Fatal("initial HTML lacks the native platform for window layout")
 			}
 			if !strings.Contains(body, "/wails/runtime.js") || !strings.Contains(body, "/wails/ipc.js") {
 				t.Fatal("theme injection broke Wails runtime injection")
