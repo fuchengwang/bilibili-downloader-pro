@@ -87,6 +87,14 @@ test('native background follows explicit and changing system appearance', () => 
   assert.deepEqual(backgrounds.at(-1), [245, 245, 247, 255])
 })
 
+test('live desktop HTML takes its platform from Wails', async () => {
+  const { context, root } = appearanceContext('dark')
+  context.window.runtime.Environment = async () => ({ platform: 'windows' })
+  vm.runInContext(themeCode, context)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(root.dataset.platform, 'windows')
+})
+
 const app = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 const script = app.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
 const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true)

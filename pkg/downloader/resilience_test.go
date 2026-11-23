@@ -814,7 +814,7 @@ func TestResilience_FriendlyErrorsClearAndUserFacing(t *testing.T) {
 		{name: "http-503", err: fmt.Errorf("下载连续重试耗尽: %w", &mediaHTTPError{code: 503}), wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
 		{name: "status-in-url", err: &url.Error{Op: "Get", URL: "https://cdn.invalid/403?token=503&tag=timeout", Err: errors.New("transport failure")}, wantExact: "下载意外中断，请检查网络后点击重试"},
 		{name: "digits-in-untyped-error", err: errors.New("Get https://cdn.invalid/403: transport failure"), wantExact: "下载意外中断，请检查网络后点击重试"},
-		{name: "non-media-html", err: errors.New("媒体响应类型异常: text/html"), wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
+		{name: "non-media-html", err: errors.New("媒体响应类型异常: text/html"), wantExact: "下载节点返回的内容无法验证，请稍后点击重试"},
 		{name: "track-changed", err: errors.New("刷新后的媒体轨道发生变化，请重试任务"), wantExact: "视频服务器暂时繁忙，请稍后点击重试"},
 		{name: "unknown-fallback", err: errors.New("something unexpected happened"), wantExact: "下载意外中断，请检查网络后点击重试"},
 	}

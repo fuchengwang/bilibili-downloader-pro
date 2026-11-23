@@ -17,6 +17,12 @@ const (
 )
 
 const (
+	rdwInvalidate  = 0x0001
+	rdwAllChildren = 0x0080
+	rdwFrame       = 0x0400
+)
+
+const (
 	winThemeSystem   uintptr = 0
 	winThemeLight    uintptr = 1
 	winThemeDark     uintptr = 2
@@ -24,15 +30,16 @@ const (
 )
 
 var (
-	user32                  = syscall.NewLazyDLL("user32.dll")
-	dwmapi                  = syscall.NewLazyDLL("dwmapi.dll")
-	procEnumWindows         = user32.NewProc("EnumWindows")
-	procIsWindowVisible     = user32.NewProc("IsWindowVisible")
-	procGetWindowThreadPID  = user32.NewProc("GetWindowThreadProcessId")
-	procDwmSetWindowAttr    = dwmapi.NewProc("DwmSetWindowAttribute")
-	currentProcessID        = uint32(os.Getpid())
-	enumCallbackOnce        sync.Once
-	enumWindowCallbackPtr   uintptr
+	user32                 = syscall.NewLazyDLL("user32.dll")
+	dwmapi                 = syscall.NewLazyDLL("dwmapi.dll")
+	procEnumWindows        = user32.NewProc("EnumWindows")
+	procIsWindowVisible    = user32.NewProc("IsWindowVisible")
+	procGetWindowThreadPID = user32.NewProc("GetWindowThreadProcessId")
+	procRedrawWindow       = user32.NewProc("RedrawWindow")
+	procDwmSetWindowAttr   = dwmapi.NewProc("DwmSetWindowAttribute")
+	currentProcessID       = uint32(os.Getpid())
+	enumCallbackOnce       sync.Once
+	enumWindowCallbackPtr  uintptr
 )
 
 func colorRef(r, g, b uint8) uint32 {
@@ -66,6 +73,9 @@ func applyWindowThemeAttributes(hwnd, mode uintptr) {
 		setDwmAttrUint32(hwnd, dwmwaCaptionColor, dwmwaColorDefault)
 		setDwmAttrUint32(hwnd, dwmwaBorderColor, dwmwaColorDefault)
 	}
+	// Invalidate the caption and WebView together after changing their frame
+	// colors. Let Windows repaint in its normal order without a background erase.
+	_, _, _ = procRedrawWindow.Call(hwnd, 0, 0, rdwInvalidate|rdwAllChildren|rdwFrame)
 }
 
 func getEnumWindowCallback() uintptr {

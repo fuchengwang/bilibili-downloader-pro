@@ -1078,8 +1078,10 @@ func formatFriendlyError(err error) string {
 		strings.Contains(errStr, "broken pipe") {
 		return "网络连接中断，请点击重试继续下载"
 	}
+	if errors.Is(err, errNonMediaResponse) || strings.Contains(errStr, "媒体响应类型异常") {
+		return "下载节点返回的内容无法验证，请稍后点击重试"
+	}
 	if errors.Is(err, errAllSourcesRejected) ||
-		strings.Contains(errStr, "媒体响应类型异常") ||
 		strings.Contains(errStr, "不支持的内容编码") ||
 		strings.Contains(errStr, "媒体范围或内容反复变化") ||
 		strings.Contains(errStr, "刷新后的媒体轨道发生变化") {

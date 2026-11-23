@@ -113,6 +113,10 @@
   --window-top-divider-width: 0px;
 }
 
+:root[data-platform='windows'] {
+  --window-top-divider-width: 0px; /* The native caption already borders the WebView. */
+}
+
 :root[data-theme='light'] {
   color-scheme: light;
   --bili-pink: #d9386b;

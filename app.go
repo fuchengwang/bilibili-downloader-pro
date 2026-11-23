@@ -439,10 +439,13 @@ func (a *App) GetSettings() config.Settings {
 
 // SaveSettings 保存设置
 func (a *App) SaveSettings(s config.Settings) error {
+	previousTheme := a.cfgMgr.Get().Theme
 	if err := a.cfgMgr.Save(s); err != nil {
 		return err
 	}
-	applyNativeWindowAppearance(s.Theme)
+	if theme := a.cfgMgr.Get().Theme; theme != previousTheme {
+		applyNativeWindowAppearance(theme)
+	}
 	return nil
 }
 

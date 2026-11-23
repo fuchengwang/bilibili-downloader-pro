@@ -10,8 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"bilibili_downloader/pkg/bilibili"
 )
 
 // URLRefresher 动态刷新直链的回调函数 (当遇到 403 Forbidden 或鉴权过期时自动触发无缝刷新)
@@ -33,6 +31,8 @@ func isMediaAuthStatus(code int) bool {
 // StreamDownloader 单个媒体流 (视频或音频) 的高可靠断点续传下载器
 type StreamDownloader struct {
 	trace                    downloadTrace
+	mediaTypeMu              sync.Mutex
+	verifiedMediaTypes       map[string]mediaTypeProof
 	diagnosticMu             sync.Mutex
 	diagnosticLast           error
 	onDiagnostic             func(error)
@@ -266,6 +266,10 @@ func (s *StreamDownloader) probeSingleCandidate(ctx context.Context, urlToProbe 
 }
 
 func (s *StreamDownloader) probeCandidatePrefix(ctx context.Context, urlToProbe string, end int64) (mediaProbe, error) {
+	return s.probeMediaPrefix(ctx, urlToProbe, end, false)
+}
+
+func (s *StreamDownloader) probeMediaPrefix(ctx context.Context, urlToProbe string, end int64, requireMP4 bool) (mediaProbe, error) {
 	candidateCtx, stopCandidate := context.WithTimeout(ctx, 5*time.Second)
 	defer stopCandidate()
 
@@ -273,10 +277,8 @@ func (s *StreamDownloader) probeCandidatePrefix(ctx context.Context, urlToProbe 
 	if err != nil {
 		return mediaProbe{}, err
 	}
-	req.Header.Set("User-Agent", bilibili.BrowserUA)
-	req.Header.Set("Referer", bilibili.Referer)
+	setMediaHeaders(req)
 	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", end))
-	req.Header.Set("Accept-Encoding", "identity")
 
 	var diagnostic downloadTraceRequest
 	if downloadTraceEnabled && s.trace.active() {
@@ -294,7 +296,12 @@ func (s *StreamDownloader) probeCandidatePrefix(ctx context.Context, urlToProbe 
 		s.recordDiagnostic(err)
 		return mediaProbe{}, err
 	}
-	defer resp.Body.Close()
+	body := resp.Body
+	defer func() {
+		if body != nil {
+			body.Close()
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return mediaProbe{}, &mediaHTTPError{code: resp.StatusCode, detail: " " + http.StatusText(resp.StatusCode)}
@@ -302,28 +309,42 @@ func (s *StreamDownloader) probeCandidatePrefix(ctx context.Context, urlToProbe 
 	if encoding := resp.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
 		return mediaProbe{}, errUnsupportedEncoding
 	}
-	if isLikelyNonMediaResponse(resp) {
-		return mediaProbe{}, fmt.Errorf("%w: %s", errNonMediaResponse, resp.Header.Get("Content-Type"))
+	mislabeled := isLikelyNonMediaResponse(resp)
+	if mislabeled && !isJSONMediaType(resp) {
+		return mediaProbe{}, nonMediaTypeError(resp)
 	}
-
+	total := resp.ContentLength
 	// 处理 206 Partial Content：必须严格依赖 Content-Range 头计算文件总大小，严禁读取仅代表分片大小的 Content-Length
 	if resp.StatusCode == http.StatusPartialContent {
 		cr := resp.Header.Get("Content-Range")
-		first, last, total, pErr := parseContentRange(cr)
-		if pErr == nil && first == 0 && total > 0 && last == min(end, total-1) && (resp.ContentLength < 0 || resp.ContentLength == last+1) {
-			return mediaProbe{total: total, response: resp}, nil
-		}
+		first, last, size, pErr := parseContentRange(cr)
 		if pErr != nil {
 			return mediaProbe{}, fmt.Errorf("探测响应 Content-Range 无效 (%q): %w", cr, pErr)
 		}
-		return mediaProbe{}, fmt.Errorf("探测响应 Content-Range 缺少有效总长度 (%q)", cr)
+		if first != 0 || size <= 0 || last != min(end, size-1) || (resp.ContentLength >= 0 && resp.ContentLength != last+1) {
+			return mediaProbe{}, fmt.Errorf("探测响应 Content-Range 无效 (%q)", cr)
+		}
+		total = size
 	}
-
-	// 处理 200 OK：服务端未按 Range 响应而是返回整个流实体，此时方可读取 Content-Length
-	if resp.ContentLength > 0 {
-		return mediaProbe{total: resp.ContentLength, response: resp}, nil
+	if total <= 0 {
+		return mediaProbe{}, fmt.Errorf("探测响应缺少有效 Content-Length")
 	}
-	return mediaProbe{}, fmt.Errorf("探测响应缺少有效 Content-Length")
+	if mislabeled && resp.StatusCode == http.StatusPartialContent && total >= mp4PrefixSize && end < mp4PrefixSize-1 {
+		// Keep ordinary size checks at one byte. Request the file signature
+		// only when the original response's media type is suspicious.
+		body.Close()
+		body = nil
+		return s.probeMediaPrefix(candidateCtx, urlToProbe, mp4PrefixSize-1, true)
+	}
+	if requireMP4 || mislabeled {
+		if err := s.verifyMP4Prefix(resp, total); err != nil {
+			return mediaProbe{}, err
+		}
+		if downloadTraceEnabled && s.trace.active() {
+			diagnostic.event("media_prefix_verified", map[string]any{"mislabeled": mislabeled})
+		}
+	}
+	return mediaProbe{total: total, response: resp}, nil
 }
 
 func (s *StreamDownloader) rememberProbeValidators(resp *http.Response) {

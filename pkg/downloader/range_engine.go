@@ -717,7 +717,7 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 			failures++
 			continue
 		}
-		err = e.acceptResponse(resp, b, start, ranged)
+		err = e.acceptResponse(ctx, resp, url, b, start, ranged)
 		var validationErr error
 		if downloadTraceEnabled {
 			validationErr = err
@@ -734,7 +734,7 @@ func (e *rangeTransfer) transferRange(ctx context.Context, b *byteRange) error {
 			diagnostic.event("transfer_result", map[string]any{
 				"error": traceError(err), "validation_error": traceError(validationErr),
 				"position": position, "interval_end_exclusive": end, "expected_total": total,
-				"bytes_written": position - start,
+				"bytes_written": position - start, "mislabeled_mp4_verified": validationErr == nil && isJSONMediaType(resp),
 			})
 		}
 		if err == nil {
@@ -802,9 +802,10 @@ func responseValidatorKey(resp *http.Response) string {
 	return ""
 }
 
-func (e *rangeTransfer) acceptResponse(resp *http.Response, b *byteRange, start int64, ranged bool) error {
-	if isLikelyNonMediaResponse(resp) {
-		return fmt.Errorf("%w: %s", errNonMediaResponse, resp.Header.Get("Content-Type"))
+func (e *rangeTransfer) acceptResponse(ctx context.Context, resp *http.Response, rawURL string, b *byteRange, start int64, ranged bool) error {
+	mislabeled := isLikelyNonMediaResponse(resp)
+	if mislabeled && !isJSONMediaType(resp) {
+		return nonMediaTypeError(resp)
 	}
 	if encoding := resp.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
 		return errUnsupportedEncoding
@@ -814,10 +815,22 @@ func (e *rangeTransfer) acceptResponse(resp *http.Response, b *byteRange, start 
 	if resp.StatusCode == 206 {
 		first, last, size, err := parseContentRange(resp.Header.Get("Content-Range"))
 		if err != nil || first != start || size <= 0 || last < first || (resp.ContentLength >= 0 && resp.ContentLength != last-first+1) {
+			if mislabeled {
+				return nonMediaTypeError(resp)
+			}
 			return errRangeUnsupported
 		}
 		total = size
 		canRange = true
+	}
+	if mislabeled {
+		responseStart := start
+		if resp.StatusCode == http.StatusOK {
+			responseStart = 0
+		}
+		if err := e.s.verifyMislabeledMedia(ctx, resp, rawURL, responseStart, total); err != nil {
+			return err
+		}
 	}
 	key := responseValidatorKey(resp)
 	tag, modified := resp.Header.Get("ETag"), resp.Header.Get("Last-Modified")
